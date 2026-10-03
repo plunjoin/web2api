@@ -1,0 +1,30 @@
+# 构建产物
+web2api.exe
+web2api.exe~
+*.exe
+
+# 本地数据与凭据（容器内由 volume 提供）
+data/
+auth/
+cookies/
+.temp/
+
+# 本地配置（容器用挂载的 config.yaml，不烤进镜像）
+config.yaml
+
+# Git / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# 文档与脚本（非运行时需要）
+*.md
+start.bat
+LICENSE
+
+# docker 编排文件（构建时不需要）
+docker-compose.yml
+docker/
+.env
+.env.example

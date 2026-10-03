@@ -1,0 +1,455 @@
+// Package admin 提供号池管理 REST API（/admin/api/*），
+// 供 Web 管理台与外部脚本调用：账号 CRUD、Key 分发、用量统计。
+// 鉴权：Authorization: Bearer <JWT>，登录会话存储在 Redis。
+package admin
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"web2api/internal/provider"
+	"web2api/internal/store"
+)
+
+// API 管理接口。
+type API struct {
+	mgr    *provider.Manager
+	st     *store.Store
+	logger *log.Logger
+}
+
+// New 创建管理 API。
+func New(mgr *provider.Manager, st *store.Store, logger *log.Logger) *API {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &API{mgr: mgr, st: st, logger: logger}
+}
+
+// Mount 注册到 mux。
+func (a *API) Mount(mux *http.ServeMux) {
+	mux.HandleFunc("GET /admin/api/setup", a.handleSetupStatus)
+	mux.HandleFunc("POST /admin/api/setup", a.handleSetup)
+	mux.HandleFunc("POST /admin/api/auth/login", a.handleLogin)
+	mux.HandleFunc("POST /admin/api/auth/logout", a.handleLogout)
+	mux.HandleFunc("GET /admin/api/auth/me", a.handleMe)
+	mux.HandleFunc("GET /admin/api/overview", a.auth(a.handleOverview))
+	mux.HandleFunc("GET /admin/api/docs", a.auth(a.handleDocs))
+	mux.HandleFunc("GET /admin/api/accounts", a.auth(a.handleListAccounts))
+	mux.HandleFunc("POST /admin/api/accounts/gemini", a.auth(a.handleAddGemini))
+	mux.HandleFunc("POST /admin/api/accounts/aistudio", a.auth(a.handleAddAIStudio))
+	mux.HandleFunc("PATCH /admin/api/accounts/{id}", a.auth(a.handlePatchAccount))
+	mux.HandleFunc("PUT /admin/api/accounts/{id}/credentials", a.auth(a.handleUpdateCredentials))
+	mux.HandleFunc("POST /admin/api/accounts/{id}/check", a.auth(a.handleCheckAccount))
+	mux.HandleFunc("DELETE /admin/api/accounts/{id}", a.auth(a.handleDeleteAccount))
+	mux.HandleFunc("GET /admin/api/keys", a.auth(a.handleListKeys))
+	mux.HandleFunc("POST /admin/api/keys", a.auth(a.handleCreateKey))
+	mux.HandleFunc("PATCH /admin/api/keys/{id}", a.auth(a.handlePatchKey))
+	mux.HandleFunc("DELETE /admin/api/keys/{id}", a.auth(a.handleDeleteKey))
+	mux.HandleFunc("GET /admin/api/usage", a.auth(a.handleUsage))
+	mux.HandleFunc("GET /admin/api/status", a.auth(a.handleStatus))
+}
+
+// handleDocs 返回管理 API 的 OpenAPI 3.1 文档。
+// 文档与管理接口一起鉴权，避免在未登录时暴露部署细节；前端管理台会直接消费该文档。
+func (a *API) handleDocs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, openAPISpec())
+}
+
+// openAPISpec 使用标准 OpenAPI 结构，避免引入额外的文档生成依赖。
+func openAPISpec() map[string]any {
+	jsonBody := map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}
+	response := func(description string) map[string]any {
+		return map[string]any{"description": description, "content": jsonBody}
+	}
+	body := func(schema string) map[string]any {
+		return map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/" + schema}}}}
+	}
+	return map[string]any{
+		"openapi": "3.1.0",
+		"info": map[string]any{
+			"title":       "web2api 管理 API",
+			"version":     "1.0.0",
+			"description": "号池、API Key、用量和引擎状态管理接口。管理接口使用 JWT 验证及 Redis 会话；初始化和登录接口无需登录。",
+		},
+		"servers":  []any{map[string]any{"url": "/", "description": "当前 web2api 服务"}},
+		"security": []any{map[string]any{"AdminJWT": []any{}}},
+		"tags": []any{
+			map[string]any{"name": "概览", "description": "运行状态和管理台数据"},
+			map[string]any{"name": "账号", "description": "Gemini 与 AI Studio 号池"},
+			map[string]any{"name": "API Key", "description": "客户端 API Key 的生命周期管理"},
+			map[string]any{"name": "用量", "description": "按 Key、引擎和模型聚合的请求用量"},
+		},
+		"paths": map[string]any{
+			"/admin/api/setup": map[string]any{
+				"get":  map[string]any{"summary": "查询初始化状态", "security": []any{}, "responses": map[string]any{"200": response("initialized")}},
+				"post": map[string]any{"summary": "首次初始化管理员和 Redis", "security": []any{}, "requestBody": body("SetupInput"), "responses": map[string]any{"201": response("初始化成功"), "400": response("参数或 Redis 连接无效"), "409": response("已经初始化")}},
+			},
+			"/admin/api/auth/login":  map[string]any{"post": map[string]any{"summary": "邮箱密码登录", "security": []any{}, "requestBody": body("LoginInput"), "responses": map[string]any{"200": response("access_token、token_type、expires_in、user"), "401": response("邮箱或密码错误"), "429": response("登录尝试过多"), "503": response("Redis 不可用")}}},
+			"/admin/api/auth/logout": map[string]any{"post": map[string]any{"summary": "退出并撤销当前 JWT", "responses": map[string]any{"200": response("已退出"), "401": response("登录已失效")}}},
+			"/admin/api/auth/me":     map[string]any{"get": map[string]any{"summary": "获取管理员邮箱与昵称", "responses": map[string]any{"200": response("user"), "401": response("登录已失效")}}},
+			"/admin/api/overview":    map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取总览统计", "responses": map[string]any{"200": response("总览统计"), "401": response("JWT 无效或已过期")}}},
+			"/admin/api/docs":        map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取 OpenAPI 文档", "responses": map[string]any{"200": response("OpenAPI 3.1 文档")}}},
+			"/admin/api/status":      map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取引擎详细状态", "responses": map[string]any{"200": response("引擎状态")}}},
+			"/admin/api/accounts": map[string]any{
+				"get":  map[string]any{"tags": []string{"账号"}, "summary": "列出账号", "responses": map[string]any{"200": response("账号列表")}},
+				"post": map[string]any{"tags": []string{"账号"}, "summary": "添加账号", "description": "请使用 /gemini 或 /aistudio 子路径。", "responses": map[string]any{"404": response("路径不存在")}},
+			},
+			"/admin/api/accounts/gemini":   map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "添加 Gemini 账号", "requestBody": body("GeminiAccountInput"), "responses": map[string]any{"200": response("账号已创建"), "400": response("参数错误")}}},
+			"/admin/api/accounts/aistudio": map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "添加 AI Studio 账号", "requestBody": body("AIStudioAccountInput"), "responses": map[string]any{"200": response("账号已创建"), "400": response("参数错误")}}},
+			"/admin/api/accounts/{id}": map[string]any{
+				"parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}},
+				"patch":      map[string]any{"tags": []string{"账号"}, "summary": "启用或停用账号", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}},
+				"delete":     map[string]any{"tags": []string{"账号"}, "summary": "删除账号", "responses": map[string]any{"200": response("删除成功"), "404": response("账号不存在")}},
+			},
+			"/admin/api/accounts/{id}/credentials": map[string]any{"put": map[string]any{"tags": []string{"账号"}, "summary": "更新 Gemini Cookie", "requestBody": body("GeminiCredentialsInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
+			"/admin/api/accounts/{id}/check":       map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "触发账号健康检测", "responses": map[string]any{"200": response("检测已触发")}}},
+			"/admin/api/keys": map[string]any{
+				"get":  map[string]any{"tags": []string{"API Key"}, "summary": "列出 API Key", "responses": map[string]any{"200": response("Key 列表")}},
+				"post": map[string]any{"tags": []string{"API Key"}, "summary": "创建 API Key", "requestBody": body("KeyInput"), "responses": map[string]any{"200": response("Key 已创建")}},
+			},
+			"/admin/api/keys/{id}": map[string]any{
+				"parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}},
+				"patch":      map[string]any{"tags": []string{"API Key"}, "summary": "启用或停用 API Key", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("更新成功")}},
+				"delete":     map[string]any{"tags": []string{"API Key"}, "summary": "删除 API Key", "responses": map[string]any{"200": response("删除成功")}},
+			},
+			"/admin/api/usage": map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "查询用量聚合", "parameters": []any{map[string]any{"name": "days", "in": "query", "description": "统计天数，1-90，默认 7", "schema": map[string]any{"type": "integer", "default": 7, "minimum": 1, "maximum": 90}}}, "responses": map[string]any{"200": response("用量列表")}}},
+		},
+		"components": map[string]any{
+			"securitySchemes": map[string]any{
+				"AdminJWT": map[string]any{"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "邮箱密码登录签发的 JWT，8 小时有效；退出时撤销 Redis 会话"},
+			},
+			"schemas": map[string]any{
+				"SetupInput":             map[string]any{"type": "object", "required": []string{"email", "password", "nickname", "redis_url"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "minLength": 8, "description": "最多 72 字节", "writeOnly": true}, "nickname": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}, "redis_url": map[string]any{"type": "string", "description": "redis://[user:password@]host:port/db，支持 rediss:// TLS", "writeOnly": true}}},
+				"LoginInput":             map[string]any{"type": "object", "required": []string{"email", "password"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "writeOnly": true}}},
+				"EnabledInput":           map[string]any{"type": "object", "required": []string{"enabled"}, "properties": map[string]any{"enabled": map[string]any{"type": "boolean", "description": "是否允许调度或调用"}}},
+				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}}},
+				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
+				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
+				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+			},
+		},
+	}
+}
+
+// auth 管理鉴权中间件。
+func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, _, code, err := a.authenticate(r); err != nil {
+			writeJSON(w, code, map[string]any{"error": err.Error()})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func bearer(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	return ""
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func readJSON(r *http.Request, v any) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		return errors.New("请求体为空")
+	}
+	return json.Unmarshal(body, v)
+}
+
+func pathID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(r.PathValue("id"), 10, 64)
+}
+
+// ==================== 总览 ====================
+
+// handleOverview 管理台首页数据。
+func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
+	accounts := a.mgr.AccountOverview()
+	keys, _ := a.st.ListKeys()
+	since := time.Now().AddDate(0, 0, -1).Unix()
+	usage, _ := a.st.UsageSummary(since)
+
+	var readyA, readyB, totalReqs int64
+	for _, acc := range accounts {
+		switch acc.Engine {
+		case "a":
+			if acc.Live.Ready {
+				readyA++
+			}
+		case "b":
+			if acc.Live.Ready {
+				readyB++
+			}
+		}
+	}
+	for _, u := range usage {
+		totalReqs += u.Requests
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accounts_total": len(accounts),
+		"accounts_ready": readyA + readyB,
+		"engine_a_ready": readyA,
+		"engine_b_ready": readyB,
+		"keys_total":     len(keys),
+		"requests_24h":   totalReqs,
+	})
+}
+
+// handleStatus 引擎详细状态（/v1/accounts 的管理版）。
+func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.mgr.Status())
+}
+
+// ==================== 账号 ====================
+
+func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": a.mgr.AccountOverview()})
+}
+
+// handleAddGemini 添加 Gemini 网页号。
+func (a *API) handleAddGemini(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label  string `json:"label"`
+		PSID   string `json:"psid"`
+		PSIDTS string `json:"psidts"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Label) == "" || strings.TrimSpace(req.PSID) == "" || strings.TrimSpace(req.PSIDTS) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "label、psid、psidts 均不能为空"})
+		return
+	}
+	acc, err := a.mgr.AddGeminiAccount(req.Label, req.PSID, req.PSIDTS)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": acc})
+}
+
+// handleAddAIStudio 添加 AI Studio 号。
+func (a *API) handleAddAIStudio(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email        string `json:"email"`
+		StorageState string `json:"storage_state"` // storage-state JSON 文本
+		Locale       string `json:"locale"`
+		Timezone     string `json:"timezone"`
+		Proxy        string `json:"proxy"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Email) == "" || strings.TrimSpace(req.StorageState) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "email、storage_state 均不能为空"})
+		return
+	}
+	acc, err := a.mgr.AddAIStudioAccount(req.Email, req.StorageState, req.Locale, req.Timezone, req.Proxy)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": acc})
+}
+
+// handlePatchAccount 启停账号。
+func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "仅支持 enabled 字段"})
+		return
+	}
+	if err := a.mgr.SetAccountEnabled(id, *req.Enabled); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleUpdateCredentials 更新 Gemini 号 Cookie。
+func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	var req struct {
+		PSID   string `json:"psid"`
+		PSIDTS string `json:"psidts"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.PSID) == "" || strings.TrimSpace(req.PSIDTS) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "psid、psidts 均不能为空"})
+		return
+	}
+	if err := a.mgr.UpdateGeminiCredentials(id, req.PSID, req.PSIDTS); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleCheckAccount 触发健康检查。
+func (a *API) handleCheckAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	if err := a.mgr.CheckAccount(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleDeleteAccount 删除账号。
+func (a *API) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	if err := a.mgr.RemoveAccount(id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ==================== API Key ====================
+
+func (a *API) handleListKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := a.st.ListKeys()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	// 附加 24h 用量
+	since := time.Now().AddDate(0, 0, -1).Unix()
+	usage, _ := a.st.UsageSummary(since)
+	usageByKey := map[string]int64{}
+	for _, u := range usage {
+		usageByKey[u.APIKey] += u.Requests
+	}
+	type keyView struct {
+		store.APIKey
+		Requests24h int64 `json:"requests_24h"`
+	}
+	out := make([]keyView, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key]})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+}
+
+func (a *API) handleCreateKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	key, err := a.st.CreateKey(req.Name)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"key": key})
+}
+
+func (a *API) handlePatchKey(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "仅支持 enabled 字段"})
+		return
+	}
+	if err := a.st.SetKeyEnabled(id, *req.Enabled); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *API) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	if err := a.st.DeleteKey(id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ==================== 用量 ====================
+
+// handleUsage 用量统计。?days=7（默认 7 天，最多 90 天）。
+func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 90 {
+			days = n
+		}
+	}
+	since := time.Now().AddDate(0, 0, -days).Unix()
+	usage, err := a.st.UsageSummary(since)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"days":  days,
+		"usage": usage,
+	})
+}

@@ -1,0 +1,24 @@
+[Unit]
+Description=web2api - Gemini 双引擎号池管理网关
+After=network.target
+
+[Service]
+Type=simple
+# 部署目录（按实际路径改）
+WorkingDirectory=/opt/web2api
+# 二进制路径（按实际路径改）
+ExecStart=/opt/web2api/web2api -config /opt/web2api/config.yaml
+# 重启策略
+Restart=always
+RestartSec=5
+# 日志输出到 journald（用 journalctl -u web2api 查看）
+StandardOutput=journal
+StandardError=journal
+# 环境变量（可覆盖 config.yaml）
+# Environment=WEB2API_PROXY=http://127.0.0.1:7890
+# Environment=WEB2API_API_KEYS=sk-your-key
+# 资源限制（可选）
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+# ============================================================
+# web2api 配置文件 —— Gemini 双引擎号池管理网关
+# 复制为 config.yaml 后按需修改；号池账号建议直接在管理台添加
+# ============================================================
+
+server:
+  listen: "0.0.0.0:8800"          # 网关监听地址（客户端 Base URL 填 http://<本机IP>:8800/v1）
+  api_keys:                        # 种子 Key：启动时自动导入 Key 库（之后可在管理台增删）
+    - "sk-web2api"
+  # 首次打开 /admin 设置邮箱、密码、昵称和 Redis 连接
+  db_path: "data/web2api.db"       # SQLite：号池账号 / API Key / 用量
+  log_level: "info"
+
+routing:
+  default_engine: "auto"           # auto | a | b
+  engine_a_models: []              # 显式强制走引擎A 的模型（支持前缀与 * 通配）
+  engine_b_models: []              # 显式强制走引擎B 的模型
+
+# ------------------------------------------------------------
+# 引擎A：gemini.google.com 网页版（Go 原生逆向，Cookie 会话）
+# 这里的 accounts 是首次启动的种子，会自动迁移进数据库；
+# 日常加号/换Cookie直接在管理台操作（号池管理 → 添加 Gemini 号）
+# ------------------------------------------------------------
+engine_a:
+  enabled: true
+  cookie_path: "cookies"           # Cookie 自动轮换缓存目录
+  proxy: ""                        # 访问 Google 需要的代理，如 http://127.0.0.1:7890
+  refresh_seconds: 600
+  timeout_seconds: 300
+  accounts: []                     # 例：- name: "主号"  psid: ""  psidts: ""
+
+# ------------------------------------------------------------
+# 引擎B：AI Studio（两种模式）
+#
+# mode=native（推荐，默认）：内置纯 Go 逆向（AI Studio 私有协议 + WAA go 后端），
+#   零浏览器、零外部服务依赖。auth 目录放账号凭据，与 AIStudio2API 兼容；
+#   也可在管理台直接粘贴 storage-state.json 内容添加。
+#
+# mode=upstream：转发到已部署的 AIStudio2API / 任意 OpenAI 兼容服务。
+# ------------------------------------------------------------
+engine_b:
+  enabled: true
+  mode: "native"
+
+  # ---- native 模式 ----
+  auth_states: "auth"              # 账号目录（管理台添加的号也存这里）
+  proxy: ""
+  routing_strategy: "round-robin"   # 多号调度：round-robin | account-sticky
+  upstream_channels: "playground,build"
+  per_account_concurrency: 2
+  init_timeout_seconds: 120
+  request_timeout_seconds: 300
+  temporary_chat: false
+  refresh_seconds: 300
+
+  # ---- upstream 模式（mode=upstream 时生效）----
+  base_url: "http://127.0.0.1:2048"
+  api_key: ""
+  passthrough: true

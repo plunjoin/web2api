@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>web2api · 号池管理台</title>
+<script src="/admin/assets/vue.global.prod.js"></script>
+<link rel="stylesheet" href="/admin/assets/admin.css">
+<style>
+  [v-cloak]{display:none}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+<div id="startup-error" role="alert" style="display:none;margin:2rem auto;max-width:40rem;padding:1rem;background:#fff;border:1px solid #fca5a5;border-radius:8px;color:#991b1b">管理台资源加载失败，请重新编译并重启服务后刷新页面。</div>
+<noscript>请启用 JavaScript 后使用管理台。</noscript>
+<div id="app" v-cloak>
+
+  <!-- 顶栏 -->
+  <header class="bg-slate-900 text-white shadow">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <h1 class="text-lg font-bold tracking-wide">web2api <span class="text-emerald-400">号池管理台</span></h1>
+        <span v-if="connected" class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">已连接</span>
+        <span v-else class="text-xs bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full">未连接</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span v-if="token" class="text-xs">{{ user.nickname }}</span>
+        <button v-if="token" @click="logout" class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition">退出登录</button>
+        <a href="/health" target="_blank"
+          class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition">健康检查</a>
+      </div>
+    </div>
+  </header>
+
+  <div v-if="!authReady" class="max-w-md mx-auto px-4 pt-6 text-center text-slate-600">
+    <p>{{ authError || '正在读取初始化状态…' }}</p>
+    <button v-if="authError" @click="bootstrap" class="mt-3 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm">重试</button>
+  </div>
+  <div v-else-if="!token" class="max-w-md mx-auto px-4 py-6">
+    <form @submit.prevent="submitAuth" class="bg-white rounded-xl shadow p-6 space-y-3">
+      <h2 class="text-lg font-bold">{{ initialized ? '管理员登录' : '首次初始化' }}</h2>
+      <p class="text-xs text-slate-500">{{ initialized ? '使用邮箱和密码登录管理台' : '设置管理员账号和 Redis 连接，完成后登录' }}</p>
+      <div><label for="admin-email" class="text-xs text-slate-500">邮箱</label><input id="admin-email" v-model="authForm.email" type="email" required maxlength="254" autocomplete="username" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"></div>
+      <div><label for="admin-password" class="text-xs text-slate-500">密码</label><input id="admin-password" v-model="authForm.password" type="password" required :minlength="initialized ? 1 : 8" :autocomplete="initialized ? 'current-password' : 'new-password'" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"><p v-if="!initialized" class="text-xs text-slate-400 mt-1">至少 8 个字符，最多 72 字节</p></div>
+      <template v-if="!initialized">
+        <div><label for="admin-nickname" class="text-xs text-slate-500">昵称</label><input id="admin-nickname" v-model="authForm.nickname" required maxlength="64" autocomplete="nickname" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"></div>
+        <div><label for="redis-url" class="text-xs text-slate-500">Redis 连接地址</label><input id="redis-url" v-model="authForm.redis_url" type="password" required autocomplete="off" spellcheck="false" placeholder="redis://:密码@127.0.0.1:6379/0" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"><p class="text-xs text-slate-400 mt-1">支持 redis:// 和 rediss://（TLS）；无密码可填 redis://127.0.0.1:6379/0。保存前会验证连接及读写权限。</p></div>
+      </template>
+      <p v-if="authError" role="alert" class="text-sm text-red-600">{{ authError }}</p>
+      <button :disabled="authBusy" class="w-full px-4 py-2 bg-slate-900 text-white rounded-lg text-sm disabled:opacity-50">{{ authBusy ? '正在处理…' : (initialized ? '登录' : '完成初始化') }}</button>
+    </form>
+  </div>
+
+  <main v-else class="max-w-6xl mx-auto px-4 py-6">
+
+    <!-- Tab -->
+    <nav class="flex gap-1 mb-4 bg-white p-1 rounded-xl shadow-sm w-fit">
+      <button v-for="t in tabs" :key="t" @click="tab=t; refresh()"
+        class="px-4 py-2 text-sm rounded-lg transition"
+        :class="tab===t ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'">{{ t }}</button>
+    </nav>
+
+    <!-- 总览 -->
+    <section v-if="tab==='总览'" class="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div class="bg-white rounded-xl shadow p-4">
+        <div class="text-xs text-slate-500">账号总数</div>
+        <div class="text-2xl font-bold mt-1">{{ overview.accounts_total ?? '-' }}</div>
+      </div>
+      <div class="bg-white rounded-xl shadow p-4">
+        <div class="text-xs text-slate-500">就绪账号</div>
+        <div class="text-2xl font-bold mt-1 text-emerald-600">{{ overview.accounts_ready ?? '-' }}</div>
+      </div>
+      <div class="bg-white rounded-xl shadow p-4">
+        <div class="text-xs text-slate-500">引擎A 就绪 (Gemini)</div>
+        <div class="text-2xl font-bold mt-1 text-blue-600">{{ overview.engine_a_ready ?? '-' }}</div>
+      </div>
+      <div class="bg-white rounded-xl shadow p-4">
+        <div class="text-xs text-slate-500">引擎B 就绪 (AI Studio)</div>
+        <div class="text-2xl font-bold mt-1 text-violet-600">{{ overview.engine_b_ready ?? '-' }}</div>
+      </div>
+      <div class="bg-white rounded-xl shadow p-4">
+        <div class="text-xs text-slate-500">24h 请求</div>
+        <div class="text-2xl font-bold mt-1 text-amber-600">{{ overview.requests_24h ?? '-' }}</div>
+      </div>
+      <div class="col-span-2 md:col-span-5 bg-white rounded-xl shadow p-4">
+        <div class="text-sm font-semibold text-slate-700 mb-2">接入信息</div>
+        <div class="grid md:grid-cols-3 gap-2 text-sm text-slate-600">
+          <div class="bg-slate-50 rounded-lg p-3"><span class="text-slate-400">Base URL</span><br><code>{{ baseURL }}/v1</code></div>
+          <div class="bg-slate-50 rounded-lg p-3"><span class="text-slate-400">管理 API</span><br><code>{{ baseURL }}/admin/api/*</code></div>
+          <div class="bg-slate-50 rounded-lg p-3"><span class="text-slate-400">API Key</span><br>在「Key 管理」里创建</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 号池 -->
+    <section v-if="tab==='号池管理'">
+      <div class="flex flex-wrap gap-2 mb-4">
+        <button @click="addGeminiOpen=true"
+          class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition shadow">
+          + 添加 Gemini 号 (引擎A)
+        </button>
+        <button @click="addStudioOpen=true"
+          class="px-4 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 transition shadow">
+          + 添加 AI Studio 号 (引擎B)
+        </button>
+        <button @click="refresh" class="px-4 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50 transition">刷新</button>
+        <div class="flex-1"></div>
+        <input v-model="accountQuery" type="search" placeholder="搜索标签或邮箱" class="text-sm px-3 py-2 rounded-lg bg-white shadow border border-transparent focus:border-slate-300 outline-none">
+        <select v-model="accountEngineFilter" class="text-sm px-3 py-2 rounded-lg bg-white shadow">
+          <option value="">全部引擎</option><option value="a">Gemini</option><option value="b">AI Studio</option>
+        </select>
+        <select v-model="accountStatusFilter" class="text-sm px-3 py-2 rounded-lg bg-white shadow">
+          <option value="">全部状态</option><option value="ok">就绪</option><option value="initializing">初始化中</option><option value="error">异常</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>
+        </select>
+      </div>
+
+      <div class="bg-white rounded-xl shadow overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+            <tr>
+              <th class="px-4 py-3 text-left">ID</th>
+              <th class="px-4 py-3 text-left">引擎</th>
+              <th class="px-4 py-3 text-left">标签 / 邮箱</th>
+              <th class="px-4 py-3 text-left">状态</th>
+              <th class="px-4 py-3 text-left">模型数</th>
+              <th class="px-4 py-3 text-left">启用</th>
+              <th class="px-4 py-3 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="accounts.length===0">
+              <td colspan="7" class="px-4 py-8 text-center text-slate-400">暂无账号，点击上方按钮添加</td>
+            </tr>
+            <tr v-else-if="filteredAccounts.length===0">
+              <td colspan="7" class="px-4 py-8 text-center text-slate-400">没有符合筛选条件的账号</td>
+            </tr>
+            <tr v-for="acc in filteredAccounts" :key="acc.id" class="border-t border-slate-100 hover:bg-slate-50/50">
+              <td class="px-4 py-3 text-slate-400">#{{ acc.id }}</td>
+              <td class="px-4 py-3">
+                <span class="px-2 py-0.5 rounded text-xs"
+                  :class="acc.engine==='a' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'">
+                  {{ acc.engine==='a' ? 'Gemini' : 'AI Studio' }}
+                </span>
+              </td>
+              <td class="px-4 py-3 font-medium text-slate-700">{{ acc.label }}</td>
+              <td class="px-4 py-3">
+                <span class="px-2 py-0.5 rounded text-xs" :class="statusClass(acc.live.status)">
+                  {{ statusText(acc.live.status) }}
+                </span>
+                <div v-if="acc.live.detail" class="text-xs text-slate-400 mt-0.5">{{ acc.live.detail }}</div>
+              </td>
+              <td class="px-4 py-3 text-slate-600">{{ acc.live.models ?? '-' }}</td>
+              <td class="px-4 py-3">
+                <button @click.stop="toggleAccount(acc)"
+                  class="relative w-10 h-5 rounded-full transition"
+                  :class="acc.enabled ? 'bg-emerald-500' : 'bg-slate-300'">
+                  <span class="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all"
+                    :class="acc.enabled ? 'left-5' : 'left-0.5'"></span>
+                </button>
+              </td>
+              <td class="px-4 py-3 text-right space-x-1 whitespace-nowrap">
+                <button @click.stop="checkAccount(acc)" class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">检测</button>
+                <button v-if="acc.engine==='a'" @click.stop="openCreds(acc)"
+                  class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">换Cookie</button>
+                <button @click.stop="removeAccount(acc)"
+                  class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-xs text-slate-400 mt-3">
+        引擎A 添加后约几秒完成 Cookie 校验；引擎B 首次生成时启动 WAA Worker（约十几秒），状态与配额由上游协议实时回报。
+      </p>
+    </section>
+
+    <!-- Key 管理 -->
+    <section v-if="tab==='Key 管理'">
+      <div class="flex gap-2 mb-4">
+        <button @click="createKey" class="px-4 py-2 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition shadow">+ 创建 Key</button>
+        <button @click="refresh" class="px-4 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50 transition">刷新</button>
+      </div>
+      <div class="bg-white rounded-xl shadow overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+            <tr>
+              <th class="px-4 py-3 text-left">ID</th>
+              <th class="px-4 py-3 text-left">Key</th>
+              <th class="px-4 py-3 text-left">备注</th>
+              <th class="px-4 py-3 text-left">24h 请求</th>
+              <th class="px-4 py-3 text-left">启用</th>
+              <th class="px-4 py-3 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="keys.length===0">
+              <td colspan="6" class="px-4 py-8 text-center text-slate-400">暂无 Key，点击上方按钮创建（config.yaml 里的 api_keys 已自动导入）</td>
+            </tr>
+            <tr v-for="k in keys" :key="k.id" class="border-t border-slate-100 hover:bg-slate-50/50">
+              <td class="px-4 py-3 text-slate-400">#{{ k.id }}</td>
+              <td class="px-4 py-3 font-mono text-xs">
+                {{ k.key }}
+                <button @click.stop="copyKey(k.key)" class="ml-1 text-xs px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200">复制</button>
+              </td>
+              <td class="px-4 py-3 text-slate-600">{{ k.name || '-' }}</td>
+              <td class="px-4 py-3 text-slate-600">{{ k.requests_24h }}</td>
+              <td class="px-4 py-3">
+                <button @click.stop="toggleKey(k)"
+                  class="relative w-10 h-5 rounded-full transition"
+                  :class="k.enabled ? 'bg-emerald-500' : 'bg-slate-300'">
+                  <span class="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all"
+                    :class="k.enabled ? 'left-5' : 'left-0.5'"></span>
+                </button>
+              </td>
+              <td class="px-4 py-3 text-right">
+                <button @click.stop="removeKey(k)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 用量 -->
+    <section v-if="tab==='用量统计'">
+      <div class="flex gap-2 mb-4 items-center">
+        <select v-model="usageDays" @change="refresh" class="text-sm px-3 py-2 rounded-lg bg-white shadow">
+          <option :value="1">近 1 天</option>
+          <option :value="7">近 7 天</option>
+          <option :value="30">近 30 天</option>
+        </select>
+        <button @click="refresh" class="px-4 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50">刷新</button>
+      </div>
+      <div class="bg-white rounded-xl shadow overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+            <tr>
+              <th class="px-4 py-3 text-left">API Key</th>
+              <th class="px-4 py-3 text-left">引擎</th>
+              <th class="px-4 py-3 text-left">模型</th>
+              <th class="px-4 py-3 text-right">请求</th>
+              <th class="px-4 py-3 text-right">成功</th>
+              <th class="px-4 py-3 text-right">Prompt Tokens</th>
+              <th class="px-4 py-3 text-right">Completion Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="usage.length===0">
+              <td colspan="7" class="px-4 py-8 text-center text-slate-400">暂无用量记录</td>
+            </tr>
+            <tr v-for="(u,i) in usage" :key="i" class="border-t border-slate-100">
+              <td class="px-4 py-3 font-mono text-xs">{{ maskKey(u.api_key) }}</td>
+              <td class="px-4 py-3">
+                <span v-if="u.engine" class="px-2 py-0.5 rounded text-xs"
+                  :class="u.engine==='a' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'">
+                  {{ u.engine==='a' ? 'Gemini' : 'AI Studio' }}
+                </span>
+                <span v-else class="text-xs text-slate-400">-</span>
+              </td>
+              <td class="px-4 py-3 text-slate-600">{{ u.model || '-' }}</td>
+              <td class="px-4 py-3 text-right font-semibold">{{ u.requests }}</td>
+              <td class="px-4 py-3 text-right text-emerald-600">{{ u.success_requests }}</td>
+              <td class="px-4 py-3 text-right text-slate-500">{{ u.prompt_tokens }}</td>
+              <td class="px-4 py-3 text-right text-slate-500">{{ u.completion_tokens }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 接口文档 -->
+    <section v-if="tab==='接口文档'">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold text-slate-800">管理 API 接口文档</h2>
+          <p class="text-xs text-slate-500 mt-1">OpenAPI {{ apiSpec.openapi || '3.1.0' }} · 管理请求使用登录后签发的 JWT</p>
+        </div>
+        <div class="flex gap-2">
+          <button @click="downloadDocs" class="px-3 py-2 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-700">下载 OpenAPI JSON</button>
+          <button @click="refresh" class="px-3 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50">刷新</button>
+        </div>
+      </div>
+      <div v-if="docsLoading" class="bg-white rounded-xl shadow p-8 text-center text-slate-400">正在加载接口文档…</div>
+      <div v-else class="space-y-3">
+        <div v-for="item in docsRows" :key="item.method + item.path" class="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs font-bold px-2 py-1 rounded" :class="methodClass(item.method)">{{ item.method }}</span>
+            <code class="text-sm font-semibold text-slate-800">{{ item.path }}</code>
+            <span class="text-sm text-slate-500">{{ item.summary }}</span>
+            <button @click="copyText(item.path)" class="ml-auto text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">复制路径</button>
+          </div>
+          <div v-if="item.path.includes('accounts/gemini') || item.path.includes('accounts/aistudio') || item.path==='/admin/api/keys' && item.method==='POST'" class="mt-3 rounded-lg bg-slate-900 text-slate-100 p-3 text-xs overflow-x-auto">
+            <div class="text-slate-400 mb-1">请求示例</div>
+            <code>{{ requestExample(item.path) }}</code>
+          </div>
+        </div>
+      </div>
+      <div class="mt-4 text-xs text-slate-500 bg-amber-50 border border-amber-100 rounded-lg p-3">
+        鉴权：登录后使用 <code>Authorization: Bearer &lt;JWT&gt;</code>。JWT 有效期 8 小时，退出后立即失效。接口返回 JSON，错误时包含 <code>error</code> 字段。
+      </div>
+    </section>
+  </main>
+
+  <!-- 添加 Gemini 号 -->
+  <div v-if="addGeminiOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="addGeminiOpen=false">
+    <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+      <h3 class="font-bold text-lg mb-1">添加 Gemini 号（引擎A）</h3>
+      <p class="text-xs text-slate-400 mb-4">浏览器登录 gemini.google.com → F12 → Application → Cookies → 复制两个值</p>
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-slate-500">标签（备注名）</label>
+          <input v-model="geminiForm.label" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="主号">
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">__Secure-1PSID</label>
+          <input v-model="geminiForm.psid" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs" placeholder="粘贴 Cookie 值">
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">__Secure-1PSIDTS</label>
+          <input v-model="geminiForm.psidts" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs" placeholder="粘贴 Cookie 值">
+        </div>
+      </div>
+      <div v-if="formError" class="mt-3 text-sm text-red-600">{{ formError }}</div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="addGeminiOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
+        <button @click="submitGemini" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加 AI Studio 号 -->
+  <div v-if="addStudioOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="addStudioOpen=false">
+    <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6">
+      <h3 class="font-bold text-lg mb-1">添加 AI Studio 号（引擎B）</h3>
+      <p class="text-xs text-slate-400 mb-4">可复用 AIStudio2API 生成的 storage-state.json 内容（auth/&lt;邮箱&gt;/ 目录）</p>
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-slate-500">Google 邮箱（账号 ID）</label>
+          <input v-model="studioForm.email" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="you@gmail.com">
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">storage-state.json 内容</label>
+          <textarea v-model="studioForm.storage_state" rows="6"
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-xs font-mono"
+            placeholder='{"cookies":[{"name":"...","value":"...","domain":".google.com","path":"/",...}],"origins":[]}'></textarea>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-slate-500">Locale（可选）</label>
+            <input v-model="studioForm.locale" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="en-US">
+          </div>
+          <div>
+            <label class="text-xs text-slate-500">Timezone（可选）</label>
+            <input v-model="studioForm.timezone" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="America/New_York">
+          </div>
+        </div>
+      </div>
+      <div v-if="formError" class="mt-3 text-sm text-red-600">{{ formError }}</div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="addStudioOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
+        <button @click="submitStudio" class="px-4 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 换 Cookie -->
+  <div v-if="credsOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="credsOpen=false">
+    <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+      <h3 class="font-bold text-lg mb-4">更新 Cookie：{{ credsTarget?.label }}</h3>
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-slate-500">__Secure-1PSID</label>
+          <input v-model="credsForm.psid" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs">
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">__Secure-1PSIDTS</label>
+          <input v-model="credsForm.psidts" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs">
+        </div>
+      </div>
+      <div v-if="formError" class="mt-3 text-sm text-red-600">{{ formError }}</div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="credsOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
+        <button @click="submitCreds" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm text-white"
+    :class="toast.ok ? 'bg-emerald-600' : 'bg-red-600'">{{ toast.msg }}</div>
+</div>
+
+<script>
+if (!window.Vue) document.getElementById('startup-error').style.display = 'block';
+const { createApp, ref, reactive, computed, onMounted } = Vue;
+createApp({
+  setup() {
+    const tabs = ['总览', '号池管理', 'Key 管理', '用量统计', '接口文档'];
+    const tab = ref('总览');
+    localStorage.removeItem('admin_token');
+    const token = ref(sessionStorage.getItem('admin_jwt') || '');
+    const user = ref({});
+    const initialized = ref(false);
+    const authReady = ref(false);
+    const authBusy = ref(false);
+    const authError = ref('');
+    const authForm = reactive({ email: '', password: '', nickname: '', redis_url: '' });
+    const connected = ref(false);
+    const toast = ref(null);
+
+    const overview = ref({});
+    const accounts = ref([]);
+    const accountQuery = ref('');
+    const accountEngineFilter = ref('');
+    const accountStatusFilter = ref('');
+    const filteredAccounts = computed(() => {
+      const query = accountQuery.value.trim().toLowerCase();
+      return accounts.value.filter((acc) => {
+        const searchable = `${acc.label || ''} ${acc.engine || ''}`.toLowerCase();
+        return (!query || searchable.includes(query)) &&
+          (!accountEngineFilter.value || acc.engine === accountEngineFilter.value) &&
+          (!accountStatusFilter.value || acc.live?.status === accountStatusFilter.value);
+      });
+    });
+    const keys = ref([]);
+    const usage = ref([]);
+    const usageDays = ref(7);
+    const apiSpec = ref({});
+    const docsLoading = ref(false);
+    const docsRows = computed(() => {
+      const paths = apiSpec.value.paths || {};
+      return Object.entries(paths).flatMap(([path, item]) => Object.entries(item)
+        .filter(([method]) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
+        .map(([method, operation]) => ({ path, method: method.toUpperCase(), summary: operation.summary || '' })));
+    });
+
+    const addGeminiOpen = ref(false);
+    const addStudioOpen = ref(false);
+    const credsOpen = ref(false);
+    const formError = ref('');
+    const geminiForm = reactive({ label: '', psid: '', psidts: '' });
+    const studioForm = reactive({ email: '', storage_state: '', locale: '', timezone: '' });
+    const credsForm = reactive({ psid: '', psidts: '' });
+    const credsTarget = ref(null);
+
+    const baseURL = location.origin;
+
+    const api = async (path, opts = {}) => {
+      const res = await fetch(path, {
+        ...opts,
+        headers: { 'Authorization': 'Bearer ' + token.value, 'Content-Type': 'application/json', ...(opts.headers||{}) },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401 && token.value) clearSession();
+        const error = new Error(data.error || ('HTTP ' + res.status));
+        error.status = res.status;
+        throw error;
+      }
+      return data;
+    };
+
+    const notify = (msg, ok=true) => {
+      toast.value = { msg, ok };
+      setTimeout(() => toast.value = null, 2600);
+    };
+
+    const refresh = async () => {
+      if (!token.value) return;
+      try {
+        const o = await api('/admin/api/overview');
+        overview.value = o;
+        if (tab.value === '号池管理') {
+          accounts.value = (await api('/admin/api/accounts')).accounts || [];
+        } else if (tab.value === 'Key 管理') {
+          keys.value = (await api('/admin/api/keys')).keys || [];
+        } else if (tab.value === '用量统计') {
+          usage.value = (await api('/admin/api/usage?days=' + usageDays.value)).usage || [];
+        } else if (tab.value === '接口文档') {
+          docsLoading.value = true;
+          apiSpec.value = await api('/admin/api/docs');
+        }
+        connected.value = true;
+      } catch (e) {
+        connected.value = false;
+        if (e.status === 401) authError.value = '登录已失效，请重新登录';
+        else notify('加载失败：' + e.message, false);
+      } finally {
+        docsLoading.value = false;
+      }
+    };
+
+    const clearSession = () => {
+      token.value = ''; user.value = {}; connected.value = false;
+      sessionStorage.removeItem('admin_jwt');
+      overview.value = {}; accounts.value = []; keys.value = []; usage.value = []; apiSpec.value = {};
+      addGeminiOpen.value = false; addStudioOpen.value = false; credsOpen.value = false;
+    };
+
+    const bootstrap = async () => {
+      authError.value = ''; authReady.value = false;
+      try {
+        initialized.value = (await api('/admin/api/setup')).initialized;
+        if (!initialized.value) clearSession();
+        if (token.value) {
+          try { user.value = (await api('/admin/api/auth/me')).user; }
+          catch (e) { if (e.status !== 401) throw e; }
+        }
+        authReady.value = true;
+        await refresh();
+      } catch (e) { authError.value = e.message; }
+    };
+
+    const submitAuth = async () => {
+      if (authBusy.value) return;
+      authBusy.value = true; authError.value = '';
+      try {
+        if (!initialized.value) {
+          await api('/admin/api/setup', { method: 'POST', body: JSON.stringify(authForm) });
+          initialized.value = true; authForm.password = ''; authForm.redis_url = '';
+          notify('初始化完成，请登录');
+        } else {
+          const data = await api('/admin/api/auth/login', { method: 'POST', body: JSON.stringify({ email: authForm.email, password: authForm.password }) });
+          token.value = data.access_token; user.value = data.user;
+          sessionStorage.setItem('admin_jwt', token.value); authForm.password = '';
+          await refresh();
+        }
+      } catch (e) {
+        authError.value = e.message;
+        if (e.status === 409) await bootstrap();
+      } finally { authBusy.value = false; }
+    };
+
+    const logout = async () => {
+      try {
+        await api('/admin/api/auth/logout', { method: 'POST' });
+        clearSession(); authError.value = ''; notify('已退出登录');
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const submitGemini = async () => {
+      formError.value = '';
+      try {
+        await api('/admin/api/accounts/gemini', { method: 'POST', body: JSON.stringify(geminiForm) });
+        addGeminiOpen.value = false;
+        geminiForm.label = ''; geminiForm.psid = ''; geminiForm.psidts = '';
+        notify('已添加，Cookie 校验进行中');
+        setTimeout(refresh, 1500);
+      } catch (e) { formError.value = e.message; }
+    };
+
+    const submitStudio = async () => {
+      formError.value = '';
+      try {
+        await api('/admin/api/accounts/aistudio', { method: 'POST', body: JSON.stringify(studioForm) });
+        addStudioOpen.value = false;
+        Object.assign(studioForm, { email: '', storage_state: '', locale: '', timezone: '' });
+        notify('AI Studio 号已添加');
+        setTimeout(refresh, 1500);
+      } catch (e) { formError.value = e.message; }
+    };
+
+    const toggleAccount = async (acc) => {
+      try {
+        await api('/admin/api/accounts/' + acc.id, { method: 'PATCH', body: JSON.stringify({ enabled: !acc.enabled }) });
+        acc.enabled = !acc.enabled;
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const checkAccount = async (acc) => {
+      try {
+        await api(`/admin/api/accounts/${acc.id}/check`, { method: 'POST' });
+        notify('检测已触发');
+        setTimeout(refresh, 2500);
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const openCreds = (acc) => {
+      credsTarget.value = acc;
+      credsForm.psid = ''; credsForm.psidts = '';
+      formError.value = '';
+      credsOpen.value = true;
+    };
+
+    const submitCreds = async () => {
+      formError.value = '';
+      try {
+        await api(`/admin/api/accounts/${credsTarget.value.id}/credentials`, { method: 'PUT', body: JSON.stringify(credsForm) });
+        credsOpen.value = false;
+        notify('Cookie 已更新，重新校验中');
+        setTimeout(refresh, 2500);
+      } catch (e) { formError.value = e.message; }
+    };
+
+    const removeAccount = async (acc) => {
+      if (!confirm(`确定删除账号「${acc.label}」？凭据将一并清除。`)) return;
+      try {
+        await api('/admin/api/accounts/' + acc.id, { method: 'DELETE' });
+        notify('已删除');
+        refresh();
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const createKey = async () => {
+      const name = prompt('Key 备注（可留空）', '');
+      if (name === null) return;
+      try {
+        const d = await api('/admin/api/keys', { method: 'POST', body: JSON.stringify({ name }) });
+        notify('已创建：' + d.key.key);
+        refresh();
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const toggleKey = async (k) => {
+      try {
+        await api('/admin/api/keys/' + k.id, { method: 'PATCH', body: JSON.stringify({ enabled: !k.enabled }) });
+        k.enabled = !k.enabled;
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const removeKey = async (k) => {
+      if (!confirm(`确定删除这个 Key？使用它的客户端将立即失效。`)) return;
+      try {
+        await api('/admin/api/keys/' + k.id, { method: 'DELETE' });
+        notify('已删除');
+        refresh();
+      } catch (e) { notify(e.message, false); }
+    };
+
+    const copyKey = (key) => {
+      copyText(key);
+    };
+
+    const copyText = (value) => {
+      if (navigator.clipboard) navigator.clipboard.writeText(value).then(() => notify('已复制'));
+      else notify('当前浏览器不支持复制，请手动选择', false);
+    };
+
+    const downloadDocs = () => {
+      const blob = new Blob([JSON.stringify(apiSpec.value, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = 'web2api-admin-openapi.json'; link.click();
+      URL.revokeObjectURL(url);
+    };
+
+    const methodClass = (method) => ({
+      GET: 'bg-emerald-100 text-emerald-700', POST: 'bg-blue-100 text-blue-700',
+      PUT: 'bg-amber-100 text-amber-700', PATCH: 'bg-violet-100 text-violet-700',
+      DELETE: 'bg-red-100 text-red-700',
+    }[method] || 'bg-slate-100 text-slate-600');
+
+    const requestExample = (path) => {
+      if (path.endsWith('/gemini')) return '{"label":"主号","psid":"...","psidts":"..."}';
+      if (path.endsWith('/aistudio')) return '{"email":"you@gmail.com","storage_state":"{...}"}';
+      return '{"name":"客户端"}';
+    };
+
+    const statusClass = (s) => ({
+      ok: 'bg-emerald-100 text-emerald-700',
+      initializing: 'bg-amber-100 text-amber-700',
+      busy: 'bg-sky-100 text-sky-700',
+      error: 'bg-red-100 text-red-700',
+      disabled: 'bg-slate-200 text-slate-500',
+      cooldown: 'bg-orange-100 text-orange-700',
+      unloaded: 'bg-slate-100 text-slate-400',
+    }[s] || 'bg-slate-100 text-slate-500');
+
+    const statusText = (s) => ({
+      ok: '就绪', initializing: '初始化中', busy: '使用中', error: '异常', disabled: '已停用',
+      cooldown: '冷却中', unloaded: '未加载',
+    }[s] || s || '-');
+
+    const maskKey = (k) => k && k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-4) : (k || '-');
+
+    onMounted(() => {
+      bootstrap();
+      setInterval(() => { if (tab.value === '号池管理' || tab.value === '总览') refresh(); }, 10000);
+    });
+
+    return {
+      tabs, tab, token, user, initialized, authReady, authBusy, authError, authForm, bootstrap, submitAuth, logout, connected, toast, baseURL,
+      overview, accounts, keys, usage, usageDays,
+      accountQuery, accountEngineFilter, accountStatusFilter, filteredAccounts,
+      apiSpec, docsLoading, docsRows,
+      addGeminiOpen, addStudioOpen, credsOpen, formError,
+      geminiForm, studioForm, credsForm, credsTarget,
+      refresh, submitGemini, submitStudio,
+      toggleAccount, checkAccount, openCreds, submitCreds, removeAccount,
+      createKey, toggleKey, removeKey, copyKey, copyText, downloadDocs, methodClass, requestExample,
+      statusClass, statusText, maskKey,
+    };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>

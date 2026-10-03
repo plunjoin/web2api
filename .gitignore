@@ -1,0 +1,36 @@
+# 可执行文件
+web2api.exe
+*.exe
+
+# 配置（含敏感 Cookie）
+config.yaml
+cookies/
+auth/
+data/
+
+# 编译与测试产物
+dist/
+build/
+*.test
+*.out
+.gocache*/
+.npm-cache/
+node_modules/
+.temp/
+
+# 本地构建/下载产物
+*.tar.gz
+web2api-linux-*
+
+# 管理台静态资源必须随 Go 源码一起交付
+!internal/webui/dist/
+!internal/webui/dist/**
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+Thumbs.db
+.DS_Store
