@@ -4,15 +4,12 @@
 
 ```bash
 # 请在仓库根目录执行以下命令。
-# 1. 准备配置文件（容器内路径已配好，只需拷贝并按需修改）
-cp docker/config.yaml ./config.yaml
-
-# 2. （可选）自定义端口/Key/代理
+# 1. （可选）自定义端口/Key/代理
 cp .env.example .env
 #   编辑 .env 修改 WEB2API_PORT、WEB2API_API_KEYS、WEB2API_PROXY
 
-# 3. 构建并启动
-docker compose up -d --build
+# 2. 拉取并启动官方镜像
+docker compose up -d
 
 # 4. 查看日志
 docker compose logs -f web2api
@@ -26,12 +23,14 @@ docker compose logs -f web2api
 首次部署包含升级功能的版本时，在仓库根目录启用升级配置：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d
 ```
+
+基础部署只需要 Compose 文件和环境变量，不需要导入 `config.yaml`。高级用户仍可通过 `-config` 指定自定义 YAML；默认配置会自动启用两个引擎，并使用 `/app/data`、`/app/auth` 和 `/app/cookies` 持久化目录。
 
 之后登录管理台，打开「系统升级」→「检查更新」→「一键升级」。检查时下载最新镜像，服务继续运行；升级时短暂停机，面板自动重连。新容器通过健康检查后删除旧容器；启动或健康检查失败时恢复旧容器。
 
-新容器保留原端口映射、环境变量、配置文件、网络和数据卷。升级任务由独立临时容器执行，记录写入数据卷中的 `upgrade-state.json`。不会删除持久化卷；回滚恢复旧容器，不回退已经写入数据库的数据或版本迁移。
+新容器保留原端口映射、环境变量、网络和数据卷。升级任务由独立临时容器执行，记录写入数据卷中的 `upgrade-state.json`。不会删除持久化卷；回滚恢复旧容器，不回退已经写入数据库的数据或版本迁移。
 
 升级配置会挂载 `/var/run/docker.sock`，让应用具有宿主机 Docker 管理权限，因此默认关闭，应仅向可信管理员开放管理台。支持 Linux Docker 引擎（包括 Docker Desktop 的 Linux 容器），要求持久化的可写数据卷和 Docker healthcheck。不支持 `--rm`、共享其他容器网络或 `volumes_from` 部署。
 
@@ -52,9 +51,9 @@ POST /admin/api/upgrade        启动独立升级任务
 | 文件 | 用途 |
 |------|------|
 | `Dockerfile` | 多阶段构建：golang:1.27-alpine 编译 → alpine:3.20 运行 |
-| `docker-compose.yml` | 编排：端口、环境变量、持久化卷 |
+| `docker-compose.yml` | 编排：镜像、端口、环境变量、持久化卷 |
 | `.env.example`（仓库根目录） | 环境变量样例（端口、Key、代理） |
-| `docker/config.yaml` | 容器内配置模板（路径已指向 /app/*） |
+| `docker/config.yaml` | 高级用户自定义配置模板（可选） |
 | `.dockerignore` | 排除本地数据/产物，保持镜像精简 |
 
 ## 持久化卷
@@ -84,8 +83,9 @@ POST /admin/api/upgrade        启动独立升级任务
 # 停止
 docker compose down
 
-# 重新构建（代码更新后）
-docker compose up -d --build
+# 更新官方镜像
+docker compose pull
+docker compose up -d
 
 # 查看实时日志
 docker compose logs -f

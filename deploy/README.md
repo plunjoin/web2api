@@ -95,12 +95,11 @@ cp config.example.yaml config.yaml
 Docker 适用于上述所有能运行 Docker 的系统。仓库根目录已经提供 Dockerfile 和 docker-compose.yml：
 
 ~~~bash
-cp docker/config.yaml ./config.yaml
-docker compose up -d --build
+docker compose up -d
 docker compose logs -f web2api
 ~~~
 
-容器使用 web2api-data、web2api-auth、web2api-cookies 三个卷保存数据。需要跨 CPU 构建镜像时可使用 Docker Buildx：
+基础 Docker 部署只需要 Compose 文件和环境变量，不需要导入 `config.yaml`。容器使用 web2api-data、web2api-auth、web2api-cookies 三个卷保存数据。需要跨 CPU 构建镜像时可使用 Docker Buildx：
 
 ~~~bash
 docker buildx build --platform linux/amd64,linux/arm64 \

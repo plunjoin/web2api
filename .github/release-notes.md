@@ -1,3 +1,10 @@
+v0.2.2 修复 Docker Compose 部署时的配置目录错误，并简化安装流程。
+
+- Compose 直接使用官方镜像，基础部署不再需要导入 `config.yaml`。
+- 配置文件改为可选；文件不存在或被 Docker 错误挂载成目录时，自动使用安全默认配置。
+- 环境变量继续覆盖端口、API Key、代理和数据库路径。
+- 修复 1Panel 等面板中 `config.yaml: is a directory` 导致容器无法启动的问题。
+
 新增管理面板一键升级功能，可直接检查并更新 Docker 镜像。
 
 - 新增“系统升级”页面，支持检查更新、下载最新镜像、一键升级及进度显示。
@@ -9,6 +16,6 @@
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
 
-首次启用面板升级，需要先部署此版本，并按 [Docker 部署说明](https://github.com/plunjoin/web2api/blob/v0.2.1/docker/README.md) 启用升级服务。
+首次启用面板升级，需要先部署此版本，并按 [Docker 部署说明](https://github.com/plunjoin/web2api/blob/v0.2.2/docker/README.md) 启用升级服务。
 
 验证：`go test ./...`、跨平台编译、Compose 配置校验；Docker Desktop 实测正常升级及异常镜像自动回滚，验证登录会话、数据和部署配置保留。

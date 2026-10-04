@@ -52,12 +52,7 @@ func main() {
 	// 1. 加载配置
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			logger.Printf("未找到配置文件 %s，使用默认配置", *cfgPath)
-			cfg = defaultConfig()
-		} else {
-			logger.Fatalf("加载配置失败: %v", err)
-		}
+		logger.Fatalf("加载配置失败: %v", err)
 	}
 
 	// 2. 打开号池存储
@@ -106,22 +101,5 @@ func main() {
 
 	if err := srv.Start(cfg.Server.Listen); err != nil {
 		logger.Fatalf("网关启动失败: %v", err)
-	}
-}
-
-// defaultConfig 无配置文件时的兜底。
-func defaultConfig() *config.Config {
-	return &config.Config{
-		Server: config.ServerConfig{
-			Listen:  "0.0.0.0:8800",
-			APIKeys: []string{"sk-web2api"},
-			DBPath:  "data/web2api.db",
-		},
-		Routing: config.RoutingConfig{DefaultEngine: "auto"},
-		EngineB: config.EngineBConfig{
-			Enabled:    true,
-			Mode:       "native",
-			AuthStates: "auth",
-		},
 	}
 }

@@ -73,17 +73,61 @@ type EngineBConfig struct {
 	Passthrough bool   `yaml:"passthrough"` // 是否透传多模态端点
 }
 
-// Load 从文件加载配置，支持环境变量覆盖关键项。
+// Default 返回无需配置文件即可运行的默认配置。
+func Default() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Listen:   "0.0.0.0:8800",
+			APIKeys:  []string{"sk-web2api"},
+			DBPath:   "data/web2api.db",
+			LogLevel: "info",
+		},
+		Routing: RoutingConfig{DefaultEngine: "auto"},
+		EngineA: EngineAConfig{
+			Enabled:        true,
+			CookiePath:     "cookies",
+			RefreshSeconds: 600,
+			TimeoutSeconds: 300,
+		},
+		EngineB: EngineBConfig{
+			Enabled:               true,
+			Mode:                  "native",
+			AuthStates:            "auth",
+			RoutingStrategy:       "round-robin",
+			UpstreamChannels:      "playground,build",
+			PerAccountConcurrency: 2,
+			InitTimeoutSeconds:    120,
+			RequestTimeoutSeconds: 300,
+			RefreshSeconds:        300,
+		},
+	}
+}
+
+// Load 从文件加载配置，支持环境变量覆盖关键项。配置文件是可选的；
+// 文件不存在或被 Docker 错误地挂载成目录时，直接使用默认配置。
 func Load(path string) (*Config, error) {
-	cfg := &Config{}
+	cfg := Default()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			applyEnv(cfg)
+			return cfg, nil
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			applyEnv(cfg)
+			return cfg, nil
+		}
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
 
+	applyEnv(cfg)
+	return cfg, nil
+}
+
+func applyEnv(cfg *Config) {
 	// 环境变量覆盖
 	if v := os.Getenv("WEB2API_LISTEN"); v != "" {
 		cfg.Server.Listen = v
@@ -126,7 +170,6 @@ func Load(path string) (*Config, error) {
 	if cfg.EngineB.BaseURL == "" {
 		cfg.EngineB.BaseURL = "http://127.0.0.1:2048"
 	}
-	return cfg, nil
 }
 
 func splitCSV(s string) []string {

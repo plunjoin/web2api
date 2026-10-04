@@ -6,11 +6,7 @@
 
 services:
   web2api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # 也可直接用预构建镜像（取消注释改 image）
-    # image: web2api:latest
+    image: ghcr.io/plunjoin/web2api:latest
     container_name: web2api
     restart: unless-stopped
 
@@ -18,7 +14,7 @@ services:
       - "${WEB2API_PORT:-8800}:8800"
 
     environment:
-      # 环境变量覆盖 config.yaml（见 .env.example）
+      # 所有基础配置均可通过环境变量设置，无需导入配置文件
       - WEB2API_LISTEN=0.0.0.0:8800
       - WEB2API_API_KEYS=${WEB2API_API_KEYS:-sk-web2api}
       - WEB2API_DB_PATH=/app/data/web2api.db
@@ -28,9 +24,6 @@ services:
       - TZ=Asia/Shanghai
 
     volumes:
-      # 配置文件：优先用宿主机 ./config.yaml；不存在时用 docker/config.yaml 模板
-      # 首次部署：cp docker/config.yaml ./config.yaml 后按需修改
-      - ./config.yaml:/app/data/config.yaml:ro
       # 持久化数据：SQLite 库
       - web2api-data:/app/data
       # 引擎B 账号凭据目录（AIStudio2API 兼容的 auth/ 目录）
