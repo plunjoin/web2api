@@ -1,5 +1,15 @@
 # web2api — Gemini 双引擎号池管理网关（Go）
 
+> 📚 **在线文档**：[项目介绍与 v1 API 文档](https://plunjoin.github.io/web2api/)
+
+文档站点使用 [VitePress](https://vitepress.dev/) 构建，推送 `main` 分支后由 GitHub Pages 自动部署。想在本地预览：
+
+```bash
+cd docs
+npm ci
+npm run dev
+```
+
 把 Google 两个免费入口做成一个**号池管理平台**（架构参考 sub2api：账号池 →
 Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API：
 
