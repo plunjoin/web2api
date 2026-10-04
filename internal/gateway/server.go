@@ -23,6 +23,7 @@ import (
 	"web2api/internal/model"
 	"web2api/internal/provider"
 	"web2api/internal/store"
+	"web2api/internal/upgrade"
 	"web2api/internal/webui"
 )
 
@@ -35,6 +36,7 @@ type Server struct {
 	httpSrv *http.Server
 	startAt time.Time
 	logger  *log.Logger
+	updater *upgrade.Manager
 }
 
 // NewServer 创建网关服务。
@@ -57,6 +59,9 @@ func NewServer(mgr *provider.Manager, st *store.Store, seedKeys []string, rate, 
 		startAt: time.Now(),
 	}, nil
 }
+
+// SetUpdater attaches deployment upgrade support before starting the server.
+func (s *Server) SetUpdater(updater *upgrade.Manager) { s.updater = updater }
 
 // Handler 返回 http.Handler。
 func (s *Server) Handler() http.Handler {
@@ -83,7 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/accounts", s.withAuth(s.handleAccounts))
 
 	// 管理台与 REST
-	adminAPI := admin.New(s.mgr, s.st, s.logger)
+	adminAPI := admin.New(s.mgr, s.st, s.logger, s.updater)
 	adminAPI.Mount(mux)
 	mux.Handle("GET /admin/assets/", webui.Assets())
 	mux.HandleFunc("GET /admin", webui.ServeIndex)

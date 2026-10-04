@@ -50,9 +50,9 @@ COPY config.example.yaml /app/config.example.yaml
 # 暴露网关端口
 EXPOSE 8800
 
-# 健康检查（/v1/models 无需鉴权）
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q --spider http://localhost:8800/v1/models || exit 1
+# 健康检查（/health 无需鉴权）
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+  CMD wget -q --spider http://localhost:8800/health || exit 1
 
 # 入口：默认读 /app/data/config.yaml（由 volume 挂载）
 ENTRYPOINT ["/app/web2api"]

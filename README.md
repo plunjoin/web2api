@@ -155,6 +155,10 @@ sh /tmp/web2api-export.sh
 Enter，账号会自动提交到 `/admin/api/accounts`。脚本只在本机临时目录安装 Playwright，
 结束后删除临时目录；不会把 JWT 放进 URL。Windows 请在 WSL 或 Git Bash 中运行。
 
+### 管理台一键升级镜像
+
+Docker 部署可启用 `docker-compose.upgrade.yml`，之后在管理台「系统升级」检查并下载最新镜像，一键替换容器。重启期间面板自动重连，启动失败时恢复旧容器，保留现有配置和数据卷。首次启用步骤及私有仓库配置见 [Docker 部署文档](docker/README.md#面板一键升级)。
+
 ## 账号从哪来
 
 **统一账号协议**：所有新账号都提交引擎B协议的 `storage-state.json` 到

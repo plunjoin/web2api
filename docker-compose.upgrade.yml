@@ -1,0 +1,13 @@
+# First-time opt-in for upgrading through the administrator panel.
+# docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d --build
+services:
+  web2api:
+    image: ${WEB2API_UPGRADE_IMAGE:-ghcr.io/plunjoin/web2api:latest}
+    environment:
+      - WEB2API_UPGRADE_ENABLED=true
+      - WEB2API_UPGRADE_CONTAINER=web2api
+      - WEB2API_UPGRADE_IMAGE=${WEB2API_UPGRADE_IMAGE:-ghcr.io/plunjoin/web2api:latest}
+      - WEB2API_UPGRADE_REGISTRY_USER=${WEB2API_UPGRADE_REGISTRY_USER:-}
+      - WEB2API_UPGRADE_REGISTRY_PASSWORD=${WEB2API_UPGRADE_REGISTRY_PASSWORD:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

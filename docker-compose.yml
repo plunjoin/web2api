@@ -39,10 +39,10 @@ services:
       - web2api-cookies:/app/cookies
 
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8800/v1/models"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8800/health"]
       interval: 30s
       timeout: 5s
-      start_period: 10s
+      start_period: 120s
       retries: 3
 
 volumes:

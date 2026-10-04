@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,14 +20,29 @@ import (
 	"web2api/internal/gateway"
 	"web2api/internal/provider"
 	"web2api/internal/store"
+	"web2api/internal/upgrade"
 )
 
 func main() {
 	var (
-		cfgPath = flag.String("config", "config.yaml", "配置文件路径")
-		verbose = flag.Bool("v", false, "详细日志")
+		cfgPath          = flag.String("config", "config.yaml", "配置文件路径")
+		verbose          = flag.Bool("v", false, "详细日志")
+		upgradeContainer = flag.String("upgrade-container", "", "内部升级任务：待替换容器 ID")
+		upgradeImage     = flag.String("upgrade-image", "", "内部升级任务：目标镜像 ID")
+		upgradeJob       = flag.String("upgrade-job", "", "内部升级任务 ID")
+		upgradeState     = flag.String("upgrade-state", "", "内部升级任务状态文件")
+		upgradeSocket    = flag.String("upgrade-socket", "/var/run/docker.sock", "内部升级任务 Docker socket")
 	)
 	flag.Parse()
+	if *upgradeContainer != "" {
+		if *upgradeImage == "" || *upgradeJob == "" || *upgradeState == "" {
+			log.Fatal("升级任务参数不完整")
+		}
+		if err := upgrade.RunHelper(*upgradeSocket, *upgradeContainer, *upgradeImage, *upgradeJob, *upgradeState); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	logger := log.New(os.Stdout, "[web2api] ", log.LstdFlags|log.Lmsgprefix)
 	if !*verbose {
@@ -67,6 +83,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("创建网关失败: %v", err)
 	}
+	srv.SetUpdater(upgrade.NewFromEnv(filepath.Dir(cfg.Server.DBPath)))
 	settings, err := st.AdminSettings()
 	if err != nil {
 		logger.Fatalf("读取初始化状态失败: %v", err)

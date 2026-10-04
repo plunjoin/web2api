@@ -43,6 +43,11 @@ func TestSetupLoginSessionLifecycle(t *testing.T) {
 	if code, _ := do("GET", "/admin/api/auth/me", nil, "old-static-token"); code != 401 {
 		t.Fatal(code)
 	}
+	for _, endpoint := range []struct{ method, path string }{{"GET", "/admin/api/upgrade"}, {"POST", "/admin/api/upgrade/check"}, {"POST", "/admin/api/upgrade"}} {
+		if code, _ := do(endpoint.method, endpoint.path, nil, ""); code != 401 {
+			t.Fatalf("upgrade endpoint must require admin login: %s %d", endpoint.path, code)
+		}
+	}
 	r := testredis.Start(t)
 	setup := map[string]string{"email": "ADMIN@example.com", "password": "a-password-123", "nickname": "自定义昵称", "redis_url": r.URL()}
 	bad := map[string]string{"email": "admin@example.com", "password": "short", "nickname": "Admin", "redis_url": r.URL()}
@@ -89,6 +94,12 @@ func TestSetupLoginSessionLifecycle(t *testing.T) {
 		t.Fatalf("login %d %v", code, out)
 	}
 	token := out["access_token"].(string)
+	if code, out := do("GET", "/admin/api/upgrade", nil, token); code != 200 || out["enabled"] != false {
+		t.Fatalf("disabled upgrade status: %d %v", code, out)
+	}
+	if code, _ := do("POST", "/admin/api/upgrade", nil, token); code != 503 {
+		t.Fatalf("disabled upgrade must not start: %d", code)
+	}
 	serialized, _ := json.Marshal(out)
 	if strings.Contains(string(serialized), "password_hash") || strings.Contains(string(serialized), "redis_url") || strings.Contains(string(serialized), "jwt_secret") {
 		t.Fatal("login leaks secrets")

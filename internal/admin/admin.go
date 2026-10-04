@@ -15,21 +15,27 @@ import (
 
 	"web2api/internal/provider"
 	"web2api/internal/store"
+	"web2api/internal/upgrade"
 )
 
 // API 管理接口。
 type API struct {
-	mgr    *provider.Manager
-	st     *store.Store
-	logger *log.Logger
+	mgr     *provider.Manager
+	st      *store.Store
+	logger  *log.Logger
+	updater *upgrade.Manager
 }
 
 // New 创建管理 API。
-func New(mgr *provider.Manager, st *store.Store, logger *log.Logger) *API {
+func New(mgr *provider.Manager, st *store.Store, logger *log.Logger, updaters ...*upgrade.Manager) *API {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &API{mgr: mgr, st: st, logger: logger}
+	updater := upgrade.Disabled()
+	if len(updaters) > 0 && updaters[0] != nil {
+		updater = updaters[0]
+	}
+	return &API{mgr: mgr, st: st, logger: logger, updater: updater}
 }
 
 // Mount 注册到 mux。
@@ -55,6 +61,9 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/api/keys/{id}", a.auth(a.handleDeleteKey))
 	mux.HandleFunc("GET /admin/api/usage", a.auth(a.handleUsage))
 	mux.HandleFunc("GET /admin/api/status", a.auth(a.handleStatus))
+	mux.HandleFunc("GET /admin/api/upgrade", a.auth(a.handleUpgradeStatus))
+	mux.HandleFunc("POST /admin/api/upgrade/check", a.auth(a.handleUpgradeCheck))
+	mux.HandleFunc("POST /admin/api/upgrade", a.auth(a.handleUpgradeStart))
 }
 
 // handleDocs 返回管理 API 的 OpenAPI 3.1 文档。
@@ -99,6 +108,11 @@ func openAPISpec() map[string]any {
 			"/admin/api/overview":    map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取总览统计", "responses": map[string]any{"200": response("总览统计"), "401": response("JWT 无效或已过期")}}},
 			"/admin/api/docs":        map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取 OpenAPI 文档", "responses": map[string]any{"200": response("OpenAPI 3.1 文档")}}},
 			"/admin/api/status":      map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取引擎详细状态", "responses": map[string]any{"200": response("引擎状态")}}},
+			"/admin/api/upgrade": map[string]any{
+				"get":  map[string]any{"tags": []string{"概览"}, "summary": "获取镜像升级状态", "responses": map[string]any{"200": response("当前镜像、目标镜像和升级任务状态")}},
+				"post": map[string]any{"tags": []string{"概览"}, "summary": "升级到已经检查的最新镜像", "description": "仅支持已启用升级配置的 Docker 部署；重启期间短暂断连，失败自动恢复旧容器。", "responses": map[string]any{"202": response("升级任务已启动"), "409": response("任务正在运行或没有可用更新"), "503": response("部署不支持升级或 Docker 不可用")}},
+			},
+			"/admin/api/upgrade/check": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "检查并拉取最新镜像", "responses": map[string]any{"202": response("镜像检查已启动"), "409": response("已有任务运行"), "503": response("部署不支持升级")}}},
 			"/admin/api/accounts": map[string]any{
 				"get":  map[string]any{"tags": []string{"账号"}, "summary": "列出账号", "responses": map[string]any{"200": response("账号列表")}},
 				"post": map[string]any{"tags": []string{"账号"}, "summary": "按引擎2协议添加账号", "description": "所有账号统一提交 storage_state；engine=a 时从其中提取 Gemini Cookie。", "requestBody": body("AccountInput"), "responses": map[string]any{"200": response("账号已创建"), "400": response("参数错误")}},

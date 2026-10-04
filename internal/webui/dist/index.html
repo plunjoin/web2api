@@ -270,6 +270,36 @@
       </div>
     </section>
 
+    <!-- 系统升级 -->
+    <section v-if="tab==='系统升级'" class="space-y-4">
+      <div>
+        <h2 class="text-lg font-semibold text-slate-800">系统升级</h2>
+        <p class="text-sm text-slate-500 mt-1">从镜像仓库获取最新版本，直接在面板完成升级。检查更新时会预先下载镜像。</p>
+      </div>
+      <div class="bg-white rounded-xl shadow p-5 space-y-4">
+        <div class="grid md:grid-cols-2 gap-4 text-sm">
+          <div><div class="text-slate-500 mb-1">当前版本</div><div class="font-semibold">{{ upgradeState.current_version || (upgradeState.current_id ? '本地构建' : '未获取') }}</div><code class="text-xs text-slate-400 break-all">{{ upgradeState.current_id || '' }}</code></div>
+          <div><div class="text-slate-500 mb-1">最新版本</div><div class="font-semibold">{{ upgradeState.target_version || (upgradeState.target_id ? '镜像已获取' : '尚未检查') }}</div><code class="text-xs text-slate-400 break-all">{{ upgradeState.target_id || '' }}</code></div>
+        </div>
+        <div class="text-sm"><span class="text-slate-500">更新镜像：</span><code class="break-all">{{ upgradeState.image || 'ghcr.io/plunjoin/web2api:latest' }}</code></div>
+        <div role="status" aria-live="polite" class="rounded-lg bg-slate-100 p-4 text-sm">
+          <div class="font-semibold">{{ upgradeDisconnected ? '服务重启中，正在重新连接…' : upgradePhaseText(upgradeState.phase) }}</div>
+          <p class="mt-1 text-slate-600 break-words">{{ upgradeState.message || '正在读取升级状态…' }}</p>
+          <p v-if="upgradeError" class="mt-2 text-red-600">{{ upgradeError }}</p>
+        </div>
+        <div v-if="!upgradeState.enabled && upgradeState.reason" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+          {{ upgradeState.reason }}
+          <a href="https://github.com/plunjoin/web2api/blob/main/docker/README.md#面板一键升级" target="_blank" rel="noopener noreferrer" class="underline ml-1">查看启用步骤</a>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button @click="checkUpgrade" :disabled="!upgradeState.enabled || upgradeBusy || upgradeActionBusy" class="px-4 py-2 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">检查更新</button>
+          <button @click="upgradeConfirmOpen=true" :disabled="!upgradeState.enabled || upgradeState.phase!=='ready' || upgradeActionBusy" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50">一键升级</button>
+          <button @click="refreshUpgrade" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">刷新状态</button>
+        </div>
+        <p class="text-xs text-slate-500">升级时服务会短暂中断，面板会自动重新连接。配置、账号和用量数据保留；新容器启动失败时自动恢复旧容器。</p>
+      </div>
+    </section>
+
     <!-- 接口文档 -->
     <section v-if="tab==='接口文档'">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -302,6 +332,18 @@
       </div>
     </section>
   </main>
+
+  <div v-if="upgradeConfirmOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="upgradeConfirmOpen=false">
+    <div role="dialog" aria-modal="true" aria-labelledby="upgrade-confirm-title" class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+      <h3 id="upgrade-confirm-title" class="font-bold text-lg">升级到最新镜像</h3>
+      <p class="text-sm text-slate-600 mt-3">将升级到 {{ upgradeState.target_version || '已检查的最新版本' }}。服务会短暂中断，完成后面板自动刷新。</p>
+      <p class="text-sm text-slate-500 mt-2">配置和数据卷继续使用；新容器启动失败时自动恢复旧容器。</p>
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="upgradeConfirmOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
+        <button @click="startUpgrade" :disabled="upgradeActionBusy" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50">确认升级</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 添加 Gemini 号 -->
   <div v-if="addGeminiOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="addGeminiOpen=false">
@@ -397,7 +439,7 @@ if (!window.Vue) document.getElementById('startup-error').style.display = 'block
 const { createApp, ref, reactive, computed, onMounted } = Vue;
 createApp({
   setup() {
-    const tabs = ['总览', '号池管理', 'Key 管理', '用量统计', '接口文档'];
+    const tabs = ['总览', '号池管理', 'Key 管理', '用量统计', '接口文档', '系统升级'];
     const tab = ref('总览');
     localStorage.removeItem('admin_token');
     const token = ref(sessionStorage.getItem('admin_jwt') || '');
@@ -411,6 +453,14 @@ createApp({
     const toast = ref(null);
 
     const overview = ref({});
+    const upgradeState = ref({ enabled: false, phase: 'idle' });
+    const upgradeError = ref('');
+    const upgradeDisconnected = ref(false);
+    const upgradeActionBusy = ref(false);
+    const upgradeConfirmOpen = ref(false);
+    const upgradeBusy = computed(() => ['checking', 'starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase));
+    let upgradePolling = false;
+    const upgradePhaseText = (phase) => ({ idle: '等待检查', checking: '正在检查并下载镜像', ready: '有可用更新', up_to_date: '已是最新版本', starting: '正在启动升级任务', upgrading: '正在切换容器', restarting: '正在等待新版本就绪', completed: '升级成功', rolled_back: '已恢复旧版本', failed: '任务失败' }[phase] || '升级状态');
     const accounts = ref([]);
     const accountQuery = ref('');
     const accountEngineFilter = ref('');
@@ -469,6 +519,7 @@ createApp({
 
     const refresh = async () => {
       if (!token.value) return;
+      if (tab.value === '系统升级') { await refreshUpgrade(); return; }
       try {
         const o = await api('/admin/api/overview');
         overview.value = o;
@@ -492,11 +543,56 @@ createApp({
       }
     };
 
+    const refreshUpgrade = async () => {
+      if (!token.value || upgradePolling) return;
+      upgradePolling = true;
+      try {
+        const wasUpgrading = ['starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase);
+        const status = await api('/admin/api/upgrade', { signal: AbortSignal.timeout(8000) });
+        upgradeState.value = status;
+        upgradeError.value = '';
+        upgradeDisconnected.value = false;
+        connected.value = true;
+        if (wasUpgrading && status.phase === 'completed' && status.current_id === status.target_id) {
+          setTimeout(() => location.reload(), 500);
+        }
+      } catch (e) {
+        if (e.status === 401) authError.value = '登录已失效，请重新登录';
+        else if (['starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase)) upgradeDisconnected.value = true;
+        else upgradeError.value = '无法读取升级状态：' + e.message;
+      } finally { upgradePolling = false; }
+    };
+
+    const checkUpgrade = async () => {
+      upgradeActionBusy.value = true;
+      try {
+        await api('/admin/api/upgrade/check', { method: 'POST' });
+        upgradeState.value = { ...upgradeState.value, phase: 'checking', message: '正在拉取最新镜像，服务继续运行。', target_id: '', target_version: '' };
+        await refreshUpgrade();
+      } catch (e) { notify(e.message, false); }
+      finally { upgradeActionBusy.value = false; }
+    };
+
+    const startUpgrade = async () => {
+      upgradeConfirmOpen.value = false;
+      upgradeActionBusy.value = true;
+      const previous = upgradeState.value;
+      upgradeState.value = { ...previous, phase: 'starting', message: '正在启动升级任务…' };
+      try {
+        await api('/admin/api/upgrade', { method: 'POST', signal: AbortSignal.timeout(20000) });
+        await refreshUpgrade();
+      } catch (e) {
+        if (e.status) { upgradeState.value = previous; notify(e.message, false); }
+        else { upgradeDisconnected.value = true; }
+      } finally { upgradeActionBusy.value = false; }
+    };
+
     const clearSession = () => {
       token.value = ''; user.value = {}; connected.value = false;
       sessionStorage.removeItem('admin_jwt');
       overview.value = {}; accounts.value = []; keys.value = []; usage.value = []; apiSpec.value = {};
       addGeminiOpen.value = false; addStudioOpen.value = false; credsOpen.value = false;
+      upgradeState.value = { enabled: false, phase: 'idle' }; upgradeConfirmOpen.value = false; upgradeError.value = ''; upgradeDisconnected.value = false;
     };
 
     const bootstrap = async () => {
@@ -683,11 +779,13 @@ createApp({
     onMounted(() => {
       bootstrap();
       setInterval(() => { if (tab.value === '号池管理' || tab.value === '总览') refresh(); }, 10000);
+      setInterval(() => { if (token.value && (tab.value === '系统升级' || upgradeBusy.value)) refreshUpgrade(); }, 2500);
     });
 
     return {
       tabs, tab, token, user, initialized, authReady, authBusy, authError, authForm, bootstrap, submitAuth, logout, connected, toast, baseURL,
       overview, accounts, keys, usage, usageDays,
+      upgradeState, upgradeError, upgradeDisconnected, upgradeActionBusy, upgradeConfirmOpen, upgradeBusy, upgradePhaseText, refreshUpgrade, checkUpgrade, startUpgrade,
       accountQuery, accountEngineFilter, accountStatusFilter, filteredAccounts,
       apiSpec, docsLoading, docsRows,
       addGeminiOpen, addStudioOpen, credsOpen, formError,
