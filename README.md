@@ -62,7 +62,7 @@ go build -o web2api.exe ./cmd/web2api
 - **引擎B**：轮询（`round-robin`）或会话粘性（`account-sticky`），单号并发槽位，
   Playground+Build 双额度通道自动降级，模型资格与冷却由池管理
 - **模型路由**：`routing.engine_a/b_models` 显式指定 > 多模态关键词（image/veo/lyria…）走
-  引擎B > `auto`（引擎A 优先，不可用自动降级引擎B）
+  引擎B > `auto`（引擎B 优先，不可用自动降级引擎A）
 
 ## REST 管理 API（供脚本/二次开发）
 
@@ -78,8 +78,9 @@ POST   /admin/api/auth/logout                      撤销当前 JWT 会话
 GET    /admin/api/auth/me                          管理员邮箱和昵称
 GET    /admin/api/overview                          总览统计
 GET    /admin/api/accounts                         号池列表（含实时状态）
-POST   /admin/api/accounts/gemini                  {label, psid, psidts}
-POST   /admin/api/accounts/aistudio                {email, storage_state, locale?, timezone?, proxy?}
+POST   /admin/api/accounts                         {engine: a|b, storage_state, label?, email?, locale?, timezone?, proxy?}
+POST   /admin/api/accounts/gemini                  兼容入口（自动转换为统一协议）
+POST   /admin/api/accounts/aistudio                兼容入口（自动转换为统一协议）
 PATCH  /admin/api/accounts/{id}                    {enabled: bool}
 PUT    /admin/api/accounts/{id}/credentials        更新 Gemini Cookie {psid, psidts}
 POST   /admin/api/accounts/{id}/check              触发健康检测
@@ -131,15 +132,35 @@ curl "http://localhost:8800/admin/api/usage?days=30" \
 | API Key | 管理台创建的任意 `sk-` Key |
 | 文本模型 | `gemini-flash` / `gemini-pro`（引擎A），`/v1/models` 实时聚合双引擎 |
 
+完整对外接口文档：`GET /v1/docs`（OpenAPI 3.1，可导入 Postman/Insomnia）。
 端点：`POST /v1/chat/completions`（SSE 流式 + 非流式）、`GET /v1/models`、
-`GET /health`、`GET /v1/accounts`；upstream 模式引擎B 另支持
+`GET /health`、`GET /v1/accounts`。Veo 使用独立长任务接口：
+`POST /v1/videos` 创建、`GET /v1/videos/{id}` 轮询、
+`GET /v1/videos/{id}/content` 下载完成的视频；请求会走引擎B的
+`GenerateVideo` / `GetGenerateVideoOperation` 协议。upstream 模式引擎B 另支持
 `/v1/images|videos|audio|files` 透传。
+
+### 本机一键导入 AI Studio 登录态
+
+用户可以在自己的电脑上打开可见浏览器完成登录，脚本会把登录态通过管理员 API
+提交到后端；后端会写入 `auth/<邮箱>/storage-state.json` 并立即加入账号池。电脑上需要
+Node.js 18+、npm 和 curl（建议使用 HTTPS 后端地址）：
+
+```bash
+curl -fsSL https://你的VPS地址:8800/tools/export-storage.sh -o /tmp/web2api-export.sh
+sh /tmp/web2api-export.sh
+```
+
+脚本会提示后端地址、管理员 JWT 和 AI Studio 邮箱，随后打开本机 Chrome。完成登录后按
+Enter，账号会自动提交到 `/admin/api/accounts`。脚本只在本机临时目录安装 Playwright，
+结束后删除临时目录；不会把 JWT 放进 URL。Windows 请在 WSL 或 Git Bash 中运行。
 
 ## 账号从哪来
 
-**Gemini 号（引擎A）**：浏览器登录 gemini.google.com → F12 → Application →
-Cookies → 复制 `__Secure-1PSID` / `__Secure-1PSIDTS` → 管理台添加。只需填一次，
-服务自动轮换续命；失效后在管理台「换Cookie」即可。
+**统一账号协议**：所有新账号都提交引擎B协议的 `storage-state.json` 到
+`POST /admin/api/accounts`。`engine=b` 直接进入 AI Studio 号池；`engine=a` 会从同一份
+状态中提取 `__Secure-1PSID` / `__Secure-1PSIDTS`，进入 Gemini 号池。旧的两个子路径仍可用，
+会自动转换后走统一流程。
 
 **AI Studio 号（引擎B）**：三选一——
 1. 管理台粘贴 `storage-state.json` 内容（浏览器插件导出或 AIStudio2API 生成）；

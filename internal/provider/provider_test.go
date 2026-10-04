@@ -6,6 +6,23 @@ import (
 	"web2api/internal/model"
 )
 
+func TestGeminiCredentialsFromStorageState(t *testing.T) {
+	raw := `{"cookies":[{"name":"SID","value":"sid"},{"name":"__Secure-1PSID","value":"psid"},{"name":"__Secure-1PSIDTS","value":"psidts"}],"origins":[]}`
+	creds, err := geminiCredentialsFromStorageState(raw)
+	if err != nil {
+		t.Fatalf("提取引擎2 Cookie 失败: %v", err)
+	}
+	if creds.PSID != "psid" || creds.PSIDTS != "psidts" {
+		t.Fatalf("Cookie 提取结果错误: %+v", creds)
+	}
+}
+
+func TestGeminiCredentialsFromStorageStateRequiresCookies(t *testing.T) {
+	if _, err := geminiCredentialsFromStorageState(`{"cookies":[]}`); err == nil {
+		t.Fatal("缺少 Gemini Cookie 时应返回错误")
+	}
+}
+
 func TestMessagesToPrompt(t *testing.T) {
 	messages := []model.ChatMessage{
 		{Role: "system", Content: "你是一个助手"},

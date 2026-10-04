@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	xproxy "golang.org/x/net/proxy"
 	"web2api/internal/aistudio2api/camoufoxnative"
 	"web2api/internal/aistudio2api/waa"
 )
@@ -54,6 +56,7 @@ type goWAARuntime struct {
 	pageURL        string
 	headers        http.Header
 	cacheDirectory string
+	waaClient      *http.Client
 
 	storageMu sync.Mutex
 	storage   StorageState
@@ -67,7 +70,7 @@ type goWAARuntime struct {
 	refreshTimer    *time.Timer
 }
 
-// newGoWAAHTTPClient 创建由 runtime 手动处理重定向的固定出口客户端
+// newGoWAAHTTPClient 创建由 runtime 手动处理重定向的浏览器指纹客户端。
 func newGoWAAHTTPClient(proxyURL string) (*http.Client, error) {
 	client, err := NewProxyHTTPClient(proxyURL)
 	if err != nil {
@@ -77,6 +80,37 @@ func newGoWAAHTTPClient(proxyURL string) (*http.Client, error) {
 		return http.ErrUseLastResponse
 	}
 	return client, nil
+}
+
+// newStandardWAAHTTPClient 为 Waa/Create 提供标准 HTTP/2 备用通道。
+func newStandardWAAHTTPClient(proxyURL string) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil || parsed.Hostname() == "" {
+			return nil, fmt.Errorf("代理 URL 无效")
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https":
+			transport.Proxy = http.ProxyURL(parsed)
+		case "socks5":
+			dialer, err := xproxy.SOCKS5("tcp", parsed.Host, nil, xproxy.Direct)
+			if err != nil {
+				return nil, fmt.Errorf("创建 SOCKS5 代理失败: %w", err)
+			}
+			transport.Proxy = nil
+			transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+					return contextDialer.DialContext(ctx, network, address)
+				}
+				return dialer.Dial(network, address)
+			}
+		default:
+			return nil, fmt.Errorf("代理协议必须是 http、https 或 socks5")
+		}
+	}
+	return &http.Client{Transport: transport}, nil
 }
 
 // NewGoWorker 启动单个账户的纯 Go WAA runtime，不启动浏览器
@@ -121,7 +155,11 @@ func newGoWAARuntime(ctx context.Context, options camoufoxnative.Options) (*goWA
 	if err != nil {
 		return nil, err
 	}
-	runtime := &goWAARuntime{options: options, client: client, storage: storage}
+	waaClient, err := newStandardWAAHTTPClient(options.Proxy)
+	if err != nil {
+		return nil, err
+	}
+	runtime := &goWAARuntime{options: options, client: client, waaClient: waaClient, storage: storage}
 	runtime.profile, runtime.userAgent, runtime.acceptLanguage = profileFromFingerprint(fingerprint)
 	runtime.pageURL = aiStudioOrigin + "/prompts/new_chat?model=" + url.QueryEscape(options.Model)
 	if options.TemporaryChat {
@@ -273,6 +311,13 @@ func (runtime *goWAARuntime) mergeResponseCookies(response *http.Response, reque
 
 // do 以 Firefox 请求头形状发送请求并写回响应 Cookie
 func (runtime *goWAARuntime) do(ctx context.Context, method string, target string, body []byte, headers http.Header) (*http.Response, error) {
+	return runtime.doWithClient(ctx, runtime.client, method, target, body, headers)
+}
+
+func (runtime *goWAARuntime) doWithClient(ctx context.Context, client *http.Client, method string, target string, body []byte, headers http.Header) (*http.Response, error) {
+	if client == nil {
+		return nil, errors.New("AI Studio HTTP 客户端未初始化")
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -288,13 +333,15 @@ func (runtime *goWAARuntime) do(ctx context.Context, method string, target strin
 	if request.Header.Get("Accept-Language") == "" {
 		request.Header.Set("Accept-Language", runtime.acceptLanguage)
 	}
-	if request.Header.Get("Accept-Encoding") == "" {
+	// 标准 WAA 客户端让 net/http 自己协商并解压 gzip；显式声明 br/zstd
+	// 会关闭 net/http 的自动解压，导致 Waa/Create 返回的 gzip 首字节被当成 JSON。
+	if request.Header.Get("Accept-Encoding") == "" && client != runtime.waaClient {
 		request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	}
 	if cookieHeader, err := runtime.cookies().CookieHeader(target, time.Now()); err == nil && cookieHeader != "" {
 		request.Header.Set("Cookie", cookieHeader)
 	}
-	response, err := runtime.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +497,7 @@ func (runtime *goWAARuntime) createChallenge(ctx context.Context, refresh []stri
 	if err != nil {
 		return waa.Challenge{}, err
 	}
-	response, err := runtime.do(ctx, http.MethodPost, waaCreateURL, body, headers)
+	response, err := runtime.doWithClient(ctx, runtime.waaClient, http.MethodPost, waaCreateURL, body, headers)
 	if err != nil {
 		return waa.Challenge{}, fmt.Errorf("调用 Waa/Create: %w", err)
 	}

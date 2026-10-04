@@ -42,6 +42,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/overview", a.auth(a.handleOverview))
 	mux.HandleFunc("GET /admin/api/docs", a.auth(a.handleDocs))
 	mux.HandleFunc("GET /admin/api/accounts", a.auth(a.handleListAccounts))
+	mux.HandleFunc("POST /admin/api/accounts", a.auth(a.handleAddAccount))
 	mux.HandleFunc("POST /admin/api/accounts/gemini", a.auth(a.handleAddGemini))
 	mux.HandleFunc("POST /admin/api/accounts/aistudio", a.auth(a.handleAddAIStudio))
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", a.auth(a.handlePatchAccount))
@@ -100,7 +101,7 @@ func openAPISpec() map[string]any {
 			"/admin/api/status":      map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "获取引擎详细状态", "responses": map[string]any{"200": response("引擎状态")}}},
 			"/admin/api/accounts": map[string]any{
 				"get":  map[string]any{"tags": []string{"账号"}, "summary": "列出账号", "responses": map[string]any{"200": response("账号列表")}},
-				"post": map[string]any{"tags": []string{"账号"}, "summary": "添加账号", "description": "请使用 /gemini 或 /aistudio 子路径。", "responses": map[string]any{"404": response("路径不存在")}},
+				"post": map[string]any{"tags": []string{"账号"}, "summary": "按引擎2协议添加账号", "description": "所有账号统一提交 storage_state；engine=a 时从其中提取 Gemini Cookie。", "requestBody": body("AccountInput"), "responses": map[string]any{"200": response("账号已创建"), "400": response("参数错误")}},
 			},
 			"/admin/api/accounts/gemini":   map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "添加 Gemini 账号", "requestBody": body("GeminiAccountInput"), "responses": map[string]any{"200": response("账号已创建"), "400": response("参数错误")}}},
 			"/admin/api/accounts/aistudio": map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "添加 AI Studio 账号", "requestBody": body("AIStudioAccountInput"), "responses": map[string]any{"200": response("账号已创建"), "400": response("参数错误")}}},
@@ -134,6 +135,7 @@ func openAPISpec() map[string]any {
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
 				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine", "storage_state"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b"}, "description": "a=Gemini，b=AI Studio"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "引擎2协议的 storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 			},
 		},
 	}
@@ -222,6 +224,22 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // ==================== 账号 ====================
 
+// handleAddAccount 是统一账号添加入口。旧的 /gemini 和 /aistudio 接口
+// 仍可使用，但新的协议只接受引擎2的 storage-state 格式。
+func (a *API) handleAddAccount(w http.ResponseWriter, r *http.Request) {
+	var req provider.AccountInput
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	acc, err := a.mgr.AddAccountFromStorageState(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": acc})
+}
+
 func (a *API) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": a.mgr.AccountOverview()})
 }
@@ -241,7 +259,14 @@ func (a *API) handleAddGemini(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "label、psid、psidts 均不能为空"})
 		return
 	}
-	acc, err := a.mgr.AddGeminiAccount(req.Label, req.PSID, req.PSIDTS)
+	// 兼容旧字段：先转换成引擎2 storage-state，再走统一入口。
+	state, _ := json.Marshal(map[string]any{"cookies": []map[string]any{
+		{"name": "__Secure-1PSID", "value": req.PSID, "domain": ".google.com", "path": "/", "secure": true},
+		{"name": "__Secure-1PSIDTS", "value": req.PSIDTS, "domain": ".google.com", "path": "/", "secure": true},
+	}})
+	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
+		Engine: "a", Label: req.Label, StorageState: string(state),
+	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -266,7 +291,10 @@ func (a *API) handleAddAIStudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "email、storage_state 均不能为空"})
 		return
 	}
-	acc, err := a.mgr.AddAIStudioAccount(req.Email, req.StorageState, req.Locale, req.Timezone, req.Proxy)
+	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
+		Engine: "b", Email: req.Email, StorageState: req.StorageState,
+		Locale: req.Locale, Timezone: req.Timezone, Proxy: req.Proxy,
+	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return

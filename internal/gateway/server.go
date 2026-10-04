@@ -6,6 +6,7 @@
 //	GET  /v1/accounts          — 引擎与账号状态
 //	/admin                     — Web 管理台（号池/Key/用量）
 //	/admin/api/*               — 管理 REST API（JWT + Redis 会话）
+//	GET  /v1/docs              — 对外 API OpenAPI 3.1 文档
 //	/v1/images|videos|audio|files/* — 多模态透传（仅 upstream 模式引擎B）
 package gateway
 
@@ -62,8 +63,16 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /v1/docs", s.handlePublicDocs)
+	// 本机登录导出工具：脚本本身不含凭据，运行时仍需管理员 JWT。
+	mux.HandleFunc("GET /tools/export-storage.sh", s.handleExportToolScript)
+	mux.HandleFunc("GET /tools/export-storage.js", s.handleExportToolScript)
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChat))
+	// Veo 视频长任务：创建、轮询和下载结果。
+	mux.HandleFunc("POST /v1/videos", s.withAuth(s.handleCreateVideo))
+	mux.HandleFunc("GET /v1/videos/{id}/content", s.withAuth(s.handleVideoContent))
+	mux.HandleFunc("GET /v1/videos/{id}", s.withAuth(s.handleGetVideo))
 
 	// 多模态透传
 	for _, sub := range []string{"images", "videos", "audio", "files", "embeddings"} {
@@ -243,7 +252,12 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"status":  "running",
 		"endpoints": []string{
 			"GET  /health",
+			"GET  /v1/docs",
+			"GET  /tools/export-storage.sh",
 			"POST /v1/chat/completions",
+			"POST /v1/videos",
+			"GET  /v1/videos/{id}",
+			"GET  /v1/videos/{id}/content",
 			"GET  /v1/models",
 			"GET  /v1/accounts",
 			"GET  /admin        (号池管理台)",

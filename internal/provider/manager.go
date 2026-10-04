@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	aistudio "web2api/internal/aistudio2api/aistudio"
 	"web2api/internal/config"
 	"web2api/internal/engine"
 	"web2api/internal/model"
@@ -54,6 +55,18 @@ type AIStudioCredentials struct {
 	Locale       string          `json:"locale,omitempty"`
 	Timezone     string          `json:"timezone,omitempty"`
 	Proxy        string          `json:"proxy,omitempty"`
+}
+
+// AccountInput 是统一账号添加协议。账号凭据统一使用引擎B的
+// Playwright storage-state JSON；引擎A会从同一份状态中提取 Google Cookie。
+type AccountInput struct {
+	Engine       string `json:"engine"`
+	Label        string `json:"label"`
+	Email        string `json:"email"`
+	StorageState string `json:"storage_state"`
+	Locale       string `json:"locale,omitempty"`
+	Timezone     string `json:"timezone,omitempty"`
+	Proxy        string `json:"proxy,omitempty"`
 }
 
 // NewManager 构建引擎管理器。
@@ -240,8 +253,68 @@ func (m *Manager) EngineB() engine.Engine {
 
 // ==================== 号池动态管理 ====================
 
-// AddGeminiAccount 添加引擎A 账号（Gemini 网页号）。
-func (m *Manager) AddGeminiAccount(label, psid, psidts string) (store.Account, error) {
+// AddAccountFromStorageState 是统一账号添加入口。所有账号都使用引擎B协议
+// 提供的 storage-state；engine=a 时仅把其中的 Google Cookie 转成引擎A凭据。
+func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, error) {
+	engineName := strings.ToLower(strings.TrimSpace(req.Engine))
+	if engineName == "" {
+		engineName = "b"
+	}
+	if strings.TrimSpace(req.StorageState) == "" {
+		return store.Account{}, errors.New("storage_state 不能为空")
+	}
+	switch engineName {
+	case "a", "gemini":
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(req.Email)
+		}
+		if label == "" {
+			return store.Account{}, errors.New("label 或 email 至少填写一个")
+		}
+		creds, err := geminiCredentialsFromStorageState(req.StorageState)
+		if err != nil {
+			return store.Account{}, err
+		}
+		return m.addGeminiCredentials(label, creds.PSID, creds.PSIDTS)
+	case "b", "aistudio":
+		if strings.TrimSpace(req.Email) == "" {
+			return store.Account{}, errors.New("email 不能为空")
+		}
+		return m.addAIStudioAccount(req.Email, req.StorageState, req.Locale, req.Timezone, req.Proxy)
+	default:
+		return store.Account{}, fmt.Errorf("未知引擎: %s（仅支持 a 或 b）", req.Engine)
+	}
+}
+
+// geminiCredentialsFromStorageState 从引擎B协议的标准 Cookie 数组中提取
+// Gemini 网页协议需要的两个会话 Cookie。
+func geminiCredentialsFromStorageState(raw string) (GeminiCredentials, error) {
+	var state struct {
+		Cookies []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"cookies"`
+	}
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return GeminiCredentials{}, fmt.Errorf("storage-state 不是合法 JSON: %w", err)
+	}
+	var creds GeminiCredentials
+	for _, cookie := range state.Cookies {
+		switch strings.TrimSpace(cookie.Name) {
+		case "__Secure-1PSID":
+			creds.PSID = strings.TrimSpace(cookie.Value)
+		case "__Secure-1PSIDTS":
+			creds.PSIDTS = strings.TrimSpace(cookie.Value)
+		}
+	}
+	if creds.PSID == "" || creds.PSIDTS == "" {
+		return GeminiCredentials{}, errors.New("storage-state 缺少 __Secure-1PSID 或 __Secure-1PSIDTS Cookie")
+	}
+	return creds, nil
+}
+
+func (m *Manager) addGeminiCredentials(label, psid, psidts string) (store.Account, error) {
 	if m.engineA == nil {
 		return store.Account{}, errors.New("引擎A 未启用")
 	}
@@ -257,8 +330,24 @@ func (m *Manager) AddGeminiAccount(label, psid, psidts string) (store.Account, e
 	return acc, nil
 }
 
+// AddGeminiAccount 添加引擎A 账号（Gemini 网页号）。
+func (m *Manager) AddGeminiAccount(label, psid, psidts string) (store.Account, error) {
+	state, _ := json.Marshal(map[string]any{"cookies": []map[string]any{
+		{"name": "__Secure-1PSID", "value": psid},
+		{"name": "__Secure-1PSIDTS", "value": psidts},
+	}})
+	return m.AddAccountFromStorageState(AccountInput{Engine: "a", Label: label, StorageState: string(state)})
+}
+
 // AddAIStudioAccount 添加引擎B 账号（AI Studio 号）。
 func (m *Manager) AddAIStudioAccount(email, storageJSON, locale, timezone, proxy string) (store.Account, error) {
+	return m.AddAccountFromStorageState(AccountInput{
+		Engine: "b", Email: email, StorageState: storageJSON,
+		Locale: locale, Timezone: timezone, Proxy: proxy,
+	})
+}
+
+func (m *Manager) addAIStudioAccount(email, storageJSON, locale, timezone, proxy string) (store.Account, error) {
 	native, ok := m.engineB.(*NativeAIStudioEngine)
 	if !ok || native == nil {
 		return store.Account{}, errors.New("引擎B 原生模式未启用")
@@ -276,6 +365,7 @@ func (m *Manager) AddAIStudioAccount(email, storageJSON, locale, timezone, proxy
 	}
 	if err := native.AddAccount(fmt.Sprintf("%d", acc.ID), email, storageJSON, locale, timezone, proxy); err != nil {
 		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, fmt.Errorf("AI Studio 账号入池失败: %w", err)
 	}
 	return acc, nil
 }
@@ -444,10 +534,12 @@ func (m *Manager) pickEngine(modelName string) engine.Engine {
 		}
 	}
 
-	if m.engineA != nil {
-		return m.engineA
+	// 引擎B协议是主协议：auto 模式下普通文本也优先使用 AI Studio
+	// 身份，只有引擎B不可用时才回退到引擎A。
+	if m.engineB != nil {
+		return m.engineB
 	}
-	return m.engineB
+	return m.engineA
 }
 
 // matchAny 前缀/子串匹配。
@@ -510,6 +602,42 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, onDelta
 		}
 	}
 	return eng.ChatStream(ctx, req, onDelta)
+}
+
+// GenerateVideo 通过引擎B的 AI Studio GenerateVideo 协议创建 Veo 长任务。
+func (m *Manager) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
+	native, ok := m.engineB.(*NativeAIStudioEngine)
+	if !ok || native == nil {
+		return aistudio.VideoOperation{}, errors.New("当前未启用引擎B原生 Veo 协议")
+	}
+	if !native.Ready() {
+		return aistudio.VideoOperation{}, engineUnavailableError(native)
+	}
+	return native.GenerateVideo(ctx, request)
+}
+
+// GetGenerateVideoOperation 查询 Veo 长任务状态。
+func (m *Manager) GetGenerateVideoOperation(ctx context.Context, operationID string) (aistudio.VideoOperation, error) {
+	native, ok := m.engineB.(*NativeAIStudioEngine)
+	if !ok || native == nil {
+		return aistudio.VideoOperation{}, errors.New("当前未启用引擎B原生 Veo 协议")
+	}
+	if !native.Ready() {
+		return aistudio.VideoOperation{}, engineUnavailableError(native)
+	}
+	return native.GetGenerateVideoOperation(ctx, operationID)
+}
+
+// DownloadVideoFile 下载已完成 Veo 任务的输出文件。
+func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (aistudio.MediaStream, error) {
+	native, ok := m.engineB.(*NativeAIStudioEngine)
+	if !ok || native == nil {
+		return aistudio.MediaStream{}, errors.New("当前未启用引擎B原生 Veo 协议")
+	}
+	if !native.Ready() {
+		return aistudio.MediaStream{}, engineUnavailableError(native)
+	}
+	return native.DownloadVideoFile(ctx, fileID)
 }
 
 // engineUnavailableError 保留引擎最近一次初始化/健康检查错误，避免线上只看到

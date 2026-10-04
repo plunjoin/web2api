@@ -291,7 +291,7 @@
             <span class="text-sm text-slate-500">{{ item.summary }}</span>
             <button @click="copyText(item.path)" class="ml-auto text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">复制路径</button>
           </div>
-          <div v-if="item.path.includes('accounts/gemini') || item.path.includes('accounts/aistudio') || item.path==='/admin/api/keys' && item.method==='POST'" class="mt-3 rounded-lg bg-slate-900 text-slate-100 p-3 text-xs overflow-x-auto">
+          <div v-if="item.path==='/admin/api/accounts' && item.method==='POST' || item.path==='/admin/api/keys' && item.method==='POST'" class="mt-3 rounded-lg bg-slate-900 text-slate-100 p-3 text-xs overflow-x-auto">
             <div class="text-slate-400 mb-1">请求示例</div>
             <code>{{ requestExample(item.path) }}</code>
           </div>
@@ -543,7 +543,11 @@ createApp({
     const submitGemini = async () => {
       formError.value = '';
       try {
-        await api('/admin/api/accounts/gemini', { method: 'POST', body: JSON.stringify(geminiForm) });
+        const storage_state = JSON.stringify({ cookies: [
+          { name: '__Secure-1PSID', value: geminiForm.psid, domain: '.google.com', path: '/', secure: true },
+          { name: '__Secure-1PSIDTS', value: geminiForm.psidts, domain: '.google.com', path: '/', secure: true },
+        ], origins: [] });
+        await api('/admin/api/accounts', { method: 'POST', body: JSON.stringify({ engine: 'a', label: geminiForm.label, storage_state }) });
         addGeminiOpen.value = false;
         geminiForm.label = ''; geminiForm.psid = ''; geminiForm.psidts = '';
         notify('已添加，Cookie 校验进行中');
@@ -554,7 +558,7 @@ createApp({
     const submitStudio = async () => {
       formError.value = '';
       try {
-        await api('/admin/api/accounts/aistudio', { method: 'POST', body: JSON.stringify(studioForm) });
+        await api('/admin/api/accounts', { method: 'POST', body: JSON.stringify({ engine: 'b', ...studioForm }) });
         addStudioOpen.value = false;
         Object.assign(studioForm, { email: '', storage_state: '', locale: '', timezone: '' });
         notify('AI Studio 号已添加');
@@ -653,6 +657,7 @@ createApp({
     }[method] || 'bg-slate-100 text-slate-600');
 
     const requestExample = (path) => {
+      if (path === '/admin/api/accounts') return '{"engine":"b","email":"you@gmail.com","storage_state":"{...}"}';
       if (path.endsWith('/gemini')) return '{"label":"主号","psid":"...","psidts":"..."}';
       if (path.endsWith('/aistudio')) return '{"email":"you@gmail.com","storage_state":"{...}"}';
       return '{"name":"客户端"}';

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -298,7 +299,7 @@ func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) aistu
 
 // generate 执行一次生成并消费事件流。
 func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
-	if e.client == nil {
+	if e.service == nil {
 		return nil, errors.New("引擎B 未初始化")
 	}
 	genReq := e.buildGenerateRequest(req)
@@ -306,7 +307,10 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	events, err := e.client.Generate(cctx, genReq)
+	// 必须通过 PooledService 生成请求：它负责从账号池取得租约、填充
+	// GenerateRequest.AccountID，并把同一租约传给协议上下文和传输层。
+	// 直接调用 Client.Generate 会遗漏账户 ID，最终报“请求上下文缺少账户 ID”。
+	events, err := e.service.Generate(cctx, genReq)
 	if err != nil {
 		e.setErr(err)
 		return nil, err
@@ -328,9 +332,22 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 				}
 			}
 		case aistudio.EventMedia:
-			// 图片/音媒体：以 Markdown 形式附加
-			if event.Media != nil && event.Media.URL != "" {
-				segment := "\n![media](" + event.Media.URL + ")\n"
+			// 图片/音媒体：以 Markdown 形式附加。AI Studio 原生协议通常
+			// 返回 inline data，没有 URL；必须转成 data URI 才能通过
+			// OpenAI 的纯文本 content 传回调用方。
+			if event.Media != nil {
+				mediaURL := strings.TrimSpace(event.Media.URL)
+				if mediaURL == "" && len(event.Media.Data) > 0 {
+					mime := strings.TrimSpace(event.Media.MIME)
+					if mime == "" {
+						mime = "application/octet-stream"
+					}
+					mediaURL = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(event.Media.Data)
+				}
+				if mediaURL == "" {
+					break
+				}
+				segment := "\n![media](" + mediaURL + ")\n"
 				full.WriteString(segment)
 				if onDelta != nil {
 					if err := onDelta(segment); err != nil {
@@ -363,6 +380,31 @@ func (e *NativeAIStudioEngine) Chat(ctx context.Context, req model.ChatRequest) 
 // ChatStream 流式对话。
 func (e *NativeAIStudioEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	return e.generate(ctx, req, onDelta)
+}
+
+// GenerateVideo 创建 Veo 长任务。视频协议与聊天 GenerateContent 是两套
+// 独立的 AI Studio RPC，必须通过 PooledService 取得账号租约后调用。
+func (e *NativeAIStudioEngine) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
+	if e.service == nil {
+		return aistudio.VideoOperation{}, errors.New("引擎B 未初始化")
+	}
+	return e.service.GenerateVideo(ctx, request)
+}
+
+// GetGenerateVideoOperation 查询 Veo 长任务状态。
+func (e *NativeAIStudioEngine) GetGenerateVideoOperation(ctx context.Context, operationID string) (aistudio.VideoOperation, error) {
+	if e.service == nil {
+		return aistudio.VideoOperation{}, errors.New("引擎B 未初始化")
+	}
+	return e.service.GetGenerateVideoOperation(ctx, operationID)
+}
+
+// DownloadVideoFile 下载已完成 Veo 任务绑定的媒体文件。
+func (e *NativeAIStudioEngine) DownloadVideoFile(ctx context.Context, fileID string) (aistudio.MediaStream, error) {
+	if e.service == nil {
+		return aistudio.MediaStream{}, errors.New("引擎B 未初始化")
+	}
+	return e.service.DownloadFile(ctx, fileID)
 }
 
 // Passthrough 原生模式不透传（多模态能力已内置于对话协议）。

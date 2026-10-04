@@ -12,14 +12,14 @@ server:
   log_level: "info"
 
 routing:
-  default_engine: "auto"           # auto | a | b
+  default_engine: "auto"           # auto | a | b；auto 默认优先使用引擎B
   engine_a_models: []              # 显式强制走引擎A 的模型（支持前缀与 * 通配）
   engine_b_models: []              # 显式强制走引擎B 的模型
 
 # ------------------------------------------------------------
 # 引擎A：gemini.google.com 网页版（Go 原生逆向，Cookie 会话）
 # 这里的 accounts 是首次启动的种子，会自动迁移进数据库；
-# 日常加号/换Cookie直接在管理台操作（号池管理 → 添加 Gemini 号）
+# 日常加号/换Cookie统一使用引擎B协议的 storage-state（管理台会自动转换）
 # ------------------------------------------------------------
 engine_a:
   enabled: true
