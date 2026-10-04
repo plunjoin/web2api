@@ -14,12 +14,13 @@ import (
 )
 
 type fakeDocker struct {
-	mu                   sync.Mutex
-	old                  containerInfo
-	requests             []string
-	helper, replacement  map[string]any
-	pullError, failStart bool
-	health               string
+	mu                                            sync.Mutex
+	old                                           containerInfo
+	requests                                      []string
+	helper, replacement                           map[string]any
+	pullError, failStart                          bool
+	health                                        string
+	pruneUntagged, currentPinned, oldImageRemoved bool
 }
 
 func newFakeDocker(t *testing.T) (*Manager, *fakeDocker) {
@@ -61,11 +62,20 @@ func (f *fakeDocker) handle(w http.ResponseWriter, r *http.Request) {
 	jsonOut := func(v any) { w.Header().Set("Content-Type", "application/json"); _ = json.NewEncoder(w).Encode(v) }
 	switch {
 	case r.URL.Path == "/images/create":
+		if f.pruneUntagged && !f.currentPinned {
+			f.oldImageRemoved = true
+		}
 		if f.pullError {
 			jsonOut(map[string]string{"error": "denied: permission_denied: read_package"})
 		} else {
 			jsonOut(map[string]string{"status": "Download complete"})
 		}
+	case r.URL.Path == "/images/sha256:old/tag":
+		f.currentPinned = true
+		w.WriteHeader(201)
+	case r.URL.Path == "/images/sha256:old/json" && f.oldImageRemoved:
+		w.WriteHeader(404)
+		jsonOut(map[string]string{"message": "No such image: sha256:old"})
 	case strings.HasPrefix(r.URL.Path, "/images/"):
 		id := "sha256:new"
 		if strings.Contains(r.URL.Path, "sha256:old") {
@@ -86,6 +96,11 @@ func (f *fakeDocker) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.HasPrefix(r.URL.Query().Get("name"), "web2api-upgrade-") {
+			if f.oldImageRemoved && config["Image"] == "sha256:old" {
+				w.WriteHeader(404)
+				jsonOut(map[string]string{"message": "No such image: sha256:old"})
+				return
+			}
 			f.helper = config
 			jsonOut(map[string]string{"Id": "helper"})
 		} else {
@@ -173,6 +188,34 @@ func TestPullStreamFailureLeavesOldContainerRunning(t *testing.T) {
 		if strings.Contains(request, "/stop") {
 			t.Fatal("pull failure must not stop service")
 		}
+	}
+}
+
+func TestCurrentImagePinnedBeforeLatestMoves(t *testing.T) {
+	m, fake := newFakeDocker(t)
+	fake.pruneUntagged = true
+	if err := m.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if state := waitChecked(t, m); state.Phase != "ready" {
+		t.Fatalf("check: %+v", state)
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("moving latest must not discard the current helper image: %v", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	pin, pull := -1, -1
+	for index, request := range fake.requests {
+		if strings.Contains(request, "/images/sha256:old/tag?repo=web2api-upgrade-cache&tag=old") {
+			pin = index
+		}
+		if strings.Contains(request, "/images/create?") {
+			pull = index
+		}
+	}
+	if pin < 0 || pull <= pin {
+		t.Fatalf("current image must stay addressable after latest is pulled: %v", fake.requests)
 	}
 }
 

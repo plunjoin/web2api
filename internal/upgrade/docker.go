@@ -101,6 +101,13 @@ func (d *dockerClient) image(ctx context.Context, id string) (imageInfo, error) 
 	return info, err
 }
 
+func (d *dockerClient) pin(ctx context.Context, id string) error {
+	// Docker Desktop's containerd store can discard an untagged image index
+	// when latest moves, even while a container still uses its filesystem.
+	// Keep an explicit local reference for the detached helper and rollback.
+	return d.request(ctx, "POST", "/images/"+url.PathEscape(id)+"/tag?repo=web2api-upgrade-cache&tag="+url.QueryEscape(strings.TrimPrefix(id, "sha256:")), nil, nil)
+}
+
 func (d *dockerClient) pull(ctx context.Context, image, registryAuth string) error {
 	req, err := http.NewRequestWithContext(ctx, "POST", "http://docker/images/create?fromImage="+url.QueryEscape(image), nil)
 	if err != nil {

@@ -203,7 +203,13 @@ func (m *Manager) Check() error {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		err := m.docker.pull(ctx, m.image, m.registryAuth)
+		currentBeforePull, err := m.docker.inspect(ctx, m.container)
+		if err == nil {
+			err = m.docker.pin(ctx, currentBeforePull.Image)
+		}
+		if err == nil {
+			err = m.docker.pull(ctx, m.image, m.registryAuth)
+		}
 		var latest imageInfo
 		var current containerInfo
 		if err == nil {
