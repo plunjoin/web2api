@@ -4,6 +4,8 @@ web2api.exe
 
 # 配置（含敏感 Cookie）
 config.yaml
+!deploy/config.yaml
+!docker/config.yaml
 cookies/
 auth/
 data/

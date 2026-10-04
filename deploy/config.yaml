@@ -1,0 +1,32 @@
+# ============================================================
+# web2api 配置模板 —— 二进制部署用
+# 路径按实际部署位置修改（默认 /opt/web2api）
+# ============================================================
+
+server:
+  listen: "0.0.0.0:8800"
+  api_keys:
+    - "sk-web2api"                    # 种子 Key（启动后自动导入，管理台可改）
+  db_path: "/opt/web2api/data/web2api.db"
+  log_level: "info"
+
+routing:
+  default_engine: "auto"              # auto | a | b
+
+# 引擎A：Gemini 网页号在管理台添加（号池管理 → + 添加 Gemini 号）
+engine_a:
+  enabled: true
+  cookie_path: "/opt/web2api/cookies"
+  proxy: ""                          # 国内服务器填代理：http://127.0.0.1:7890
+  refresh_seconds: 600
+  timeout_seconds: 300
+
+# 引擎B：AI Studio 原生逆向（内置 WAA 纯 Go 后端，零外部依赖）
+engine_b:
+  enabled: true
+  mode: "native"
+  auth_states: "/opt/web2api/auth"
+  routing_strategy: "round-robin"
+  upstream_channels: "playground,build"
+  per_account_concurrency: 2
+  refresh_seconds: 300

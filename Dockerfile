@@ -5,7 +5,7 @@
 # ============================================================
 
 # ---------- 构建阶段 ----------
-FROM golang:1.27-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 # 安装编译所需工具（git 用于 go mod 下载公开依赖）
 RUN apk add --no-cache git ca-certificates

@@ -1,0 +1,33 @@
+# ============================================================
+# web2api 容器内配置模板 —— 复制为 config.yaml 挂载进容器
+# 路径均为容器内绝对路径（/app/...），由 docker-compose volumes 持久化
+# 也可不挂载配置文件，仅用环境变量覆盖（见 .env.example）
+# ============================================================
+
+server:
+  listen: "0.0.0.0:8800"
+  api_keys:
+    - "sk-web2api"
+  db_path: "/app/data/web2api.db"
+  log_level: "info"
+
+routing:
+  default_engine: "auto"
+
+# 引擎A：Gemini 网页号在管理台添加（号池管理 → + 添加 Gemini 号）
+engine_a:
+  enabled: true
+  cookie_path: "/app/cookies"
+  proxy: ""                         # 容器内访问宿主机代理：http://host.docker.internal:7890
+  refresh_seconds: 600
+  timeout_seconds: 300
+
+# 引擎B：AI Studio 原生逆向（内置 WAA 纯 Go 后端，零外部依赖）
+engine_b:
+  enabled: true
+  mode: "native"
+  auth_states: "/app/auth"
+  routing_strategy: "round-robin"
+  upstream_channels: "playground,build"
+  per_account_concurrency: 2
+  refresh_seconds: 300
