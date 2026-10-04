@@ -551,6 +551,14 @@ func (e *NativeAIStudioEngine) AddAccount(id, email, storageJSON, locale, timezo
 	e.idMu.Lock()
 	e.idMap[id] = acc.ID
 	e.idMu.Unlock()
+	// 账号可以在空池启动后通过管理台热添加；同步更新就绪状态，
+	// 否则 Ready 仍会依据启动时的空账号快照拒绝请求。
+	e.mu.Lock()
+	e.accounts = append(e.accounts, acc)
+	e.lastErr = nil
+	e.mu.Unlock()
+	// 新账号加入后异步刷新模型目录，不阻塞管理台添加请求。
+	go e.refreshModels(context.Background())
 	return nil
 }
 
@@ -599,6 +607,18 @@ func (e *NativeAIStudioEngine) RemoveAccount(id string) error {
 		if err := e.store.Delete(acc); err != nil {
 			return fmt.Errorf("删除账号目录失败: %w", err)
 		}
+		e.mu.Lock()
+		remaining := e.accounts[:0]
+		for _, loaded := range e.accounts {
+			if loaded.ID != acc.ID {
+				remaining = append(remaining, loaded)
+			}
+		}
+		e.accounts = remaining
+		if len(e.accounts) == 0 {
+			e.lastErr = errors.New("AI Studio 账号目录为空（请在管理台添加账号，或检查 auth_states 配置）")
+		}
+		e.mu.Unlock()
 		return nil
 	}
 	// 账号不在池中（历史遗留）：按目录约定 root/<邮箱> 直接清理磁盘

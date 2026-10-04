@@ -36,6 +36,9 @@ func TestReproduceDisableCycle(t *testing.T) {
 	if err := engineB.AddAccount("1", "cycle@gmail.com", storage, "", "", ""); err != nil {
 		t.Fatalf("添加: %v", err)
 	}
+	if !engineB.Ready() {
+		t.Fatal("热添加账号后引擎应立即就绪")
+	}
 	dump := func(stage string) {
 		for _, st := range engineB.AccountStates() {
 			fmt.Printf("[%s] id=%s label=%s status=%s detail=%q models=%d\n", stage, st.ID, st.Label, st.Status, st.Detail, st.Models)
