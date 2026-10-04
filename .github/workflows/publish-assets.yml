@@ -1,0 +1,50 @@
+name: Publish existing release assets
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/release-assets.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read release metadata and verify source
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(jq -r '.tag' .github/release-assets.json)
+          run_id=$(jq -r '.run_id' .github/release-assets.json)
+          git fetch origin "refs/tags/$tag:refs/tags/$tag"
+          source_sha=$(git rev-parse "$tag^{commit}")
+          run_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')
+          test "$source_sha" = "$run_sha"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: dist
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify and publish assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          sed '/^容器镜像：/d' .github/release-notes.md > release-notes.md
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "web2api $RELEASE_TAG" --notes-file release-notes.md --latest
+          fi

@@ -64,7 +64,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [binaries, container]
+    needs: binaries
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -77,10 +77,12 @@ jobs:
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" dist/*
-          --repo "$GITHUB_REPOSITORY"
-          --verify-tag
-          --title "web2api $GITHUB_REF_NAME"
-          --notes-file .github/release-notes.md
-          --latest
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "web2api $GITHUB_REF_NAME" \
+              --notes-file .github/release-notes.md --latest
+          fi
