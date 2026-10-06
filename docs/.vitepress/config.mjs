@@ -40,6 +40,8 @@ export default defineConfig({
             { text: '聊天补全', link: '/api/chat' },
             { text: '模型与状态', link: '/api/models' },
             { text: 'Veo 视频任务', link: '/api/videos' },
+            { text: '图片生成', link: '/api/images' },
+            { text: '音频生成', link: '/api/audio' },
             { text: '多模态透传', link: '/api/passthrough' },
             { text: '错误与限流', link: '/api/errors' },
           ],

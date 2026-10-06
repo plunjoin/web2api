@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -65,7 +66,7 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.logger.Printf("[video] 创建失败 model=%q: %v", req.Model, err)
-		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
+		writeVideoError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, videoResponse{
@@ -82,7 +83,7 @@ func (s *Server) handleGetVideo(w http.ResponseWriter, r *http.Request) {
 	}
 	operation, err := s.mgr.GetGenerateVideoOperation(r.Context(), operationID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
+		writeVideoError(w, err)
 		return
 	}
 	resp := videoResponse{
@@ -104,7 +105,7 @@ func (s *Server) handleVideoContent(w http.ResponseWriter, r *http.Request) {
 	}
 	operation, err := s.mgr.GetGenerateVideoOperation(r.Context(), operationID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
+		writeVideoError(w, err)
 		return
 	}
 	if !operation.Done || operation.File == nil {
@@ -113,7 +114,7 @@ func (s *Server) handleVideoContent(w http.ResponseWriter, r *http.Request) {
 	}
 	media, err := s.mgr.DownloadVideoFile(r.Context(), operation.File.ID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
+		writeVideoError(w, err)
 		return
 	}
 	defer media.Body.Close()
@@ -127,6 +128,20 @@ func (s *Server) handleVideoContent(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(media.Size, 10))
 	}
 	_, _ = io.Copy(w, media.Body)
+}
+
+// writeVideoError 保留额度错误的公开状态，支持账户池包装或合并的错误。
+func writeVideoError(w http.ResponseWriter, err error) {
+	var statusError interface{ HTTPStatus() int }
+	if errors.As(err, &statusError) && statusError.HTTPStatus() == http.StatusTooManyRequests {
+		writeError(w, http.StatusTooManyRequests, err.Error(), "rate_limit_error", "rate_limit_exceeded")
+		return
+	}
+	if errors.Is(err, aistudio.ErrInvalidArgument) {
+		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", nil)
+		return
+	}
+	writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 }
 
 func videoStatus(operation aistudio.VideoOperation) string {

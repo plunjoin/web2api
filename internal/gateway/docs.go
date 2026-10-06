@@ -26,12 +26,12 @@ func publicAPISpec() map[string]any {
 		return response
 	}
 	pathID := map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}
-	return map[string]any{
+	spec := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title":       "web2api 对外 API",
 			"version":     "1.0.0",
-			"description": "OpenAI 兼容聊天、模型、账号状态，以及 AI Studio Veo 视频长任务接口。",
+			"description": mediaAPIOverview,
 		},
 		"servers":  []any{map[string]any{"url": "/", "description": "当前 web2api 服务"}},
 		"security": []any{map[string]any{"ApiKey": []any{}}},
@@ -39,6 +39,8 @@ func publicAPISpec() map[string]any {
 			map[string]any{"name": "基础", "description": "健康检查、模型和账号状态"},
 			map[string]any{"name": "聊天", "description": "OpenAI Chat Completions 兼容接口"},
 			map[string]any{"name": "视频", "description": "Veo GenerateVideo 长任务接口"},
+			map[string]any{"name": "图片", "description": "原生模式通过聊天接口生成图片；upstream 模式可透传图片专用接口"},
+			map[string]any{"name": "音频", "description": "原生模式通过聊天接口请求音频；upstream 模式可透传语音专用接口"},
 			map[string]any{"name": "透传", "description": "仅 upstream 引擎B可用的多模态透传路径"},
 		},
 		"paths": map[string]any{
@@ -58,15 +60,15 @@ func publicAPISpec() map[string]any {
 				"post": map[string]any{"tags": []string{"聊天"}, "summary": "创建聊天补全", "description": "stream=true 时返回 text/event-stream；普通请求返回 ChatCompletionResponse。", "requestBody": jsonBody("ChatCompletionRequest"), "responses": map[string]any{"200": jsonResponse("聊天结果或 SSE 流", "ChatCompletionResponse"), "400": jsonResponse("请求参数错误", "Error"), "401": jsonResponse("API Key 无效", "Error"), "502": jsonResponse("上游模型调用失败", "Error")}},
 			},
 			"/v1/videos": map[string]any{
-				"post": map[string]any{"tags": []string{"视频"}, "summary": "创建 Veo 视频任务", "requestBody": jsonBody("VideoCreateRequest"), "responses": map[string]any{"202": jsonResponse("任务已创建", "VideoResponse"), "400": jsonResponse("请求参数错误", "Error"), "401": jsonResponse("API Key 无效", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
+				"post": map[string]any{"tags": []string{"视频"}, "summary": "创建 Veo 视频任务", "requestBody": jsonBody("VideoCreateRequest"), "responses": map[string]any{"202": jsonResponse("任务已创建", "VideoResponse"), "400": jsonResponse("请求参数错误", "Error"), "401": jsonResponse("API Key 无效", "Error"), "429": jsonResponse("上游限流、配额不足或账户冷却", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
 			},
 			"/v1/videos/{id}": map[string]any{
 				"parameters": []any{pathID},
-				"get":        map[string]any{"tags": []string{"视频"}, "summary": "查询 Veo 任务状态", "responses": map[string]any{"200": jsonResponse("任务状态", "VideoResponse"), "401": jsonResponse("API Key 无效", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
+				"get":        map[string]any{"tags": []string{"视频"}, "summary": "查询 Veo 任务状态", "responses": map[string]any{"200": jsonResponse("任务状态", "VideoResponse"), "401": jsonResponse("API Key 无效", "Error"), "429": jsonResponse("上游限流、配额不足或账户冷却", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
 			},
 			"/v1/videos/{id}/content": map[string]any{
 				"parameters": []any{pathID},
-				"get":        map[string]any{"tags": []string{"视频"}, "summary": "下载完成的 Veo 视频", "responses": map[string]any{"200": map[string]any{"description": "video/mp4 二进制流", "content": map[string]any{"video/mp4": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}}, "409": jsonResponse("视频仍在生成", "Error"), "401": jsonResponse("API Key 无效", "Error")}},
+				"get":        map[string]any{"tags": []string{"视频"}, "summary": "下载完成的 Veo 视频", "responses": map[string]any{"200": map[string]any{"description": "video/mp4 二进制流", "content": map[string]any{"video/mp4": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}}, "409": jsonResponse("视频仍在生成", "Error"), "401": jsonResponse("API Key 无效", "Error"), "429": jsonResponse("上游限流、配额不足或账户冷却", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
 			},
 			"/v1/images/{path}":     passthroughPath("图片透传（仅 upstream 模式）"),
 			"/v1/audio/{path}":      passthroughPath("音频透传（仅 upstream 模式）"),
@@ -78,6 +80,8 @@ func publicAPISpec() map[string]any {
 			"schemas":         publicSchemas(),
 		},
 	}
+	addMediaAPIDocs(spec)
+	return spec
 }
 
 func passthroughPath(summary string) map[string]any {

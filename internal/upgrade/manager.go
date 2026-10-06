@@ -77,7 +77,14 @@ func NewFromEnv(dataDir string) *Manager {
 	m.statePath = filepath.Join(absoluteDir, "upgrade-state.json")
 	m.docker = newDockerClient(m.socket)
 	if password := os.Getenv("WEB2API_UPGRADE_REGISTRY_PASSWORD"); password != "" {
-		credentials, _ := json.Marshal(map[string]string{"username": os.Getenv("WEB2API_UPGRADE_REGISTRY_USER"), "password": password})
+		// Docker uses ServerAddress to select the credentials for the registry
+		// serving the image. Without it, credentials intended for GHCR can be
+		// treated as Docker Hub credentials and the pull is rejected with 403.
+		credentials, _ := json.Marshal(map[string]string{
+			"username":      os.Getenv("WEB2API_UPGRADE_REGISTRY_USER"),
+			"password":      password,
+			"serveraddress": registryAddress(m.image),
+		})
 		m.registryAuth = base64.URLEncoding.EncodeToString(credentials)
 	}
 	// A pull runs inside the main process; a replacement runs independently.
@@ -86,6 +93,17 @@ func NewFromEnv(dataDir string) *Manager {
 		_ = m.save(state)
 	}
 	return m
+}
+
+func registryAddress(image string) string {
+	name := strings.TrimSpace(image)
+	if slash := strings.IndexByte(name, '/'); slash >= 0 {
+		first := name[:slash]
+		if strings.ContainsAny(first, ".:") || first == "localhost" {
+			return first
+		}
+	}
+	return "docker.io"
 }
 
 func envOr(key, fallback string) string {

@@ -143,6 +143,8 @@ curl "http://localhost:8800/admin/api/usage?days=30" \
 | 文本模型 | `gemini-flash` / `gemini-pro`（引擎A），`/v1/models` 实时聚合双引擎 |
 
 完整对外接口文档：`GET /v1/docs`（OpenAPI 3.1，可导入 Postman/Insomnia）。
+
+生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接；`/v1/images/generations` 与 `/v1/audio/speech` 需要 upstream 模式开启透传，并由上游实现。
 端点：`POST /v1/chat/completions`（SSE 流式 + 非流式）、`GET /v1/models`、
 `GET /health`、`GET /v1/accounts`。Veo 使用独立长任务接口：
 `POST /v1/videos` 创建、`GET /v1/videos/{id}` 轮询、

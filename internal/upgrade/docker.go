@@ -122,12 +122,26 @@ func (d *dockerClient) pull(ctx context.Context, image, registryAuth string) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("拉取镜像失败（HTTP %d），请检查镜像地址及仓库访问权限", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		message := strings.TrimSpace(string(body))
+		var problem struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &problem) == nil && problem.Message != "" {
+			message = problem.Message
+		}
+		if message == "" {
+			message = "请检查镜像地址及仓库访问权限"
+		}
+		return fmt.Errorf("拉取镜像失败（HTTP %d）: %s", resp.StatusCode, message)
 	}
 	decoder := json.NewDecoder(resp.Body)
 	for {
 		var event struct {
-			Error string `json:"error"`
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
 		}
 		err := decoder.Decode(&event)
 		if err == io.EOF {
@@ -136,8 +150,12 @@ func (d *dockerClient) pull(ctx context.Context, image, registryAuth string) err
 		if err != nil {
 			return fmt.Errorf("读取镜像下载状态失败: %w", err)
 		}
-		if event.Error != "" {
-			return fmt.Errorf("拉取镜像失败: %s", event.Error)
+		message := event.Error
+		if message == "" {
+			message = event.ErrorDetail.Message
+		}
+		if message != "" {
+			return fmt.Errorf("拉取镜像失败: %s", message)
 		}
 	}
 }

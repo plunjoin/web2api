@@ -37,4 +37,6 @@ curl -N http://localhost:8800/v1/chat/completions \
 
 ## 消息内容
 
-支持 `system`、`user`、`assistant` 和 `tool` 角色。`content` 可以是字符串，也可以按 OpenAI 多模态格式传递结构化内容；需要引擎 B 的图片能力时，优先使用[多模态透传](/api/passthrough)。
+请求可使用 `system`、`user`、`assistant` 和 `tool` 角色。当前原生适配将 system 作为系统提示词、assistant 作为历史回复，其他角色转为用户内容；工具调用并未完整映射。`content` 推荐使用字符串；结构化内容在原生模式中只提取 `type: text` 的文本段，图片和音频输入未映射。
+
+原生模式生成图片或音频时，在此接口选择对应的图片/TTS/音频模型。结果通过 `choices[0].message.content` 中的 Markdown 媒体链接返回，详见[图片生成](/api/images)与[音频生成](/api/audio)。
