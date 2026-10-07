@@ -109,7 +109,7 @@ func (d *dockerClient) pin(ctx context.Context, id string) error {
 }
 
 func (d *dockerClient) pull(ctx context.Context, image, registryAuth string) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://docker/images/create?fromImage="+url.QueryEscape(image), nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://docker/images/create?"+imageCreateQuery(image), nil)
 	if err != nil {
 		return err
 	}

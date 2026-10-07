@@ -3,11 +3,11 @@ package upgrade
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,8 +39,10 @@ type Status struct {
 type Manager struct {
 	mu                                                        sync.Mutex
 	docker                                                    *dockerClient
+	registryHTTP                                              *http.Client
 	enabled                                                   bool
 	reason, socket, container, image, statePath, registryAuth string
+	registryUser, registryPassword                            string
 }
 
 func Disabled() *Manager {
@@ -76,16 +78,19 @@ func NewFromEnv(dataDir string) *Manager {
 	m.image = envOr("WEB2API_UPGRADE_IMAGE", m.image)
 	m.statePath = filepath.Join(absoluteDir, "upgrade-state.json")
 	m.docker = newDockerClient(m.socket)
-	if password := os.Getenv("WEB2API_UPGRADE_REGISTRY_PASSWORD"); password != "" {
-		// Docker uses ServerAddress to select the credentials for the registry
-		// serving the image. Without it, credentials intended for GHCR can be
-		// treated as Docker Hub credentials and the pull is rejected with 403.
-		credentials, _ := json.Marshal(map[string]string{
-			"username":      os.Getenv("WEB2API_UPGRADE_REGISTRY_USER"),
-			"password":      password,
+	m.registryHTTP = newRegistryHTTPClient()
+	m.registryUser = os.Getenv("WEB2API_UPGRADE_REGISTRY_USER")
+	m.registryPassword = os.Getenv("WEB2API_UPGRADE_REGISTRY_PASSWORD")
+	if m.registryPassword != "" {
+		// Kept as a fallback when the registry does not issue a bearer token.
+		// ServerAddress stops Docker from sending these credentials to Docker Hub.
+		if encoded, err := encodeRegistryAuth(map[string]string{
+			"username":      m.registryUser,
+			"password":      m.registryPassword,
 			"serveraddress": registryAddress(m.image),
-		})
-		m.registryAuth = base64.URLEncoding.EncodeToString(credentials)
+		}); err == nil {
+			m.registryAuth = encoded
+		}
 	}
 	// A pull runs inside the main process; a replacement runs independently.
 	if state, err := m.load(); err == nil && state.Phase == "checking" {
@@ -226,7 +231,7 @@ func (m *Manager) Check() error {
 			err = m.docker.pin(ctx, currentBeforePull.Image)
 		}
 		if err == nil {
-			err = m.docker.pull(ctx, m.image, m.registryAuth)
+			err = m.pullLatest(ctx)
 		}
 		var latest imageInfo
 		var current containerInfo

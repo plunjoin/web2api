@@ -34,7 +34,7 @@ docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d
 
 升级配置会挂载 `/var/run/docker.sock`，让应用具有宿主机 Docker 管理权限，因此默认关闭，应仅向可信管理员开放管理台。支持 Linux Docker 引擎（包括 Docker Desktop 的 Linux 容器），要求持久化的可写数据卷和 Docker healthcheck。不支持 `--rm`、共享其他容器网络或 `volumes_from` 部署。
 
-默认更新 `ghcr.io/plunjoin/web2api:latest`；可以在 `.env` 中指定 `WEB2API_UPGRADE_IMAGE`。私有仓库还需配置 `WEB2API_UPGRADE_REGISTRY_USER` 和 `WEB2API_UPGRADE_REGISTRY_PASSWORD`（GHCR 使用具有 read:packages 权限的 Token）。这些凭据只用于镜像下载，不出现在管理 API 返回中。请保持 `.env` 私有。首次使用需确保目标 `latest` 已发布包含升级功能的版本。
+默认更新 `ghcr.io/plunjoin/web2api:latest`；可以在 `.env` 中指定 `WEB2API_UPGRADE_IMAGE`。公开镜像由程序向仓库申请拉取令牌后再交给 Docker。这样不会走 GHCR 会返回 HTTP 403 的 OAuth 密码模式，宿主机上失效的 `docker login` 也不会被带上。私有仓库还需配置 `WEB2API_UPGRADE_REGISTRY_USER` 和 `WEB2API_UPGRADE_REGISTRY_PASSWORD`（GHCR 使用具有 read:packages 权限的 Token）。令牌被拒绝时，公开镜像会自动改为匿名拉取。这些凭据只用于镜像下载，不出现在管理 API 返回中。请保持 `.env` 私有。容器访问仓库若需代理，沿用 `WEB2API_PROXY`。首次使用需确保目标 `latest` 已发布包含升级功能的版本。
 
 以后执行 Compose 命令时也保留这两个 `-f` 参数，以保持升级配置。面板按钮只更新部署时指定的镜像；管理员接口不接受任意镜像地址或命令。
 
