@@ -17,8 +17,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify official Gemini parameter inventory
+        run: node scripts/audit-gemini-docs.mjs --check
       - name: Test
-        run: go test ./...
+        run: go test ./... -count=1
       - name: Build all platforms
         shell: pwsh
         run: ./build.ps1 -Version $env:GITHUB_REF_NAME
@@ -64,7 +69,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: binaries
+    needs: [binaries, container]
     runs-on: ubuntu-latest
     permissions:
       contents: write

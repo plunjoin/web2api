@@ -10,8 +10,7 @@ config.yaml
 cookies/
 auth/
 data/
-cookies/
-test/
+
 # 编译与测试产物
 dist/
 build/
