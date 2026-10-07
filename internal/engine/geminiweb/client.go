@@ -35,11 +35,11 @@ const (
 type Client struct {
 	mu sync.Mutex
 
-	name      string
-	jar       *cookieJar
-	cookieDir string
-	proxy     string
-	timeout   time.Duration
+	name        string
+	jar         *cookieJar
+	cookieStore CookieStore
+	proxy       string
+	timeout     time.Duration
 
 	http *http.Client
 
@@ -64,8 +64,8 @@ type Client struct {
 	refreshStop chan struct{}
 }
 
-// NewClient 创建客户端。cookieDir 为空时使用默认缓存目录。
-func NewClient(name, psid, psidts, cookieDir, proxy string, timeout time.Duration) *Client {
+// NewClient 创建客户端；Cookie 会话由注入的 SQLite 存储持久化。
+func NewClient(name, psid, psidts, proxy string, timeout time.Duration) *Client {
 	jar := newCookieJar()
 	if psid != "" {
 		jar.Set("__Secure-1PSID", psid)
@@ -81,7 +81,6 @@ func NewClient(name, psid, psidts, cookieDir, proxy string, timeout time.Duratio
 	return &Client{
 		name:          name,
 		jar:           jar,
-		cookieDir:     cookiesCacheDir(cookieDir),
 		proxy:         proxy,
 		timeout:       timeout,
 		http:          &http.Client{Transport: transport, Timeout: 0},
@@ -103,6 +102,9 @@ func proxyFunc(proxy string) func(*http.Request) (*url.URL, error) {
 		return u, nil
 	}
 }
+
+// SetCookieStore attaches persistence before initialization.
+func (c *Client) SetCookieStore(store CookieStore) { c.cookieStore = store }
 
 // Name 账号名。
 func (c *Client) Name() string { return c.name }
@@ -158,18 +160,18 @@ func (c *Client) Init(ctx context.Context) error {
 		c.mu.Unlock()
 	}()
 
-	// 1. 缓存优先（提供 PSID 时）
-	c.mu.Lock()
-	basePSID := c.jar.Get("__Secure-1PSID")
-	if basePSID != "" {
-		if cached := loadCachedJar(c.cookieDir, basePSID); cached != nil {
-			c.jar = cached
-			c.cookieSource = "Cache"
-		} else {
-			c.cookieSource = "Base Cookies"
-		}
+	// 1. SQLite 会话优先。
+	cached, cacheErr := loadCachedJar(c.cookieStore)
+	if cacheErr != nil {
+		return fmt.Errorf("读取 Cookie 会话: %w", cacheErr)
 	}
-	cookieDir := c.cookieDir
+	c.mu.Lock()
+	if cached != nil {
+		c.jar = cached
+		c.cookieSource = "SQLite"
+	} else {
+		c.cookieSource = "Base Cookies"
+	}
 	c.mu.Unlock()
 
 	// 2. GET /app 提取初始化参数（锁外网络）
@@ -203,12 +205,14 @@ func (c *Client) Init(ctx context.Context) error {
 	c.mu.Unlock()
 
 	if unauth {
-		clearCache(cookieDir, c.jar.Get("__Secure-1PSID"))
+		if c.cookieStore != nil {
+			_ = c.cookieStore.DeleteCookies()
+		}
+		return ErrAuth
 	}
 
 	// 4. 持久化缓存
-	_ = saveCookies(cookieDir, c.jar)
-	return nil
+	return saveCookies(c.cookieStore, c.jar)
 }
 
 // fetchInitParams 发送 GET /app 并解析初始化参数。
@@ -565,9 +569,8 @@ func (c *Client) Rotate(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	jar.UpdateFromResponse(resp)
-	_ = saveCookies(c.cookieDir, jar)
 	c.mu.Unlock()
-	return nil
+	return saveCookies(c.cookieStore, jar)
 }
 
 // StartAutoRefresh 后台协程按间隔自动轮换 Cookie。

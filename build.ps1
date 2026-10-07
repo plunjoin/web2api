@@ -35,7 +35,7 @@ foreach ($target in $Targets) {
     if ($target.GOARM) { $env:GOARM = $target.GOARM } else { Remove-Item Env:GOARM -ErrorAction SilentlyContinue }
 
     $binaryName = if ($target.GOOS -eq "windows") { "web2api.exe" } else { "web2api" }
-    & go build -trimpath -ldflags "-s -w" -o (Join-Path $stage $binaryName) ./cmd/web2api
+    & go build -trimpath -ldflags "-s -w" -o (Join-Path $stage $binaryName) .
     if ($LASTEXITCODE -ne 0) { throw "构建失败: $($target.Name)" }
 
     Copy-Item (Join-Path $Root "config.example.yaml") (Join-Path $stage "config.example.yaml")

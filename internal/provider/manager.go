@@ -31,6 +31,17 @@ type Manager struct {
 	engineBModels []string
 }
 
+func (m *Manager) GeminiAPIConfig() config.GeminiAPIConfig { return m.cfg.GeminiAPI }
+
+func (m *Manager) Close() {
+	if m.engineA != nil {
+		m.engineA.Close()
+	}
+	if closer, ok := m.engineB.(interface{ Close() }); ok {
+		closer.Close()
+	}
+}
+
 // initializableEngine 需要异步初始化的引擎。
 type initializableEngine interface {
 	engine.Engine
@@ -88,6 +99,7 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 			return nil, fmt.Errorf("引擎A 初始化失败: %w", err)
 		}
 		m.engineA = ea
+		ea.SetStore(st)
 	}
 	if cfg.EngineB.Enabled {
 		mode := strings.ToLower(strings.TrimSpace(cfg.EngineB.Mode))
@@ -112,8 +124,8 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 			m.engineB = eb
 		}
 	}
-	if m.engineA == nil && m.engineB == nil {
-		return nil, errors.New("至少启用一个引擎（engine_a 或 engine_b）")
+	if m.engineA == nil && m.engineB == nil && !cfg.GeminiAPI.Enabled {
+		return nil, errors.New("至少启用一个后端（engine_a、engine_b 或 gemini_api）")
 	}
 	return m, nil
 }

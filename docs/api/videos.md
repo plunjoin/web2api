@@ -98,3 +98,19 @@ curl http://localhost:8800/v1/videos/video_abc123/content \
 账户池遇到上游 `429` 会记录冷却并尝试其他符合条件的账户。若没有可用账户，请恢复上游额度或配置具备视频生成资格且有剩余额度的账户。模型出现在目录中、聊天可用或账户显示 Pro/Ultra，均不能保证这次 Veo 生成有可用额度。
 
 请求中的 `seconds: 8`、`aspect_ratio: "16:9"`、`resolution: "1080p"` 会按原值编码到视频协议，支持范围由上游实时模型目录校验。降低分辨率或缩短时长不能保证消除配额错误。
+
+## 与 Gemini Interactions 视频的区别
+
+本页描述 AI Studio 的 Veo 长任务 RPC，不是 Google Interactions 的 Gemini Omni 视频协议。虽然部分参数表达相似，不能互换请求或任务 ID。
+
+| 官方 Interactions 参数 / 流程 | 本页 Veo 接口 |
+| --- | --- |
+| input 的 text / image / video 等 Content 块 | 只有 prompt 文本；参考图、首尾帧、编辑视频输入未接入 |
+| generation_config.video_config.task：text_to_video / image_to_video / reference_to_video / edit / extend | 没有此配置对象，当前只开放文生视频 |
+| response_format.video 的 aspect_ratio / resolution | 使用顶层同名字段，需 Veo 模型支持；不是官方格式对象的映射 |
+| response_format.video.duration：如 "8s" | seconds：8 或 "8"；duration_seconds 为整数别名 |
+| response_format.video.delivery / gcs_uri | 未开放内联 / URI 选择或 GCS 输出；统一从网关视频内容路由下载 |
+| background、store、webhook_config、continuation_token | 没有这些官方生命周期参数；Veo 创建返回 202 的独立任务 |
+| Interactions GET / cancel / DELETE / last_event_id | Veo 提供查询和下载；没有对应的交互取消、删除或 SSE 恢复 |
+
+Omni 的输入限制、参考标签、任务类型和输出示例见[中文参考详解](/api/gemini-reference)，完整字段见[官方对照](/api/gemini-schema)。官方指南中的 3–10 秒或 360p 等取值不能直接套到 Veo；实际 Veo 范围以账号实时目录为准。

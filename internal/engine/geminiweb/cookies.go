@@ -3,8 +3,6 @@ package geminiweb
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -82,20 +80,31 @@ func (j *cookieJar) Header() string {
 
 // ApplyToRequest 把 Cookie 写入 http.Request。
 func (j *cookieJar) ApplyToRequest(req *http.Request) {
-	if len(j.cookies) == 0 {
-		return
+	if value := j.Header(); value != "" {
+		req.Header.Set("Cookie", value)
 	}
-	req.Header.Set("Cookie", j.Header())
 }
 
 // UpdateFromResponse 从响应 Set-Cookie 中更新 Cookie。
 func (j *cookieJar) UpdateFromResponse(resp *http.Response) {
 	for _, c := range resp.Cookies() {
+		if c.MaxAge < 0 {
+			j.mu.Lock()
+			delete(j.cookies, c.Name)
+			j.mu.Unlock()
+			continue
+		}
 		cc := &Cookie{
 			Name:   c.Name,
 			Value:  c.Value,
 			Domain: c.Domain,
 			Path:   c.Path,
+		}
+		if cc.Domain == "" && resp.Request != nil {
+			cc.Domain = resp.Request.URL.Hostname()
+		}
+		if cc.Path == "" {
+			cc.Path = "/"
 		}
 		if !c.Expires.IsZero() {
 			cc.Expires = float64(c.Expires.Unix())
@@ -106,32 +115,28 @@ func (j *cookieJar) UpdateFromResponse(resp *http.Response) {
 	}
 }
 
-// cookiesCacheDir 返回缓存目录（GEMINI_COOKIE_PATH 或程序内 cookies/）。
-func cookiesCacheDir(override string) string {
-	if override != "" {
-		return override
-	}
-	if env := os.Getenv("GEMINI_COOKIE_PATH"); env != "" {
-		return env
-	}
-	return "cookies"
+// CookieStore persists complete sessions without filesystem cookie caches.
+type CookieStore interface {
+	LoadCookies() ([]byte, error)
+	SaveCookies([]byte) error
+	DeleteCookies() error
 }
 
-// cachePathFor 按 PSID 生成缓存文件路径。
-func cachePathFor(dir, psid string) string {
-	return filepath.Join(dir, ".cached_cookies_"+psid+".json")
-}
-
-// loadCachedJar 从缓存文件加载 Cookie；文件不存在或无效返回 nil。
-func loadCachedJar(dir, psid string) *cookieJar {
-	path := cachePathFor(dir, psid)
-	data, err := os.ReadFile(path)
+// loadCachedJar 从 SQLite 载入 Cookie，并过滤过期项。
+func loadCachedJar(store CookieStore) (*cookieJar, error) {
+	if store == nil {
+		return nil, nil
+	}
+	data, err := store.LoadCookies()
 	if err != nil {
-		return nil
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
 	}
 	var list []Cookie
 	if err := json.Unmarshal(data, &list); err != nil {
-		return nil
+		return nil, err
 	}
 	jar := newCookieJar()
 	now := time.Now().Unix()
@@ -145,19 +150,22 @@ func loadCachedJar(dir, psid string) *cookieJar {
 		jar.SetFull(c)
 	}
 	if !jar.Has("__Secure-1PSID") {
-		return nil
+		return nil, nil
 	}
-	return jar
+	return jar, nil
 }
 
-// saveCookies 持久化到缓存文件（仅 google 域 + 未过期 + 认证 Cookie）。
-func saveCookies(dir string, jar *cookieJar) error {
+// saveCookies 持久化到 SQLite 会话存储（仅 google 域 + 未过期 + 认证 Cookie）。
+func saveCookies(store CookieStore, jar *cookieJar) error {
+	if store == nil {
+		return nil
+	}
 	psid := jar.Get("__Secure-1PSID")
 	if psid == "" {
 		return nil
 	}
 	var list []Cookie
-	for _, c := range jar.cookies {
+	for _, c := range jar.snapshot() {
 		domain := strings.TrimPrefix(c.Domain, ".")
 		if domain != "google.com" && !strings.HasSuffix(domain, ".google.com") {
 			continue
@@ -166,26 +174,24 @@ func saveCookies(dir string, jar *cookieJar) error {
 		if !isAuth && c.Expires > 0 && c.Expires < float64(time.Now().Unix()) {
 			continue
 		}
-		list = append(list, *c)
+		list = append(list, c)
 	}
 	if len(list) == 0 {
 		return nil
-	}
-	path := cachePathFor(dir, psid)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
 	}
 	data, err := json.Marshal(list)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return store.SaveCookies(data)
 }
 
-// clearCache 删除某 PSID 的缓存文件（会话未认证时清理）。
-func clearCache(dir, psid string) {
-	if psid == "" {
-		return
+func (j *cookieJar) snapshot() []Cookie {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	list := make([]Cookie, 0, len(j.cookies))
+	for _, c := range j.cookies {
+		list = append(list, *c)
 	}
-	_ = os.Remove(cachePathFor(dir, psid))
+	return list
 }

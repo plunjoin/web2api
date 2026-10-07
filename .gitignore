@@ -10,7 +10,8 @@ config.yaml
 cookies/
 auth/
 data/
-
+cookies/
+test/
 # 编译与测试产物
 dist/
 build/
@@ -19,6 +20,7 @@ build/
 .gocache*/
 .npm-cache/
 node_modules/
+docs/.vitepress/cache/
 .temp/
 
 # 本地构建/下载产物

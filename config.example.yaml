@@ -23,7 +23,6 @@ routing:
 # ------------------------------------------------------------
 engine_a:
   enabled: true
-  cookie_path: "cookies"           # Cookie 自动轮换缓存目录
   proxy: ""                        # 访问 Google 需要的代理，如 http://127.0.0.1:7890
   refresh_seconds: 600
   timeout_seconds: 300
@@ -57,3 +56,12 @@ engine_b:
   base_url: "http://127.0.0.1:2048"
   api_key: ""
   passthrough: true
+
+# 官方 Gemini 后端：独立于网页账号池，完整支持官方参数和事件
+gemini_api:
+  enabled: false
+  base_url: "https://generativelanguage.googleapis.com"
+  api_key: ""                      # 推荐通过 WEB2API_GEMINI_API_KEY 注入
+  access_token: ""                 # GCS files:register 等需要 OAuth 的功能
+  proxy: ""
+  timeout_seconds: 0               # 0 不限制总时长，允许长后台 SSE

@@ -1,0 +1,4 @@
+# Preserve source snapshots byte for byte so provenance checks survive checkout.
+docs/public/reference/gemini-interactions.openapi.json -text
+docs/public/reference/gemini-interactions.official.txt -text
+internal/geminiapi/official.openapi.json -text

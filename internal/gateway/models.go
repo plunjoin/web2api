@@ -24,10 +24,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	engA := s.mgr.EngineA()
 	engB := s.mgr.EngineB()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"uptime":   time.Since(s.startAt).String(),
-		"engine_a": engA != nil && engA.Ready(),
-		"engine_b": engB != nil && engB.Ready(),
+		"status":     "ok",
+		"uptime":     time.Since(s.startAt).String(),
+		"engine_a":   engA != nil && engA.Ready(),
+		"engine_b":   engB != nil && engB.Ready(),
+		"gemini_api": s.gemini.Enabled(),
 	})
 }
 

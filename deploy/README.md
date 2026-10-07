@@ -19,7 +19,7 @@ Linux 和 macOS 发布包是 .tar.gz；Windows 用 PowerShell 打包时是 .zip�
 
 ## 从源码生成所有平台发布包
 
-在仓库根目录执行。脚本会清空并重新生成 dist/，每个包都包含示例配置和运行所需的文档，不会包含本机的 data/、auth/、cookies/ 或敏感配置。Linux 包内的 config.yaml 是指向 /opt/web2api 的部署模板。
+在仓库根目录执行。脚本会清空并重新生成 dist/，每个包都包含示例配置和运行所需的文档，不会包含本机的 data/、auth/ 或敏感配置。Linux 包内的 config.yaml 是指向 /opt/web2api 的部署模板。
 
 ### Windows PowerShell（推荐）
 
@@ -41,7 +41,7 @@ chmod +x build.sh
 也可以只手动构建一个目标（纯 Go 交叉编译）：
 
 ~~~bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o web2api ./cmd/web2api
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o web2api .
 ~~~
 
 ## Windows 部署
@@ -54,7 +54,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o web
 .\web2api.exe -config config.yaml
 ~~~
 
-数据默认写入程序目录下的 data/、auth/、cookies/。需要开机启动时，可把 start.bat 放入任务计划程序；Windows 服务可使用 NSSM 等服务包装器。
+数据默认写入程序目录下的 data/、auth/。需要开机启动时，可把 start.bat 放入任务计划程序；Windows 服务可使用 NSSM 等服务包装器。
 
 ## Linux 二进制部署（systemd）
 
@@ -66,7 +66,7 @@ cd web2api-v1.0.0-linux-amd64
 bash install.sh
 ~~~
 
-脚本安装到 /opt/web2api，注册 web2api.service 并设置开机启动。配置文件是 /opt/web2api/config.yaml，数据和凭据目录是 /opt/web2api/data、/opt/web2api/auth、/opt/web2api/cookies。
+脚本安装到 /opt/web2api，注册 web2api.service 并设置开机启动。配置文件是 /opt/web2api/config.yaml，数据和凭据目录是 /opt/web2api/data、/opt/web2api/auth。
 
 ~~~bash
 sudo systemctl status web2api
@@ -77,7 +77,7 @@ sudo systemctl restart web2api
 如果不使用 systemd，也可以直接运行：
 
 ~~~bash
-mkdir -p data auth cookies
+mkdir -p data auth
 cp config.example.yaml config.yaml
 ./web2api -config config.yaml
 ~~~
@@ -99,7 +99,7 @@ docker compose up -d
 docker compose logs -f web2api
 ~~~
 
-基础 Docker 部署只需要 Compose 文件和环境变量，不需要导入 `config.yaml`。容器使用 web2api-data、web2api-auth、web2api-cookies 三个卷保存数据。需要跨 CPU 构建镜像时可使用 Docker Buildx：
+基础 Docker 部署只需要 Compose 文件和环境变量，不需要导入 `config.yaml`。容器使用 web2api-data、web2api-auth 两个卷保存数据。需要跨 CPU 构建镜像时可使用 Docker Buildx：
 
 ~~~bash
 docker buildx build --platform linux/amd64,linux/arm64 \
@@ -114,5 +114,5 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 | http://<主机>:8800/v1 | OpenAI 兼容 API Base URL |
 | http://<主机>:8800/v1/models | 模型列表和健康检查 |
 
-生产环境请放行 TCP 8800（防火墙和云安全组），并备份 data/、auth/、cookies/。这些目录可能包含账号凭据，不能提交到 Git 或打进发布包。
+生产环境请放行 TCP 8800（防火墙和云安全组），并备份 data/、auth/。这些目录可能包含账号凭据，不能提交到 Git 或打进发布包。
 

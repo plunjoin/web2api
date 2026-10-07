@@ -8,8 +8,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,6 +29,7 @@ func main() {
 	var (
 		cfgPath          = flag.String("config", "config.yaml", "配置文件路径")
 		verbose          = flag.Bool("v", false, "详细日志")
+		importCookies    = flag.String("import-cookie-cache", "", "一次性导入旧 Cookie 缓存到 SQLite，导入后退出")
 		upgradeContainer = flag.String("upgrade-container", "", "内部升级任务：待替换容器 ID")
 		upgradeImage     = flag.String("upgrade-image", "", "内部升级任务：目标镜像 ID")
 		upgradeJob       = flag.String("upgrade-job", "", "内部升级任务 ID")
@@ -61,12 +64,21 @@ func main() {
 		logger.Fatalf("打开数据库失败: %v", err)
 	}
 	defer st.Close()
+	if *importCookies != "" {
+		count, err := st.ImportLegacyCookies(*importCookies)
+		if err != nil {
+			logger.Fatalf("导入 Cookie 会话失败: %v", err)
+		}
+		logger.Printf("已导入 %d 个 Cookie 会话到 SQLite", count)
+		return
+	}
 
 	// 3. 构建引擎管理器并初始化
 	mgr, err := provider.NewManager(cfg, st)
 	if err != nil {
 		logger.Fatalf("初始化引擎失败: %v", err)
 	}
+	defer mgr.Close()
 	initCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if err := mgr.Init(initCtx); err != nil {
@@ -96,10 +108,9 @@ func main() {
 		ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
 		defer c()
 		_ = srv.Shutdown(ctx)
-		os.Exit(0)
 	}()
 
-	if err := srv.Start(cfg.Server.Listen); err != nil {
+	if err := srv.Start(cfg.Server.Listen); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("网关启动失败: %v", err)
 	}
 }

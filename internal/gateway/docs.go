@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"web2api/internal/geminiapi"
 )
 
 // handlePublicDocs 返回对外网关 API 的 OpenAPI 文档。管理台接口文档仍由
@@ -81,6 +82,8 @@ func publicAPISpec() map[string]any {
 		},
 	}
 	addMediaAPIDocs(spec)
+	addGeminiCompatibilityDocs(spec)
+	geminiapi.MergeDocs(spec)
 	return spec
 }
 

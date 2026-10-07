@@ -98,6 +98,15 @@ func (s *Store) migrate() error {
 			updated_at INTEGER NOT NULL
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_engine_label ON accounts(engine, label)`,
+		`CREATE TABLE IF NOT EXISTS cookie_sessions (
+			account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+			data BLOB NOT NULL, updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS gemini_upload_sessions (
+			id TEXT PRIMARY KEY, url TEXT NOT NULL, expires_at INTEGER NOT NULL
+		)`,
+		`CREATE TRIGGER IF NOT EXISTS invalidate_cookie_session AFTER UPDATE OF credentials ON accounts
+			WHEN NEW.credentials != OLD.credentials BEGIN DELETE FROM cookie_sessions WHERE account_id=NEW.id; END`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			key TEXT NOT NULL UNIQUE,

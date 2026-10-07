@@ -1,0 +1,22 @@
+{
+  "retrieved_date": "2026-10-07",
+  "timezone": "Asia/Shanghai",
+  "scope": "Interactions create/get/cancel/delete and all referenced request/response/error/SSE schemas",
+  "sources": [
+    {
+      "file": "gemini-interactions.openapi.json",
+      "url": "https://ai.google.dev/static/api/interactions.openapi.json",
+      "sha256": "6f3d064c9b711b84e8b71a9a03533aaf1f8ed006adcf7697ffacf8c192baa419"
+    },
+    {
+      "file": "gemini-interactions.official.txt",
+      "url": "https://ai.google.dev/static/api/interactions.md.txt",
+      "sha256": "77b7c962c79c0279938e97f7a8e3e10da89e56fd8060bf34cbba24e9be9b64d3"
+    }
+  ],
+  "supplied_reference": {
+    "name": "gemini-interactions-api-reference.md",
+    "sha256": "213f09edcdec509110c1079b1811462fdb9d33715450600a5d1becf2aecb8ecf",
+    "note": "Chinese guide adapted from the user-supplied document; guide/SDK-specific claims not independently verified in this audit."
+  }
+}

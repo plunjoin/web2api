@@ -34,7 +34,7 @@ echo "检测到架构: $ARCH → 使用 $BIN_FILE"
 
 # 1. 创建目录
 echo "→ 创建部署目录 $INSTALL_DIR"
-sudo mkdir -p "$INSTALL_DIR"/{data,auth,cookies}
+sudo mkdir -p "$INSTALL_DIR"/{data,auth}
 
 # 2. 复制二进制
 if [ ! -f "$BIN_FILE" ]; then

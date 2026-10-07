@@ -42,6 +42,21 @@ curl http://localhost:8800/v1/chat/completions \
 
 `stream: true` 时先拼接 SSE 的 `choices[0].delta.content`，再提取媒体链接；这不是独立的实时音频会话协议。
 
+## Gemini 官方音频参数对照
+
+官方 Interactions 的输出使用 `response_format` 的 audio 分支，语音行为使用 `generation_config.speech_config`；转写使用 transcription_config，音乐模型使用不同的输入和能力范围。这些配置目前均未接入 HTTP 聊天入口。
+
+| 配置 | 官方字段 / 允许值 | 当前遗漏 |
+| --- | --- | --- |
+| AudioResponseFormat | type=audio、mime_type、sample_rate、bit_rate、delivery | 无法指定编码、采样率、码率或 URI 交付 |
+| 音频输出 MIME | audio/mp3、audio/ogg_opus、audio/l16、audio/wav、audio/alaw、audio/mulaw | 由上游实际产物决定；仅改扩展名不会转码 |
+| SpeechConfig | voice、speaker、language；支持数组或 speakers 对象 | 内部有单人 / 多人声音结构，形状不同且无 language 映射，HTTP 未开放 |
+| TranscriptionConfig | custom_vocabulary、language_codes、mode=verbatim / smart 或对象；逐字对象有 diarization_mode / timestamp_granularities | 内部已有部分转写配置，但 HTTP 没有音频输入和设置映射 |
+| AudioContent | data / uri、mime_type、channels、sample_rate | HTTP 未映射输入块；不能把 input_audio 或文件路径当作已上传内容 |
+| 语音标注 / 转写标注 | speech_metadata、word_info、说话人和词级时间范围 | 未以官方 annotations 结构输出 |
+
+官方 TTS 非流式默认 WAV、流式默认 l16 的规则只适用于相应官方调用，不能推断当前聊天媒体一定是 WAV。Lyria 的音乐输入与输出限制、声音选择、多人朗读、转写模式和废弃字段详见[中文参考详解](/api/gemini-reference)及[完整字段对照](/api/gemini-schema)。
+
 ## upstream 模式：文本转语音
 
 需要 `engine_b.enabled: true`、`engine_b.mode: upstream`、`engine_b.passthrough: true`，且配置的上游实现 `/v1/audio/speech`。

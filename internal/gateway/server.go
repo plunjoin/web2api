@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"web2api/internal/admin"
+	"web2api/internal/geminiapi"
 	"web2api/internal/limiter"
 	"web2api/internal/model"
 	"web2api/internal/provider"
@@ -37,6 +38,7 @@ type Server struct {
 	startAt time.Time
 	logger  *log.Logger
 	updater *upgrade.Manager
+	gemini  *geminiapi.Backend
 }
 
 // NewServer 创建网关服务。
@@ -50,6 +52,10 @@ func NewServer(mgr *provider.Manager, st *store.Store, seedKeys []string, rate, 
 			_ = st.ImportKey(key, "config")
 		}
 	}
+	gemini, err := geminiapi.New(mgr.GeminiAPIConfig(), st)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		mgr:     mgr,
 		st:      st,
@@ -57,6 +63,7 @@ func NewServer(mgr *provider.Manager, st *store.Store, seedKeys []string, rate, 
 		limiter: limiter.New(rate, capacity),
 		logger:  logger,
 		startAt: time.Now(),
+		gemini:  gemini,
 	}, nil
 }
 
@@ -69,6 +76,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/docs", s.handlePublicDocs)
+	mux.HandleFunc("GET /v1/gemini-docs", s.handleGeminiDocs)
+	for _, path := range geminiapi.Mounts() {
+		mux.HandleFunc(path, s.withGeminiAuth(s.gemini.ServeHTTP))
+	}
 	// 本机登录导出工具：脚本本身不含凭据，运行时仍需管理员 JWT。
 	mux.HandleFunc("GET /tools/export-storage.sh", s.handleExportToolScript)
 	mux.HandleFunc("GET /tools/export-storage.js", s.handleExportToolScript)
@@ -113,6 +124,7 @@ func (s *Server) Start(listen string) error {
 
 // Shutdown 优雅关闭。
 func (s *Server) Shutdown(ctx context.Context) error {
+	defer s.gemini.Close()
 	if s.httpSrv != nil {
 		return s.httpSrv.Shutdown(ctx)
 	}

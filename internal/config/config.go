@@ -11,10 +11,22 @@ import (
 
 // Config 顶层配置。
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Routing RoutingConfig `yaml:"routing"`
-	EngineA EngineAConfig `yaml:"engine_a"`
-	EngineB EngineBConfig `yaml:"engine_b"`
+	Server    ServerConfig    `yaml:"server"`
+	Routing   RoutingConfig   `yaml:"routing"`
+	EngineA   EngineAConfig   `yaml:"engine_a"`
+	EngineB   EngineBConfig   `yaml:"engine_b"`
+	GeminiAPI GeminiAPIConfig `yaml:"gemini_api"`
+}
+
+// GeminiAPIConfig configures the official backend independently of web accounts.
+// TimeoutSeconds=0 allows long background event streams without a total deadline.
+type GeminiAPIConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	BaseURL        string `yaml:"base_url"`
+	APIKey         string `yaml:"api_key"`
+	AccessToken    string `yaml:"access_token"`
+	Proxy          string `yaml:"proxy"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
 
 // ServerConfig HTTP 服务配置。
@@ -35,8 +47,7 @@ type RoutingConfig struct {
 // EngineAConfig 引擎A：gemini.google.com 网页版（原生 Go 逆向）。
 type EngineAConfig struct {
 	Enabled        bool          `yaml:"enabled"`
-	CookiePath     string        `yaml:"cookie_path"` // Cookie 缓存目录
-	Proxy          string        `yaml:"proxy"`       // 可选 http(s)/socks5 代理
+	Proxy          string        `yaml:"proxy"` // 可选 http(s)/socks5 代理
 	RefreshSeconds int           `yaml:"refresh_seconds"`
 	TimeoutSeconds int           `yaml:"timeout_seconds"`
 	Accounts       []AccountConf `yaml:"accounts"`
@@ -82,10 +93,10 @@ func Default() *Config {
 			DBPath:   "data/web2api.db",
 			LogLevel: "info",
 		},
-		Routing: RoutingConfig{DefaultEngine: "auto"},
+		Routing:   RoutingConfig{DefaultEngine: "auto"},
+		GeminiAPI: GeminiAPIConfig{BaseURL: "https://generativelanguage.googleapis.com"},
 		EngineA: EngineAConfig{
 			Enabled:        true,
-			CookiePath:     "cookies",
 			RefreshSeconds: 600,
 			TimeoutSeconds: 300,
 		},
@@ -129,6 +140,20 @@ func Load(path string) (*Config, error) {
 
 func applyEnv(cfg *Config) {
 	// 环境变量覆盖
+	if v := os.Getenv("WEB2API_GEMINI_API_KEY"); v != "" {
+		cfg.GeminiAPI.APIKey = v
+		cfg.GeminiAPI.Enabled = true
+	}
+	if v := os.Getenv("WEB2API_GEMINI_ACCESS_TOKEN"); v != "" {
+		cfg.GeminiAPI.AccessToken = v
+		cfg.GeminiAPI.Enabled = true
+	}
+	if v := os.Getenv("WEB2API_GEMINI_BASE_URL"); v != "" {
+		cfg.GeminiAPI.BaseURL = v
+	}
+	if v := os.Getenv("WEB2API_GEMINI_PROXY"); v != "" {
+		cfg.GeminiAPI.Proxy = v
+	}
 	if v := os.Getenv("WEB2API_LISTEN"); v != "" {
 		cfg.Server.Listen = v
 	}

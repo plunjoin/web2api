@@ -36,7 +36,7 @@ web2api 是一个自托管的 Gemini 双引擎网关。它把账号池、请求�
 - SQLite 保存账号、API Key 和用量明细。
 - Redis 只保存管理员登录会话和登录尝试计数。
 - 客户端 Key 使用 `Authorization: Bearer <key>`，管理台使用独立的管理员 JWT。
-- `auth/`、`cookies/` 和 `data/` 包含敏感信息，应使用独立备份策略，不要提交到 Git。
+- `auth/` 和 `data/` 包含敏感信息，应使用独立备份策略，不要提交到 Git。
 
 ## 代码入口
 
@@ -50,4 +50,4 @@ web2api 是一个自托管的 Gemini 双引擎网关。它把账号池、请求�
 
 ## 适合的部署方式
 
-个人或小团队可以直接运行发布包；长期运行推荐 Docker Compose，并将 `data/`、`auth/` 和 `cookies/` 挂载到持久化卷。详细步骤见[部署方式](/guide/deployment)。
+个人或小团队可以直接运行发布包；长期运行推荐 Docker Compose，并将 `data/` 和 `auth/` 挂载到持久化卷。详细步骤见[部署方式](/guide/deployment)。

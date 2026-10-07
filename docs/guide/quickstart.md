@@ -13,7 +13,7 @@ docker compose up -d
 ### 本地运行
 
 ```bash
-go run ./cmd/web2api -config config.yaml
+go run . -config config.yaml
 ```
 
 服务默认监听 `http://localhost:8800`。第一次访问 `http://localhost:8800/admin`，设置管理员邮箱、密码、昵称和 Redis 连接地址。

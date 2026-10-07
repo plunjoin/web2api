@@ -20,6 +20,7 @@ services:
       - WEB2API_DB_PATH=/app/data/web2api.db
       - WEB2API_DEFAULT_ENGINE=${WEB2API_DEFAULT_ENGINE:-auto}
       - WEB2API_PROXY=${WEB2API_PROXY:-}
+      - WEB2API_GEMINI_API_KEY=${WEB2API_GEMINI_API_KEY:-}
       # 时区
       - TZ=Asia/Shanghai
 
@@ -28,8 +29,6 @@ services:
       - web2api-data:/app/data
       # 引擎B 账号凭据目录（AIStudio2API 兼容的 auth/ 目录）
       - web2api-auth:/app/auth
-      # 引擎A Cookie 自动轮换缓存
-      - web2api-cookies:/app/cookies
 
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8800/health"]
@@ -41,4 +40,3 @@ services:
 volumes:
   web2api-data:
   web2api-auth:
-  web2api-cookies:

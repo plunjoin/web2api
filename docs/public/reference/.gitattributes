@@ -1,0 +1,3 @@
+# Preserve downloaded source bytes so the recorded SHA-256 remains portable.
+*.json -text
+*.txt -text

@@ -39,7 +39,7 @@ const nativeMediaDescription = `## 图片生成（引擎B native）
 
 ## 当前聊天适配参数
 
-该接口支持 model、messages、stream、temperature、top_p、max_tokens、user。原生图片/音频输出模态由模型目录自动选择。当前 HTTP 聊天适配器未映射 image_config、speech_config、response_modalities、voice、size、n 或 response_format；传入这些额外字段不会设置生成参数。原生消息适配只提取文本，不能用 image_url 或 input_audio 完成参考图编辑、音频输入。
+该接口接收 model、messages、stream、temperature、top_p、max_tokens、user；user 仅解析，未进入生成请求，采样参数不保证每种私有 RPC 都编码。原生图片/音频输出模态由模型目录自动选择。当前 HTTP 聊天适配器未映射 image_config、speech_config、response_modalities、voice、size、n 或 response_format；传入这些额外字段不会设置生成参数。原生消息适配只提取文本，不能用 image_url 或 input_audio 完成参考图编辑、音频输入。
 
 stream=true 时媒体链接也放在 choices[0].delta.content 中，需拼接分片后再提取完整链接。普通聊天仍使用同一接口；失败状态码见 responses。`
 

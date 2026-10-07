@@ -26,7 +26,7 @@ docker compose logs -f web2api
 docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d
 ```
 
-基础部署只需要 Compose 文件和环境变量，不需要导入 `config.yaml`。高级用户仍可通过 `-config` 指定自定义 YAML；默认配置会自动启用两个引擎，并使用 `/app/data`、`/app/auth` 和 `/app/cookies` 持久化目录。
+基础部署只需要 Compose 文件和环境变量，不需要导入 `config.yaml`。高级用户仍可通过 `-config` 指定自定义 YAML；默认配置会自动启用两个引擎，并使用 `/app/data` 和 `/app/auth` 持久化目录。
 
 之后登录管理台，打开「系统升级」→「检查更新」→「一键升级」。检查时下载最新镜像，服务继续运行；升级时短暂停机，面板自动重连。新容器通过健康检查后删除旧容器；启动或健康检查失败时恢复旧容器。
 
@@ -62,7 +62,6 @@ POST /admin/api/upgrade        启动独立升级任务
 |----|----------|------|
 | `web2api-data` | `/app/data` | SQLite 库（号池账号、API Key、用量） |
 | `web2api-auth` | `/app/auth` | 引擎B 账号凭据（AIStudio2API 兼容） |
-| `web2api-cookies` | `/app/cookies` | 引擎A Cookie 自动轮换缓存 |
 
 > 卷由 Docker 管理，`docker compose down` 不删除；`docker compose down -v` 才清除。
 
@@ -106,7 +105,6 @@ docker run -d --name web2api \
   -p 8800:8800 \
   -v web2api-data:/app/data \
   -v web2api-auth:/app/auth \
-  -v web2api-cookies:/app/cookies \
   -v ./config.yaml:/app/data/config.yaml:ro \
   -e TZ=Asia/Shanghai \
   --restart unless-stopped \

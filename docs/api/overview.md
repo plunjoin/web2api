@@ -39,6 +39,16 @@ curl http://localhost:8800/v1/docs > openapi.json
 
 文档内包含生成接口的参数说明、请求与响应示例和 cURL 命令。按用途阅读：[视频生成](/api/videos)、[图片生成](/api/images)、[音频生成](/api/audio)。原生模式是默认配置；图片和语音专用透传端点需要启用 `engine_b.mode: upstream`、`passthrough: true`，参数及响应以实际配置的上游为准。
 
+## Gemini 官方协议对照
+
+网关新增官方后端，启用 gemini_api 后支持 `/v1/interactions`、`/v1beta/interactions` 及全部官方资源。请求体、响应和 SSE 原样转发，Google 执行后台任务及服务端存储。客户端使用网关 sk- Key，服务器使用 Google API Key / OAuth；配置与 SDK 示例见[官方后端接入](/api/gemini-official)。原有聊天入口不转换这些官方配置。
+
+- [Gemini 参数与实现差距](/api/gemini)：官方字段逐项映射、内部能力、尚未实现的流程与代码依据。
+- [官方字段完整对照](/api/gemini-schema)：从官方 OpenAPI 递归生成，覆盖四个 Interactions 操作、全部嵌套字段、联合类型、枚举、响应和 SSE。
+- [中文参考详解](/api/gemini-reference)：直接调用 Google 的 SDK / REST 示例、模型范围、媒体上传、工具与迁移细节。
+
+以上对照以 2026-10-07 保存的官方快照为基准。`GET /v1/docs` 描述当前网关可调用的接口；官方后端完整转发字段；对照表中的限制专指网页登录态 / 兼容聊天适配。
+
 ## 响应约定
 
 聊天、视频创建与查询使用 JSON；流式聊天使用 `text/event-stream`；视频下载返回 MP4，语音透传通常返回音频二进制。网关生成的错误结构为下例；透传错误保留上游结构，`code` 也可能省略：

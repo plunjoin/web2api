@@ -11,9 +11,8 @@ docker compose logs -f web2api
 
 | 路径 | 内容 |
 | --- | --- |
-| `data/` | SQLite 数据库、Key、用量和管理员配置 |
+| `data/` | SQLite 数据库，保存账号、Cookie 会话、官方上传续传会话、Key、用量和管理员配置 |
 | `auth/` | AI Studio 登录态 |
-| `cookies/` | Gemini Cookie 会话 |
 
 生产环境建议在反向代理后启用 HTTPS，并且只对可信网络开放 `/admin`。
 

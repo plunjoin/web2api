@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/engine/geminiweb"
 	"web2api/internal/model"
+	"web2api/internal/store"
 )
 
 // geminiAccount 引擎A 池内账号。
@@ -22,15 +24,16 @@ type geminiAccount struct {
 	label   string
 	client  *geminiweb.Client
 	enabled bool
+	cancel  context.CancelFunc
 }
 
 // GeminiWebEngine 引擎A：gemini.google.com 网页版原生逆向账号池（支持运行时增删启停）。
 type GeminiWebEngine struct {
-	name      string
-	proxy     string
-	refresh   time.Duration
-	timeout   time.Duration
-	cookieDir string
+	name    string
+	proxy   string
+	refresh time.Duration
+	timeout time.Duration
+	store   *store.Store
 
 	mu       sync.RWMutex
 	accounts []*geminiAccount // 保序
@@ -52,13 +55,30 @@ func NewGeminiWeb(cfg config.EngineAConfig) (*GeminiWebEngine, error) {
 		cfg.TimeoutSeconds = 300
 	}
 	return &GeminiWebEngine{
-		name:      "a",
-		proxy:     cfg.Proxy,
-		refresh:   time.Duration(cfg.RefreshSeconds) * time.Second,
-		timeout:   time.Duration(cfg.TimeoutSeconds) * time.Second,
-		cookieDir: cfg.CookiePath,
-		ids:       map[string]int{},
+		name:    "a",
+		proxy:   cfg.Proxy,
+		refresh: time.Duration(cfg.RefreshSeconds) * time.Second,
+		timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
+		ids:     map[string]int{},
 	}, nil
+}
+
+func (e *GeminiWebEngine) SetStore(st *store.Store) { e.store = st }
+
+type accountCookies struct {
+	store        *store.Store
+	id           int64
+	psid, psidts string
+}
+
+func (a accountCookies) LoadCookies() ([]byte, error) {
+	return a.store.LoadCookieSession(a.id, a.psid, a.psidts)
+}
+func (a accountCookies) SaveCookies(data []byte) error {
+	return a.store.SaveCookieSession(a.id, a.psid, a.psidts, data)
+}
+func (a accountCookies) DeleteCookies() error {
+	return a.store.DeleteCookieSession(a.id, a.psid, a.psidts)
 }
 
 // AddAccount 添加账号并异步初始化（Cookie 校验在后台完成）。
@@ -72,18 +92,27 @@ func (e *GeminiWebEngine) AddAccount(id, label, psid, psidts string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("账号 %s 已在池中", id)
 	}
-	client := geminiweb.NewClient(label, psid, psidts, e.cookieDir, e.proxy, e.timeout)
-	e.accounts = append(e.accounts, &geminiAccount{id: id, label: label, client: client, enabled: true})
+	client := geminiweb.NewClient(label, psid, psidts, e.proxy, e.timeout)
+	if e.store != nil {
+		accountID, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			e.mu.Unlock()
+			return fmt.Errorf("SQLite account ID: %w", err)
+		}
+		client.SetCookieStore(accountCookies{e.store, accountID, psid, psidts})
+	}
+	accountCtx, accountCancel := context.WithCancel(context.Background())
+	e.accounts = append(e.accounts, &geminiAccount{id: id, label: label, client: client, enabled: true, cancel: accountCancel})
 	e.ids[id] = len(e.accounts) - 1
 	e.mu.Unlock()
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+		ctx, cancel := context.WithTimeout(accountCtx, e.timeout)
 		defer cancel()
 		if err := client.Init(ctx); err != nil {
 			e.setErr(fmt.Errorf("账号 %s(%s) 初始化失败: %w", label, id, err))
 		} else {
-			client.StartAutoRefresh(ctx, e.refresh)
+			client.StartAutoRefresh(accountCtx, e.refresh)
 			e.setErr(nil)
 		}
 	}()
@@ -107,8 +136,18 @@ func (e *GeminiWebEngine) RemoveAccount(id string) error {
 		}
 	}
 	e.mu.Unlock()
+	acc.cancel()
 	acc.client.StopAutoRefresh()
 	return nil
+}
+
+func (e *GeminiWebEngine) Close() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, account := range e.accounts {
+		account.cancel()
+		account.client.StopAutoRefresh()
+	}
 }
 
 // SetEnabled 启停账号。

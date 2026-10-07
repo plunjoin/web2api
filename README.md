@@ -41,13 +41,13 @@ Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API
 ```powershell
 cd F:\project\john\web2api
 # 1. 启动 Redis，按需编辑 config.yaml（监听地址、引擎等）
-# 2. 直接运行源码（main.go 位于 cmd/web2api，这是 Go 多程序项目的标准布局）
-go run ./cmd/web2api -config config.yaml
+# 2. 直接运行源码（main.go 位于根目录）
+go run . -config config.yaml
 #    或先编译再运行（Windows）
-go build -o web2api.exe ./cmd/web2api
+go build -o web2api.exe .
 .\web2api.exe -config config.yaml
 #    Linux/macOS 输出文件名可用 web2api
-# go build -o web2api ./cmd/web2api
+# go build -o web2api .
 # ./web2api -config config.yaml
 #    已有 web2api.exe 时也可以双击 start.bat
 # 3. 打开管理台
@@ -136,6 +136,8 @@ curl "http://localhost:8800/admin/api/usage?days=30" \
 
 ## 对外 API（客户端接入）
 
+官方 Gemini 全参数调用：设置服务器环境变量 `WEB2API_GEMINI_API_KEY`，客户端将 Google SDK 的 Base URL 设为 `http://localhost:8800/gemini`，apiKey 填管理台创建的 `sk-` Key。Interactions、agent、沙箱、工具、后台任务、SSE 恢复及 Files 上传使用官方后端；详细配置和示例见[官方后端接入](docs/api/gemini-official.md)。原有网页登录态账号池继续通过下面的 OpenAI 兼容接口调用。
+
 | 配置项 | 值 |
 |---|---|
 | Base URL | `http://localhost:8800/v1` |
@@ -143,6 +145,8 @@ curl "http://localhost:8800/admin/api/usage?days=30" \
 | 文本模型 | `gemini-flash` / `gemini-pro`（引擎A），`/v1/models` 实时聚合双引擎 |
 
 完整对外接口文档：`GET /v1/docs`（OpenAPI 3.1，可导入 Postman/Insomnia）。
+
+Gemini 官方参数审计（2026-10-07）：[参数映射与实现遗漏](docs/api/gemini.md)、[官方全部字段对照](docs/api/gemini-schema.md)、[中文参考详解](docs/api/gemini-reference.md)。完整表由保存的官方 OpenAPI 自动生成，包含请求、响应、工具、agent、沙箱和 SSE 的深层字段。新增[官方 Gemini 后端](docs/api/gemini-official.md)，启用后官方 Interactions 参数和 SSE 完整转发；网页登录态聊天的字段限制单独标注。
 
 生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接；`/v1/images/generations` 与 `/v1/audio/speech` 需要 upstream 模式开启透传，并由上游实现。
 端点：`POST /v1/chat/completions`（SSE 流式 + 非流式）、`GET /v1/models`、
@@ -188,7 +192,7 @@ Docker 部署可启用 `docker-compose.upgrade.yml`，之后在管理台「系�
 ## 存储
 
 SQLite（`data/web2api.db`，纯 Go 驱动无 cgo）：`accounts`（号池凭据与状态）、
-`api_keys`（Key 分发）、`usage_log`（用量明细）、`admin_settings`（管理员邮箱、昵称、bcrypt 密码哈希、Redis URL 和随机 JWT 签名密钥）。Redis 存储带过期时间的管理员登录会话与登录尝试计数，不保存业务数据。备份 SQLite 时请停止服务后拷贝 `data/` 目录；Redis 会话丢失时重新登录即可。Redis URL 可能含密码，数据库需要妥善保管；敏感目录 `data/`、`cookies/`、`auth/` 勿提交 Git。
+`api_keys`（Key 分发）、`usage_log`（用量明细）、`cookie_sessions`（完整 Cookie 会话）、`gemini_upload_sessions`（官方断点上传会话）、`admin_settings`（管理员邮箱、昵称、bcrypt 密码哈希、Redis URL 和随机 JWT 签名密钥）。Redis 存储带过期时间的管理员登录会话与登录尝试计数，不保存业务数据。备份 SQLite 时请停止服务后拷贝 `data/` 目录；Redis 会话丢失时重新登录即可。Redis URL 可能含密码，数据库需要妥善保管；敏感目录 `data/`、`auth/` 勿提交 Git。
 
 ## 打包与部署
 
@@ -219,13 +223,15 @@ chmod +x build.sh
 ```powershell
 go test ./...     # 存储层 + 协议解析 + 网关/管理台集成 + 动态号池装配
 go vet ./...
-go build -o web2api.exe ./cmd/web2api
+go build -o web2api.exe .
 ```
 
 ## 目录结构
 
 ```
-cmd/web2api/                 入口
+main.go                     入口（go run . / go build .）
+test/                       全部测试与测试服务（go test ./...）
+internal/geminiapi/          官方 Gemini 后端（全参数 / SSE / 上传）
 internal/store/              SQLite：账号 / Key / 用量
 internal/config/             YAML 配置 + 环境变量
 internal/model/              OpenAI 协议数据结构

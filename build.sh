@@ -20,7 +20,7 @@ build_one() {
   local stage="$DIST/$package"
   mkdir -p "$stage"
   if [[ -n "$goarm" ]]; then export GOARM="$goarm"; else unset GOARM || true; fi
-  GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags='-s -w' -o "$stage/web2api$ext" ./cmd/web2api
+  GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags='-s -w' -o "$stage/web2api$ext" .
   cp "$ROOT/config.example.yaml" "$stage/config.example.yaml"
   cp "$ROOT/README.md" "$stage/README.md"
   if [[ "$goos" == windows ]]; then

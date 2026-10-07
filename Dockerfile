@@ -19,7 +19,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # 拷贝源码
-COPY cmd ./cmd
+COPY main.go ./
 COPY internal ./internal
 
 # 交叉编译：纯 Go、无 CGO、Linux/amd64（可改 arm64 部署到 ARM 服务器）
@@ -27,7 +27,7 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
-RUN go build -ldflags="-s -w" -o /out/web2api ./cmd/web2api
+RUN go build -ldflags="-s -w" -o /out/web2api .
 
 # ---------- 运行阶段 ----------
 FROM alpine:3.20
@@ -40,9 +40,9 @@ WORKDIR /app
 # 拷贝二进制
 COPY --from=builder /out/web2api /app/web2api
 
-# 数据目录（SQLite 库、引擎B auth 凭据、引擎A cookie 缓存）
+# 数据目录（SQLite 库含 Cookie 会话、引擎B auth 凭据）
 # 由 docker-compose volumes 或 -v 持久化
-RUN mkdir -p /app/data /app/auth /app/cookies
+RUN mkdir -p /app/data /app/auth
 
 # 默认配置（容器内不可变区放一份模板，实际配置从挂载卷读）
 COPY config.example.yaml /app/config.example.yaml
