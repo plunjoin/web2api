@@ -42,7 +42,9 @@ curl http://localhost:8800/v1/chat/completions \
 
 响应包含 `id`、`object`、`created`、`model`、`choices` 和 `usage`，可以交给 OpenAI SDK 解析。正文只有字符串 content，媒体包装成 Markdown 链接。
 
-`usage.prompt_tokens` 和 `completion_tokens` 根据输入 / 输出文本长度估算，`total_tokens` 为两者相加；这些数值不是 Google 返回的权威用量，不包含官方完整的思考、缓存、工具和分模态计费统计。`finish_reason` 当前固定为 stop，不能据此区分官方 incomplete、requires_action 等状态。
+非流式响应的 `usage` 优先使用上游真实用量：引擎B（AI Studio）取协议返回的 usage metadata，其中 `prompt_tokens` = 输入 + 工具 Token，`completion_tokens` = 输出 + 思考 Token，`total_tokens` 取上游总数（可能大于前两者之和）；upstream 引擎取上游响应的 `usage`。拿不到时（引擎A 等）按输入 / 输出文本长度估算。响应头 `X-Web2api-Usage-Source` 为 `upstream` 或 `estimated`，`X-Web2api-Multiplier` 为生效倍率（模型倍率 × Key 倍率），`X-Web2api-Charged-Tokens` 为本次从 Key 额度扣减的计费 Token。估算值不包含官方完整的缓存和分模态计费统计。
+
+Key 设置了 Token 额度且已用尽时，请求在入口返回 `429`，`error.type` 为 `insufficient_quota`、`error.code` 为 `token_quota_exceeded`；流式请求同样在建立流之前被拒绝。模型不在 Key 白名单内返回 `403 model_not_allowed`，详见[错误与限流](/api/errors)。`finish_reason` 当前固定为 stop，不能据此区分官方 incomplete、requires_action 等状态。
 
 ## SSE 流式请求
 
@@ -57,7 +59,7 @@ curl -N http://localhost:8800/v1/chat/completions \
 
 客户端按标准 SSE 读取 `data:` 事件，最后一个事件为 `data: [DONE]`。网络代理需要关闭响应缓冲，才能及时看到增量内容。
 
-流中的分片使用 `choices[0].delta.content`。没有官方 event_type、event_id、step.index、thought signature 或 last_event_id 恢复机制。流开始后上游失败时，当前实现会输出 `[Error] ...` 文本并结束流，客户端应识别此情况；HTTP 200 只说明流已建立。流式分片没有权威 usage 汇总。
+流中的分片使用 `choices[0].delta.content`。没有官方 event_type、event_id、step.index、thought signature 或 last_event_id 恢复机制。流开始后上游失败时，当前实现会输出 `[Error] ...` 文本并结束流，客户端应识别此情况；HTTP 200 只说明流已建立。流式分片没有权威 usage 汇总；管理台用量明细中的流式请求按文本长度估算并标记为估算。
 
 ## 消息内容
 

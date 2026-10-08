@@ -38,6 +38,42 @@ type APIKey struct {
 	Name      string `json:"name"`
 	Enabled   bool   `json:"enabled"`
 	CreatedAt int64  `json:"created_at"`
+	// TokenLimit 是 Key 的 Token 额度（按倍率计费后的 Token），0 表示不限。
+	TokenLimit int64 `json:"token_limit"`
+	// TokensUsed 是已扣减的计费 Token（= Σ ceil(total_tokens × 模型倍率 × Key 倍率)）。
+	TokensUsed int64 `json:"tokens_used"`
+	// Multiplier 是 Key 倍率（分组默认倍率），与模型倍率相乘，默认 1。
+	Multiplier float64 `json:"multiplier"`
+	// TokensRemaining 剩余额度；不限额时为 null。
+	TokensRemaining *int64 `json:"tokens_remaining"`
+	// QuotaExhausted 额度是否已用尽（用尽后请求返回 429 insufficient_quota）。
+	QuotaExhausted bool `json:"quota_exhausted"`
+	// ExpiresAt 过期时间（Unix 秒），0 表示永不过期；过期后请求返回 401 key_expired。
+	ExpiresAt int64 `json:"expires_at"`
+	// Expired 是否已过期（派生字段）。
+	Expired bool `json:"expired"`
+	// AllowedModels 模型白名单；空表示允许全部。支持末尾 * 前缀匹配（如 gemini-3.5-*）。
+	AllowedModels []string `json:"allowed_models"`
+	// RPMLimit 每分钟请求数上限，0 表示只受全局限流约束。
+	RPMLimit int64 `json:"rpm_limit"`
+}
+
+// fillQuota 计算派生字段 TokensRemaining / QuotaExhausted。
+func (k *APIKey) fillQuota() {
+	k.Expired = k.ExpiresAt > 0 && now() >= k.ExpiresAt
+	if k.AllowedModels == nil {
+		k.AllowedModels = []string{}
+	}
+	k.TokensRemaining = nil
+	k.QuotaExhausted = false
+	if k.TokenLimit > 0 {
+		remaining := k.TokenLimit - k.TokensUsed
+		if remaining < 0 {
+			remaining = 0
+		}
+		k.TokensRemaining = &remaining
+		k.QuotaExhausted = k.TokensUsed >= k.TokenLimit
+	}
 }
 
 // UsageRow 聚合用量行。
@@ -127,13 +163,84 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_log(api_key, ts)`,
+		// 模型倍率：model='*' 为未单独配置模型时的默认倍率。
+		`CREATE TABLE IF NOT EXISTS model_multipliers (
+			model TEXT PRIMARY KEY,
+			multiplier REAL NOT NULL DEFAULT 1,
+			updated_at INTEGER NOT NULL
+		)`,
+		// 逐请求用量明细（ts 为 Unix 秒）。estimated=1 表示 Token 数含本地估算。
+		`CREATE TABLE IF NOT EXISTS usage_records (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER NOT NULL,
+			key_id INTEGER NOT NULL DEFAULT 0,
+			api_key TEXT NOT NULL DEFAULT '',
+			engine TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			endpoint TEXT NOT NULL DEFAULT '',
+			stream INTEGER NOT NULL DEFAULT 0,
+			success INTEGER NOT NULL DEFAULT 1,
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			estimated INTEGER NOT NULL DEFAULT 0,
+			model_multiplier REAL NOT NULL DEFAULT 1,
+			key_multiplier REAL NOT NULL DEFAULT 1,
+			multiplier REAL NOT NULL DEFAULT 1,
+			charged_tokens INTEGER NOT NULL DEFAULT 0,
+			error TEXT NOT NULL DEFAULT '',
+			latency_ms INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_ts ON usage_records(ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_key ON usage_records(key_id, ts)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("迁移失败: %w", err)
 		}
 	}
+	// 旧库补列（CREATE TABLE IF NOT EXISTS 不会给已有表加列）。
+	for _, column := range []struct{ table, name, ddl string }{
+		{"api_keys", "token_limit", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "tokens_used", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "multiplier", "REAL NOT NULL DEFAULT 1"},
+		{"api_keys", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
+		{"api_keys", "rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "latency_ms", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := s.ensureColumn(column.table, column.name, column.ddl); err != nil {
+			return fmt.Errorf("迁移失败: %w", err)
+		}
+	}
 	return nil
+}
+
+// ensureColumn 在列不存在时执行 ALTER TABLE ADD COLUMN。
+func (s *Store) ensureColumn(table, column, ddl string) error {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	exists := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == column {
+			exists = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl)
+	return err
 }
 
 func now() int64 { return time.Now().Unix() }

@@ -16,6 +16,7 @@ import (
 	"web2api/internal/provider"
 	"web2api/internal/store"
 	"web2api/internal/upgrade"
+	"web2api/internal/version"
 )
 
 // API 管理接口。
@@ -60,6 +61,15 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /admin/api/keys/{id}", a.auth(a.handlePatchKey))
 	mux.HandleFunc("DELETE /admin/api/keys/{id}", a.auth(a.handleDeleteKey))
 	mux.HandleFunc("GET /admin/api/usage", a.auth(a.handleUsage))
+	mux.HandleFunc("GET /admin/api/usage/records", a.auth(a.handleUsageRecords))
+	mux.HandleFunc("GET /admin/api/usage/timeseries", a.auth(a.handleUsageTimeseries))
+	mux.HandleFunc("GET /admin/api/usage/export.csv", a.auth(a.handleUsageExport))
+	mux.HandleFunc("POST /admin/api/keys/{id}/regenerate", a.auth(a.handleRegenerateKey))
+	mux.HandleFunc("GET /admin/api/models", a.auth(a.handleModels))
+	mux.HandleFunc("GET /admin/api/version", a.auth(a.handleVersion))
+	mux.HandleFunc("GET /admin/api/multipliers", a.auth(a.handleListMultipliers))
+	mux.HandleFunc("PUT /admin/api/multipliers", a.auth(a.handlePutMultiplier))
+	mux.HandleFunc("DELETE /admin/api/multipliers/{model...}", a.auth(a.handleDeleteMultiplier))
 	mux.HandleFunc("GET /admin/api/status", a.auth(a.handleStatus))
 	mux.HandleFunc("GET /admin/api/upgrade", a.auth(a.handleUpgradeStatus))
 	mux.HandleFunc("POST /admin/api/upgrade/check", a.auth(a.handleUpgradeCheck))
@@ -74,6 +84,31 @@ func (a *API) handleDocs(w http.ResponseWriter, r *http.Request) {
 }
 
 // openAPISpec 使用标准 OpenAPI 结构，避免引入额外的文档生成依赖。
+// startedAt 进程启动时间（总览显示运行时长）。
+var startedAt = time.Now()
+
+var (
+	tokenLimitSchema    = map[string]any{"type": "integer", "minimum": 0, "description": "Token 额度（按倍率计费后的 Token），0 表示不限。用尽后网关返回 429 insufficient_quota"}
+	expiresSchema       = map[string]any{"type": "integer", "minimum": 0, "description": "过期时间（Unix 秒），0 表示永不过期。过期后网关返回 401 key_expired"}
+	allowedModelsSchema = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "模型白名单，空数组表示允许全部；支持末尾 * 前缀匹配，如 gemini-3.5-*。不允许时网关返回 403 model_not_allowed"}
+	rpmSchema           = map[string]any{"type": "integer", "minimum": 0, "description": "每分钟请求数上限，0 表示只受全局限流约束。超限返回 429 rpm_limit_exceeded"}
+	keyMultiplierSchema = map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier, "description": "Key 倍率（分组默认倍率），与模型倍率相乘，默认 1"}
+)
+
+func usageParams(records bool) []any {
+	params := []any{
+		map[string]any{"name": "days", "in": "query", "description": "统计天数，1-90，默认 7", "schema": map[string]any{"type": "integer", "default": 7, "minimum": 1, "maximum": 90}},
+		map[string]any{"name": "key_id", "in": "query", "description": "只看某个 Key（breakdown/records）", "schema": map[string]any{"type": "integer"}},
+		map[string]any{"name": "model", "in": "query", "description": "只看某个模型（breakdown/records）", "schema": map[string]any{"type": "string"}},
+	}
+	if records {
+		params = append(params,
+			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "default": 100, "maximum": 500}},
+			map[string]any{"name": "offset", "in": "query", "schema": map[string]any{"type": "integer", "default": 0}})
+	}
+	return params
+}
+
 func openAPISpec() map[string]any {
 	jsonBody := map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}
 	response := func(description string) map[string]any {
@@ -132,10 +167,21 @@ func openAPISpec() map[string]any {
 			},
 			"/admin/api/keys/{id}": map[string]any{
 				"parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}},
-				"patch":      map[string]any{"tags": []string{"API Key"}, "summary": "启用或停用 API Key", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("更新成功")}},
+				"patch":      map[string]any{"tags": []string{"API Key"}, "summary": "修改 API Key（启停、备注、Token 额度、倍率、重置已用）", "description": "所有字段可选，至少提供一个。返回 {ok, key}。", "requestBody": body("KeyPatchInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误"), "404": response("Key 不存在")}},
 				"delete":     map[string]any{"tags": []string{"API Key"}, "summary": "删除 API Key", "responses": map[string]any{"200": response("删除成功")}},
 			},
-			"/admin/api/usage": map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "查询用量聚合", "parameters": []any{map[string]any{"name": "days", "in": "query", "description": "统计天数，1-90，默认 7", "schema": map[string]any{"type": "integer", "default": 7, "minimum": 1, "maximum": 90}}}, "responses": map[string]any{"200": response("用量列表")}}},
+			"/admin/api/usage":                map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "查询用量聚合", "description": "usage 为旧的按 Key/引擎/模型聚合（兼容）；breakdown 按 Key×模型汇总逐请求明细，含 total_tokens、charged_tokens、estimated_requests；totals 为合计。", "parameters": usageParams(false), "responses": map[string]any{"200": response("days、usage、breakdown、totals")}}},
+			"/admin/api/usage/records":        map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "逐请求用量明细", "description": "每条含 prompt/completion/total_tokens、estimated（true=本地估算，上游未返回用量）、model_multiplier、key_multiplier、multiplier、charged_tokens。Key 以 key_masked 脱敏显示。", "parameters": usageParams(true), "responses": map[string]any{"200": response("days、total、limit、offset、records")}}},
+			"/admin/api/keys/{id}/regenerate": map[string]any{"post": map[string]any{"tags": []string{"API Key"}, "summary": "重新生成密钥", "description": "换发新的 sk- 密钥，旧密钥立即失效；额度、倍率、白名单等设置保留。", "parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}}, "responses": map[string]any{"200": response("key"), "404": response("Key 不存在")}}},
+			"/admin/api/usage/timeseries":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "用量时间序列", "description": "days=1 按小时，其余按本地自然日分桶；空桶补零。每点含 requests、success_requests、total_tokens、charged_tokens、avg_latency_ms。", "parameters": usageParams(false), "responses": map[string]any{"200": response("bucket、points")}}},
+			"/admin/api/usage/export.csv":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "导出逐请求明细 CSV", "description": "UTF-8（带 BOM），最多 100000 行，Key 脱敏。", "parameters": usageParams(false), "responses": map[string]any{"200": map[string]any{"description": "CSV 文件", "content": map[string]any{"text/csv": map[string]any{}}}}}},
+			"/admin/api/models":               map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含生效倍率）", "responses": map[string]any{"200": response("models")}}},
+			"/admin/api/version":              map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
+			"/admin/api/multipliers": map[string]any{
+				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率)。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
+				"put": map[string]any{"tags": []string{"用量"}, "summary": "设置模型倍率", "requestBody": body("MultiplierInput"), "responses": map[string]any{"200": response("已保存"), "400": response("参数错误")}},
+			},
+			"/admin/api/multipliers/{model}": map[string]any{"delete": map[string]any{"tags": []string{"用量"}, "summary": "删除模型倍率（恢复默认）", "parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}, "responses": map[string]any{"200": response("已删除"), "404": response("未配置")}}},
 		},
 		"components": map[string]any{
 			"securitySchemes": map[string]any{
@@ -145,7 +191,9 @@ func openAPISpec() map[string]any {
 				"SetupInput":             map[string]any{"type": "object", "required": []string{"email", "password", "nickname", "redis_url"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "minLength": 8, "description": "最多 72 字节", "writeOnly": true}, "nickname": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}, "redis_url": map[string]any{"type": "string", "description": "redis://[user:password@]host:port/db，支持 rediss:// TLS", "writeOnly": true}}},
 				"LoginInput":             map[string]any{"type": "object", "required": []string{"email", "password"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "writeOnly": true}}},
 				"EnabledInput":           map[string]any{"type": "object", "required": []string{"enabled"}, "properties": map[string]any{"enabled": map[string]any{"type": "boolean", "description": "是否允许调度或调用"}}},
-				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}}},
+				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
+				"KeyPatchInput":          map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}, "name": map[string]any{"type": "string"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "reset_usage": map[string]any{"type": "boolean", "description": "true 时把 tokens_used 归零（保留用量明细）"}, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
+				"MultiplierInput":        map[string]any{"type": "object", "required": []string{"model", "multiplier"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；\"*\" 为默认倍率"}, "multiplier": map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier}}},
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
 				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
@@ -221,13 +269,35 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	for _, u := range usage {
 		totalReqs += u.Requests
 	}
+	var keysLimited, keysExhausted int
+	for _, k := range keys {
+		if k.TokenLimit > 0 {
+			keysLimited++
+		}
+		if k.QuotaExhausted {
+			keysExhausted++
+		}
+	}
+	var tokens24h, charged24h int64
+	if breakdown, err := a.st.UsageBreakdown(store.UsageFilter{Since: since}); err == nil {
+		for _, row := range breakdown {
+			tokens24h += row.TotalTokens
+			charged24h += row.ChargedTokens
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accounts_total": len(accounts),
-		"accounts_ready": readyA + readyB,
-		"engine_a_ready": readyA,
-		"engine_b_ready": readyB,
-		"keys_total":     len(keys),
-		"requests_24h":   totalReqs,
+		"accounts_total":     len(accounts),
+		"accounts_ready":     readyA + readyB,
+		"engine_a_ready":     readyA,
+		"engine_b_ready":     readyB,
+		"keys_total":         len(keys),
+		"requests_24h":       totalReqs,
+		"keys_limited":       keysLimited,
+		"keys_exhausted":     keysExhausted,
+		"tokens_24h":         tokens24h,
+		"charged_tokens_24h": charged24h,
+		"version":            version.Get(),
+		"uptime_seconds":     int64(time.Since(startedAt).Seconds()),
 	})
 }
 
@@ -410,29 +480,51 @@ func (a *API) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	for _, u := range usage {
 		usageByKey[u.APIKey] += u.Requests
 	}
+	charged24h := map[int64]int64{}
+	if breakdown, err := a.st.UsageBreakdown(store.UsageFilter{Since: since}); err == nil {
+		for _, row := range breakdown {
+			charged24h[row.KeyID] += row.ChargedTokens
+		}
+	}
 	type keyView struct {
 		store.APIKey
-		Requests24h int64 `json:"requests_24h"`
+		Requests24h      int64 `json:"requests_24h"`
+		ChargedTokens24h int64 `json:"charged_tokens_24h"`
 	}
 	out := make([]keyView, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key]})
+		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key], ChargedTokens24h: charged24h[k.ID]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }
 
 func (a *API) handleCreateKey(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
-	}
+	var req KeyOptions
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	key, err := a.st.CreateKey(req.Name)
+	if err := req.validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	name := ""
+	if req.Name != nil {
+		name = *req.Name
+	}
+	key, err := a.st.CreateKey(name)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
+	}
+	// 额度与倍率可在创建时一并设置（name 已写入，不再重复）。
+	opts := req
+	opts.Name, opts.ResetUsage = nil, false
+	if update := opts.update(); !update.Empty() {
+		if key, err = a.st.UpdateKey(key.ID, update); err != nil {
+			storeError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"key": key})
 }
@@ -443,22 +535,26 @@ func (a *API) handlePatchKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
 		return
 	}
-	var req struct {
-		Enabled *bool `json:"enabled"`
-	}
+	var req KeyOptions
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if req.Enabled == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "仅支持 enabled 字段"})
+	update := req.update()
+	if update.Empty() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请至少提供 enabled、name、token_limit、multiplier 或 reset_usage 之一"})
 		return
 	}
-	if err := a.st.SetKeyEnabled(id, *req.Enabled); err != nil {
+	if err := req.validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	key, err := a.st.UpdateKey(id, update)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": key})
 }
 
 func (a *API) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
@@ -478,20 +574,37 @@ func (a *API) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 
 // handleUsage 用量统计。?days=7（默认 7 天，最多 90 天）。
 func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
-	days := 7
-	if v := r.URL.Query().Get("days"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 90 {
-			days = n
-		}
-	}
-	since := time.Now().AddDate(0, 0, -days).Unix()
-	usage, err := a.st.UsageSummary(since)
+	filter, days := usageFilter(r)
+	usage, err := a.st.UsageSummary(filter.Since)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	// breakdown 来自逐请求明细表（含 total/charged/estimated），usage 保持旧聚合口径。
+	breakdown, err := a.st.UsageBreakdown(filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	var totals store.UsageBreakdownRow
+	for _, row := range breakdown {
+		totals.Requests += row.Requests
+		totals.SuccessRequests += row.SuccessRequests
+		totals.PromptTokens += row.PromptTokens
+		totals.CompletionTokens += row.CompletionTokens
+		totals.TotalTokens += row.TotalTokens
+		totals.ChargedTokens += row.ChargedTokens
+		totals.EstimatedRequests += row.EstimatedRequests
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"days":  days,
-		"usage": usage,
+		"days":      days,
+		"usage":     usage,
+		"breakdown": breakdown,
+		"totals": map[string]any{
+			"requests": totals.Requests, "success_requests": totals.SuccessRequests,
+			"prompt_tokens": totals.PromptTokens, "completion_tokens": totals.CompletionTokens,
+			"total_tokens": totals.TotalTokens, "charged_tokens": totals.ChargedTokens,
+			"estimated_requests": totals.EstimatedRequests,
+		},
 	})
 }

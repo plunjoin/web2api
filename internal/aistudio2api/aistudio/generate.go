@@ -729,6 +729,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 			outputTokens := usage.TotalTokens - usage.InputTokens - usage.ToolTokens - usage.ReasoningTokens
 			if outputTokens < 0 {
 				outputTokens = localPartsTokens(output.visible)
+				usage.Estimated = true
 			}
 			usage.OutputTokens = outputTokens
 			usage.OutputTokensMissing = false

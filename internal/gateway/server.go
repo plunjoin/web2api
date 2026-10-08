@@ -13,8 +13,10 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +41,7 @@ type Server struct {
 	logger  *log.Logger
 	updater *upgrade.Manager
 	gemini  *geminiapi.Backend
+	rpm     *rpmLimiter
 }
 
 // NewServer 创建网关服务。
@@ -64,6 +67,7 @@ func NewServer(mgr *provider.Manager, st *store.Store, seedKeys []string, rate, 
 		logger:  logger,
 		startAt: time.Now(),
 		gemini:  gemini,
+		rpm:     newRPMLimiter(),
 	}, nil
 }
 
@@ -78,7 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/docs", s.handlePublicDocs)
 	mux.HandleFunc("GET /v1/gemini-docs", s.handleGeminiDocs)
 	for _, path := range geminiapi.Mounts() {
-		mux.HandleFunc(path, s.withGeminiAuth(s.gemini.ServeHTTP))
+		mux.HandleFunc(path, s.withGeminiAuth(s.withModelGuard(s.gemini.ServeHTTP)))
 	}
 	// 本机登录导出工具：脚本本身不含凭据，运行时仍需管理员 JWT。
 	mux.HandleFunc("GET /tools/export-storage.sh", s.handleExportToolScript)
@@ -92,8 +96,8 @@ func (s *Server) Handler() http.Handler {
 
 	// 多模态透传
 	for _, sub := range []string{"images", "videos", "audio", "files", "embeddings"} {
-		mux.HandleFunc("/v1/"+sub+"/", s.withAuth(s.handlePassthrough))
-		mux.HandleFunc("/v1/"+sub, s.withAuth(s.handlePassthrough))
+		mux.HandleFunc("/v1/"+sub+"/", s.withAuth(s.withModelGuard(s.handlePassthrough)))
+		mux.HandleFunc("/v1/"+sub, s.withAuth(s.withModelGuard(s.handlePassthrough)))
 	}
 
 	mux.HandleFunc("GET /v1/accounts", s.withAuth(s.handleAccounts))
@@ -220,20 +224,33 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "Invalid API key", "authentication_error", nil)
 			return
 		}
-		ok, err := s.st.KeyEnabled(key)
+		info, found, err := s.st.LookupKey(key)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "校验 Key 失败: "+err.Error(), "api_error", nil)
 			return
 		}
-		if !ok {
+		if !found || !info.Enabled {
 			writeError(w, http.StatusUnauthorized, "Invalid API key", "authentication_error", nil)
+			return
+		}
+		now := time.Now()
+		if info.Expired(now.Unix()) {
+			writeKeyExpired(w, info.ExpiresAt)
+			return
+		}
+		if info.Exhausted() {
+			writeQuotaExceeded(w, info)
+			return
+		}
+		if ok, retryAfter := s.rpm.Allow(info.ID, info.RPMLimit, now); !ok {
+			writeRPMExceeded(w, info.RPMLimit, retryAfter)
 			return
 		}
 		if !s.limiter.Allow(key) {
 			writeError(w, http.StatusTooManyRequests, "Rate limit exceeded, please retry later", "rate_limit_error", nil)
 			return
 		}
-		next(w, r)
+		next(w, withKeyInfo(r, info))
 	}
 }
 
@@ -246,6 +263,16 @@ func (s *Server) currentKey(r *http.Request) string {
 		return key
 	}
 	return "anonymous"
+}
+
+// writeQuotaExceeded Key 的 Token 额度用尽：HTTP 429 + OpenAI 兼容 insufficient_quota。
+func writeQuotaExceeded(w http.ResponseWriter, info store.KeyAuth) {
+	w.Header().Set("X-Web2api-Token-Limit", strconv.FormatInt(info.TokenLimit, 10))
+	w.Header().Set("X-Web2api-Tokens-Used", strconv.FormatInt(info.TokensUsed, 10))
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+		"API key token quota exhausted (Token 额度已用尽): used %d of %d charged tokens. "+
+			"Ask the administrator to raise token_limit or reset usage for this key.",
+		info.TokensUsed, info.TokenLimit), "insufficient_quota", "token_quota_exceeded")
 }
 
 func writeError(w http.ResponseWriter, status int, msg, errType string, code any) {

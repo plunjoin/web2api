@@ -25,9 +25,10 @@ COPY internal ./internal
 # 交叉编译：纯 Go、无 CGO、Linux/amd64（可改 arm64 部署到 ARM 服务器）
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG VERSION=dev
 ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
-RUN go build -ldflags="-s -w" -o /out/web2api .
+RUN go build -ldflags="-s -w -X web2api/internal/version.Version=${VERSION}" -o /out/web2api .
 
 # ---------- 运行阶段 ----------
 FROM alpine:3.20

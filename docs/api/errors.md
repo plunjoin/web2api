@@ -5,17 +5,30 @@
 | 状态码 | 含义 |
 | --- | --- |
 | `400` | 请求 JSON 或参数不符合接口要求 |
-| `401` | API Key 缺失、无效或已停用 |
+| `401` | API Key 缺失、无效或已停用；`code: key_expired` 表示 Key 已过期 |
+| `403` | `code: model_not_allowed`：模型不在该 Key 的白名单内 |
 | `409` | 长任务尚未完成，暂时无法下载 |
-| `429` | 当前 Key 超过限流窗口 |
+| `429` | 超过限流窗口（`rate_limit_error`）、超过该 Key 每分钟请求上限（`code: rpm_limit_exceeded`，带 `Retry-After`），或 Token 额度已用尽（`type: insufficient_quota`，`code: token_quota_exceeded`） |
 | `502` | 上游引擎调用失败 |
 | `500` | 服务内部错误 |
 
-错误响应统一包含 `error.message` 和 `error.type`。客户端应根据状态码决定是否重试：`429` 可以退避后重试，`502` 适合切换请求或稍后重试，`400` 和 `401` 需要先修正请求或凭据。
+错误响应统一包含 `error.message` 和 `error.type`，Key 相关的错误另有 `error.code`。客户端应根据状态码决定是否重试：`429 rate_limit_error` 可以退避后重试，`502` 适合切换请求或稍后重试，`400`、`401`、`403` 需要先修正请求或凭据。`429 insufficient_quota` 不会自行恢复，需要管理员提高 `token_limit` 或重置用量。
+
+```json
+{
+  "error": {
+    "message": "API key token quota exhausted (Token 额度已用尽): used 1200 of 1000 charged tokens. Ask the administrator to raise token_limit or reset usage for this key.",
+    "type": "insufficient_quota",
+    "code": "token_quota_exceeded"
+  }
+}
+```
+
+额度错误同时返回 `X-Web2api-Token-Limit` 和 `X-Web2api-Tokens-Used` 响应头。
 
 ## 限流
 
-限流按客户端 Key 生效，参数由服务端配置文件控制。收到 `429` 时建议使用指数退避，并避免同时重复提交同一长任务。
+全局限流按客户端 Key 生效，参数由服务端配置文件控制。管理员还可以为单个 Key 设置每分钟请求上限（`rpm_limit`，按自然分钟计数）。收到 `429` 时建议使用指数退避，并避免同时重复提交同一长任务。
 
 ## 调度失败
 

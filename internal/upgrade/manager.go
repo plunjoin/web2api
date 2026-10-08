@@ -231,7 +231,7 @@ func (m *Manager) Check() error {
 			err = m.docker.pin(ctx, currentBeforePull.Image)
 		}
 		if err == nil {
-			err = m.pullLatest(ctx)
+			err = m.explainPullError(ctx, m.pullLatest(ctx))
 		}
 		var latest imageInfo
 		var current containerInfo

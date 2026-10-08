@@ -1,23 +1,16 @@
-v0.2.4 新增官方 Gemini 后端，保留网页登录态账号池，并统一项目结构与 SQLite 会话存储。
+v0.2.5 为每个 API Key 增加 Token 额度与倍率，记录逐请求用量，并说明镜像升级拉取 403 的具体原因。管理台改为深色界面。
 
-- 新增官方 Gemini API Key / OAuth 后端，完整转发官方参数、嵌套配置、扩展字段、响应、错误和 SSE。
-- 接入 Interactions 创建、查询、取消、删除，以及官方 agent、沙箱、声音、webhook、trigger、credential 管理操作。
-- 支持官方 SDK、文件上传与续传；续传会话存入 SQLite，网关重启后可恢复。
-- Cookie 会话改存 SQLite，修复自动刷新生命周期和并发保存问题；账号凭据替换或删除后使旧会话失效。
-- 程序入口移至根目录 main.go，移除 cmd/web2api；所有测试集中到根目录 test，并纳入发布前验证。
-- 部署不再创建或挂载 cookies 目录；提供 -import-cookie-cache 命令导入旧缓存，保留旧文件。
-- 补充官方后端配置、SDK / REST、多模态、工具、后台任务和部署文档；逐项对照官方快照的 20 个路径、37 个操作、214 个类型和 722 个字段定义。
+- 每个 Key 可设置 Token 额度、Key 倍率、过期时间、模型白名单和每分钟请求上限。额度用尽返回 429 insufficient_quota（token_quota_exceeded），过期返回 401 key_expired，模型不在白名单返回 403 model_not_allowed，超过每分钟上限返回 429 rpm_limit_exceeded。
+- 计费 Token = ⌈总 Token × 模型倍率 × Key 倍率⌉。模型倍率按「精确模型 → * 默认 → 1」查找。聊天接口优先记录上游真实用量（AI Studio / upstream），拿不到时按文本长度估算并标记。
+- 管理 API 增加用量明细、时间序列、CSV 导出、模型目录、倍率管理和 Key 重新生成。只有 /v1/chat/completions 记 Token；视频、透传和 Gemini 原生路由仍受 Key 限制，但不产生 Token 明细。
+- 升级检查在拉取镜像返回 HTTP 403 时核对匿名访问和已配置凭据，并指出需要的设置：公开镜像 ghcr.io/plunjoin/web2api 匿名可拉取；失效凭据、错误或私有镜像名、以及宿主机 Docker 出站拦截会得到不同说明。v0.2.4 若仍报 403，需先手动 docker compose pull 一次，或清掉失效的仓库凭据。
+- 管理台改为深色界面（预编译 Tailwind，不访问 CDN）。页面含总览、号池、API Key、用量、模型、设置和接口文档。
+- 聊天与视频接口支持 4K：image_size 为 512/1K/2K/4K，Omni resolution 为 4k，Veo 使用 size 4k 且 seconds 为 8。
 
-设置 WEB2API_GEMINI_API_KEY 可自动启用官方后端；客户端使用网关 Key，SDK Base URL 推荐 http://localhost:8800/gemini。详见 [官方后端接入](https://plunjoin.github.io/web2api/api/gemini-official) 和 [完整参数对照](https://plunjoin.github.io/web2api/api/gemini-schema)。
+升级后继续使用原 SQLite 数据库。旧库会自动补上额度、倍率和用量明细字段，已有 Key 默认不限额、倍率为 1。
 
-升级后继续使用原 SQLite 数据库和 AI Studio auth 数据。若需保留旧缓存中的最新 Cookie，请先停止旧服务，再执行一次：
-
-```bash
-./web2api -config config.yaml -import-cookie-cache /原来的Cookie缓存目录
-```
-
-容器镜像：ghcr.io/plunjoin/web2api:v0.2.4、ghcr.io/plunjoin/web2api:0.2.4、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.2.5、ghcr.io/plunjoin/web2api:0.2.5、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
 
-验证：Go 全量测试与 vet、官方字段快照一致性、文档构建、Windows / Linux 编译和 Compose 配置检查。官方协议通过本地模拟服务验证，未使用真实 Google 计费账号逐模型验证。
+验证：Go 全量测试、额度与倍率单测、升级 403 诊断单测、官方字段快照一致性。4K 图片与视频已在本机用真实上游验证；官方协议仍通过本地模拟服务验证。

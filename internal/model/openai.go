@@ -28,6 +28,36 @@ type ChatResult struct {
 	Text   string
 	Engine string
 	Model  string
+	// Usage 是引擎拿到的 Token 用量；nil 表示引擎没有任何用量信息，
+	// 由网关按文本长度估算（见 TokenUsage.Estimated）。
+	Usage *TokenUsage
+}
+
+// TokenUsage 一次请求的 Token 用量。
+//
+// Estimated=false：数值来自上游权威用量（如 AI Studio usage metadata、
+// 上游 OpenAI 兼容接口的 usage 字段）。
+// Estimated=true：至少一部分为本地估算（上游未返回用量，或只返回了输入计数）。
+type TokenUsage struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
+	Estimated        bool  `json:"estimated"`
+}
+
+// Normalize 补齐 TotalTokens，并保证三个计数非负。
+func (u TokenUsage) Normalize() TokenUsage {
+	if u.PromptTokens < 0 {
+		u.PromptTokens = 0
+	}
+	if u.CompletionTokens < 0 {
+		u.CompletionTokens = 0
+	}
+	if u.TotalTokens < u.PromptTokens+u.CompletionTokens {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
 }
 
 // ChatStreamFunc 流式回调：每次收到增量文本时调用。

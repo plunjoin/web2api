@@ -1,3 +1,46 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * 管理台通用组件（深色优先，参考 Linear 风格：近黑背景、1px 低对比边框、单一靛蓝强调色）。
+ * 修改本文件或 dist/index.html 后执行 `npm ci && npm run build` 重新生成 dist/assets/admin.css。
+ */
+@layer base {
+  html { color-scheme: dark; }
+  body { @apply bg-[#0b0b0d] text-[13px] leading-5 text-neutral-200 antialiased; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; font-feature-settings: "cv11", "ss01"; }
+  select option { background: #151518; color: #e5e5e5; }
+  ::selection { @apply bg-indigo-500/30; }
+  kbd { @apply inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-white/10 bg-white/[0.04] px-1 font-sans text-[10px] font-medium text-neutral-400; }
+}
+
+@layer components {
+  .card { @apply rounded-lg border border-white/[0.07] bg-white/[0.02]; }
+  .card-header { @apply flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3; }
+  .card-title { @apply text-[13px] font-medium text-neutral-100; }
+  .btn { @apply inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 focus-visible:ring-offset-1 focus-visible:ring-offset-[#0b0b0d] disabled:pointer-events-none disabled:opacity-40; }
+  .btn-sm { @apply h-7 px-2.5 text-xs; }
+  .btn-primary { @apply bg-indigo-500 text-white hover:bg-indigo-400; }
+  .btn-secondary { @apply border border-white/10 bg-white/[0.04] text-neutral-200 hover:border-white/15 hover:bg-white/[0.08]; }
+  .btn-ghost { @apply text-neutral-400 hover:bg-white/[0.06] hover:text-neutral-100; }
+  .btn-danger { @apply bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300; }
+  .btn-danger-solid { @apply bg-red-500 text-white hover:bg-red-400; }
+  .input { @apply h-8 w-full rounded-md border border-white/10 bg-white/[0.03] px-2.5 text-[13px] text-neutral-100 placeholder:text-neutral-500 transition-colors hover:border-white/15 focus:border-indigo-500/70 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-50; }
+  textarea.input { @apply h-auto py-2; }
+  .label { @apply mb-1.5 block text-xs font-medium text-neutral-400; }
+  .hint { @apply mt-1.5 text-xs text-neutral-500; }
+  .pill { @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium; }
+  .dot { @apply h-1.5 w-1.5 shrink-0 rounded-full bg-current; }
+  .th { @apply whitespace-nowrap px-4 py-2 text-left text-xs font-medium text-neutral-500; }
+  .td { @apply px-4 py-2.5 align-middle; }
+  .row { @apply transition-colors hover:bg-white/[0.025]; }
+  .stat { @apply rounded-lg border border-white/[0.07] bg-white/[0.02] px-4 py-3; }
+  .stat-label { @apply text-xs text-neutral-500; }
+  .stat-value { @apply mt-1 text-xl font-semibold tabular-nums tracking-tight text-neutral-100; }
+  .nav-item { @apply flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium transition-colors; }
+  .toggle { @apply relative h-[18px] w-8 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60; }
+  .toggle-knob { @apply absolute top-[3px] h-3 w-3 rounded-full bg-white shadow transition-all; }
+  .modal-mask { @apply fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm; }
+  .modal { @apply w-full rounded-xl border border-white/10 bg-[#141417] p-5 shadow-2xl shadow-black/50; }
+  .code { @apply rounded-md border border-white/[0.06] bg-black/40 font-mono text-xs; }
+}

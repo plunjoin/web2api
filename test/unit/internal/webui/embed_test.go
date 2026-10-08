@@ -13,7 +13,7 @@ import (
 func TestEmbeddedAssets(t *testing.T) {
 	for _, asset := range []struct{ name, contentType, marker string }{
 		{"vue.global.prod.js", "javascript", "Vue"},
-		{"admin.css", "text/css", ".bg-slate-900"},
+		{"admin.css", "text/css", ".btn-primary"},
 	} {
 		t.Run(asset.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

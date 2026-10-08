@@ -58,10 +58,15 @@ go build -o web2api.exe .
 
 | 页面 | 能力 |
 |---|---|
-| 总览 | 账号总数/就绪数、双引擎就绪、24h 请求量、接入信息 |
-| 号池管理 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 `__Secure-1PSID`/`__Secure-1PSIDTS`；AI Studio 号粘贴 `storage-state.json`；状态徽章（就绪/初始化/异常/冷却）、换 Cookie、健康检测 |
-| Key 管理 | 创建 `sk-` Key（即时生效）、启停、删除、复制、24h 用量 |
-| 用量统计 | 按 Key × 引擎 × 模型聚合：请求数、成功数、Prompt/Completion Tokens |
+| 总览 | 账号总数/就绪数、双引擎就绪、24h 请求量与原始/计费 Token、近 24 小时趋势图、额度使用最高的 Key、版本与运行时长 |
+| 号池 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 `__Secure-1PSID`/`__Secure-1PSIDTS`；AI Studio 号粘贴 `storage-state.json`；状态徽章（就绪/初始化/异常/冷却）、换 Cookie、健康检测、搜索与筛选 |
+| API Key | 创建 `sk-` Key（即时生效）、启停、删除、脱敏显示/复制、**Token 额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、重置已用额度、重新生成密钥 |
+| 用量 | 逐请求明细（输入/输出/总 Token、上游真实或估算、倍率、计费 Token、延迟、错误）、按 Key × 模型汇总与成功率、按小时/天趋势图、按时间/Key/模型筛选、CSV 导出 |
+| 模型 | 模型目录、引擎、能力标签（文本/图片/视频/音频/4K）、生效倍率、本机已验证的 4K 请求示例 |
+| 设置 | 模型倍率（含默认 `*`）、系统升级（含 403 等拉取错误的具体原因）、版本信息 |
+| 接口文档 | 管理 API（OpenAPI 3.1）浏览/搜索/下载、网关错误码表 |
+
+管理台为深色主题，支持快捷键：<kbd>1</kbd>–<kbd>7</kbd> 切换页面、<kbd>R</kbd> 刷新、<kbd>/</kbd> 聚焦搜索、<kbd>Esc</kbd> 关闭弹窗。
 
 **账号状态实时回报**：引擎A Cookie 校验/失效/配额；引擎B 登录态、冷却、模型资格、
 额度 Tier 均由上游协议实时同步到管理台。
@@ -95,14 +100,51 @@ PATCH  /admin/api/accounts/{id}                    {enabled: bool}
 PUT    /admin/api/accounts/{id}/credentials        更新 Gemini Cookie {psid, psidts}
 POST   /admin/api/accounts/{id}/check              触发健康检测
 DELETE /admin/api/accounts/{id}                     删除号（出池+删库+删凭据）
-GET    /admin/api/keys                             Key 列表（含 24h 用量）
-POST   /admin/api/keys                             {name} → 生成 sk- Key
-PATCH  /admin/api/keys/{id}                        {enabled: bool}
+GET    /admin/api/keys                             Key 列表（含额度、倍率、限制与 24h 用量）
+POST   /admin/api/keys                             {name, token_limit?, multiplier?, expires_at?, allowed_models?, rpm_limit?} → 生成 sk- Key
+PATCH  /admin/api/keys/{id}                        任意组合 {enabled, name, token_limit, multiplier, reset_usage, expires_at, allowed_models, rpm_limit}
+POST   /admin/api/keys/{id}/regenerate             换发新密钥（旧密钥立即失效，设置保留）
 DELETE /admin/api/keys/{id}
-GET    /admin/api/usage?days=7                     用量聚合（最大 90 天）
+GET    /admin/api/usage?days=7&key_id&model        用量聚合（最大 90 天）：usage（旧口径）+ breakdown + totals
+GET    /admin/api/usage/records?days&key_id&model&limit&offset   逐请求明细（每页最多 500）
+GET    /admin/api/usage/timeseries?days&key_id&model             时间序列（days=1 按小时，否则按天）
+GET    /admin/api/usage/export.csv?days&key_id&model             导出明细 CSV（Key 脱敏）
+GET    /admin/api/multipliers                      模型倍率列表、默认倍率、可选模型、计费公式
+PUT    /admin/api/multipliers                      {model, multiplier}（model 为 * 时设置默认倍率）
+DELETE /admin/api/multipliers/{model}              删除单独倍率，回落到默认
+GET    /admin/api/models                           模型目录（含生效倍率）
+GET    /admin/api/version                          版本、提交号、Go 版本
 GET    /admin/api/status                           引擎详细状态
 GET    /admin/api/docs                             OpenAPI 3.1 JSON（可导入 Postman/Insomnia）
 ```
+
+### Token 额度与倍率
+
+- 每次 `/v1/chat/completions` 请求记录一条明细：`prompt_tokens`、`completion_tokens`、`total_tokens`。
+  引擎B（AI Studio）和 upstream 引擎返回的真实用量直接采用；拿不到时（引擎A、流式响应等）按文本长度估算，
+  明细中 `estimated: true`，管理台显示「估算」。
+- 计费：`charged_tokens = ⌈total_tokens × 模型倍率 × Key 倍率⌉`。模型倍率按「精确模型 → `*` 默认 → 1」查找；
+  Key 倍率即分组默认倍率（默认 1）。失败请求不计费。
+- Key 的 `token_limit > 0` 时，`tokens_used ≥ token_limit` 的新请求返回
+  `429 {"error":{"type":"insufficient_quota","code":"token_quota_exceeded",...}}`，并附带
+  `X-Web2api-Token-Limit` / `X-Web2api-Tokens-Used` 响应头。扣减发生在请求完成后，所以越线的那次请求（以及并发请求）可能略超额度。
+- 其他限制：过期 `401 key_expired`；模型不在白名单 `403 model_not_allowed`（聊天、视频、Gemini 原生路径中的 `models/{id}` 与 JSON 体 `model` 都会检查）；
+  超过每分钟上限 `429 rpm_limit_exceeded`（含 `Retry-After`）。
+- 只有 `/v1/chat/completions` 计量 Token；`/v1/videos`、多模态透传与 Gemini 原生路由受 Key 的启停、过期、额度、白名单与 RPM 约束，但不产生 Token 明细。
+
+### 管理台前端构建
+
+管理台是单个 `internal/webui/dist/index.html`（Vue 3 全局构建，模板在页面内编译）加预编译的 Tailwind CSS，
+全部通过 `//go:embed` 内嵌进二进制，不访问任何 CDN。`dist/` 中的构建产物已提交到仓库，**只运行 `go build` 即可，无需 Node**。
+修改 `dist/index.html` 或 `styles.css` 后重新生成 CSS：
+
+```bash
+cd internal/webui
+npm ci          # Tailwind 3.4.10 + Vue 3.4.38（版本锁定在 package-lock.json）
+npm run build   # = node build.cjs：生成 dist/assets/admin.css（压缩）并复制 vue.global.prod.js
+```
+
+然后提交更新后的 `dist/assets/admin.css`。Tailwind 只扫描 `dist/index.html`，动态拼接的类名需要以完整字符串出现在该文件中。
 
 管理台的「接口文档」页会读取同一份 OpenAPI 文档，也可以直接下载
 `/admin/api/docs` 的 JSON 文件。管理接口统一返回 JSON，失败响应示例：
@@ -132,6 +174,21 @@ curl -X POST http://localhost:8800/admin/api/keys \
 # 拉取最近 30 天用量
 curl "http://localhost:8800/admin/api/usage?days=30" \
   -H "Authorization: Bearer $ADMIN_JWT"
+
+# 创建限额 Key：100 万计费 Token、0.5 倍、30 天后过期、只允许 gemini-3.5-* 模型、每分钟 60 次
+curl -X POST http://localhost:8800/admin/api/keys \
+  -H "Authorization: Bearer $ADMIN_JWT" -H "Content-Type: application/json" \
+  -d "{\"name\":\"团队A\",\"token_limit\":1000000,\"multiplier\":0.5,\"expires_at\":$(( $(date +%s) + 30*86400 )),\"allowed_models\":[\"gemini-3.5-*\"],\"rpm_limit\":60}"
+
+# 设置模型倍率（* 为默认倍率）
+curl -X PUT http://localhost:8800/admin/api/multipliers \
+  -H "Authorization: Bearer $ADMIN_JWT" -H "Content-Type: application/json" \
+  -d '{"model":"gemini-3.1-pro-preview","multiplier":4}'
+
+# 重置某个 Key 的已用额度
+curl -X PATCH http://localhost:8800/admin/api/keys/1 \
+  -H "Authorization: Bearer $ADMIN_JWT" -H "Content-Type: application/json" \
+  -d '{"reset_usage":true}'
 ```
 
 ## 对外 API（客户端接入）

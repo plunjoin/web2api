@@ -36,6 +36,25 @@ docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d
 
 默认更新 `ghcr.io/plunjoin/web2api:latest`；可以在 `.env` 中指定 `WEB2API_UPGRADE_IMAGE`。公开镜像由程序向仓库申请拉取令牌后再交给 Docker。这样不会走 GHCR 会返回 HTTP 403 的 OAuth 密码模式，宿主机上失效的 `docker login` 也不会被带上。私有仓库还需配置 `WEB2API_UPGRADE_REGISTRY_USER` 和 `WEB2API_UPGRADE_REGISTRY_PASSWORD`（GHCR 使用具有 read:packages 权限的 Token）。令牌被拒绝时，公开镜像会自动改为匿名拉取。这些凭据只用于镜像下载，不出现在管理 API 返回中。请保持 `.env` 私有。容器访问仓库若需代理，沿用 `WEB2API_PROXY`。首次使用需确保目标 `latest` 已发布包含升级功能的版本。
 
+### 升级提示“拉取镜像失败（HTTP 403）”
+
+官方镜像 `ghcr.io/plunjoin/web2api` 是公开包，匿名即可拉取，不需要任何仓库凭据（可用 `curl "https://ghcr.io/token?service=ghcr.io&scope=repository:plunjoin/web2api:pull"` 验证，返回 200 即为公开）。GHCR 只在以下情况返回 403：
+
+1. **携带了无效凭据**：`WEB2API_UPGRADE_REGISTRY_USER`/`WEB2API_UPGRADE_REGISTRY_PASSWORD` 填了过期 Token、没有 `read:packages` 的 Token、fine-grained Token、GitHub 登录密码，或只填了用户名。v0.2.4 及更早版本会把这两个变量原样交给 Docker，凭据无效就一定 403。**处理：在 `.env` 中清空这两个变量**，再执行 `docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d` 重建容器。
+2. **镜像名错误或为私有包**：GHCR 对两者都返回 403。核对 `WEB2API_UPGRADE_IMAGE`；私有包需设置 `WEB2API_UPGRADE_REGISTRY_USER=<GitHub 用户名>` 和 `WEB2API_UPGRADE_REGISTRY_PASSWORD=<具有 read:packages 的 classic PAT>`。
+3. **宿主机 Docker 守护进程出站被拦截**：拉取由宿主机 dockerd 执行，需检查 dockerd 代理/镜像加速配置、Docker Desktop 的 Registry Access Management，以及 socket 前是否有拒绝 `/images/create` 的代理或授权插件。
+
+v0.2.4 之后的版本会先由程序申请拉取令牌，凭据被拒时自动改用匿名令牌重试；仍失败时，面板错误信息会附带匿名探测结论，直接指出是上述哪一种情况及需要修改的变量。
+
+已运行 v0.2.4 的部署无法通过面板拿到这个修复，请先在宿主机手动升级一次：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml pull
+docker compose -f docker-compose.yml -f docker-compose.upgrade.yml up -d
+```
+
+若宿主机 `docker pull` 同样 403，通常是宿主机残留了失效的 `docker login ghcr.io`，执行 `docker logout ghcr.io` 后重试。
+
 以后执行 Compose 命令时也保留这两个 `-f` 参数，以保持升级配置。面板按钮只更新部署时指定的镜像；管理员接口不接受任意镜像地址或命令。
 
 管理 API（均需管理员 JWT）：

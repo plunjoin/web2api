@@ -87,6 +87,7 @@ func localCompleteUsage(request GenerateRequest, output generatedOutputParts) *U
 	return &Usage{
 		InputTokens: inputTokens, ToolTokens: toolTokens, ReasoningTokens: reasoningTokens,
 		OutputTokens: outputTokens, TotalTokens: inputTokens + toolTokens + reasoningTokens + outputTokens,
+		Estimated: true,
 	}
 }
 
@@ -102,6 +103,7 @@ func countedCompleteUsage(request GenerateRequest, output generatedOutputParts, 
 	return &Usage{
 		InputTokens: inputTokens, ToolTokens: toolTokens, ReasoningTokens: reasoningTokens,
 		OutputTokens: outputTokens, TotalTokens: count.InputTokens + reasoningTokens + outputTokens,
+		Estimated: true, // 输入为权威计数，输出为本地估算
 	}
 }
 

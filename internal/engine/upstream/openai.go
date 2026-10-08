@@ -195,7 +195,17 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 		text = resp.Choices[0].Message.Content
 	}
 	o.MarkReady()
-	return &model.ChatResult{Text: text, Engine: o.name, Model: req.Model}, nil
+	result := &model.ChatResult{Text: text, Engine: o.name, Model: req.Model}
+	if resp.Usage.TotalTokens > 0 || resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+		// 上游 OpenAI 兼容接口返回的权威 usage。
+		usage := model.TokenUsage{
+			PromptTokens:     int64(resp.Usage.PromptTokens),
+			CompletionTokens: int64(resp.Usage.CompletionTokens),
+			TotalTokens:      int64(resp.Usage.TotalTokens),
+		}.Normalize()
+		result.Usage = &usage
+	}
+	return result, nil
 }
 
 // ChatStream 流式对话（SSE 解析）。

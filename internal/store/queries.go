@@ -141,7 +141,9 @@ func (s *Store) CreateKey(name string) (APIKey, error) {
 		return APIKey{}, fmt.Errorf("保存 Key 失败: %w", err)
 	}
 	id, _ := res.LastInsertId()
-	return APIKey{ID: id, Key: key, Name: name, Enabled: true, CreatedAt: ts}, nil
+	created := APIKey{ID: id, Key: key, Name: name, Enabled: true, CreatedAt: ts, Multiplier: 1, AllowedModels: []string{}}
+	created.fillQuota()
+	return created, nil
 }
 
 // ImportKey 导入指定 Key（用于迁移 config 的静态 key）。
@@ -153,19 +155,17 @@ func (s *Store) ImportKey(key, name string) error {
 
 // ListKeys 全部 Key。
 func (s *Store) ListKeys() ([]APIKey, error) {
-	rows, err := s.db.Query(`SELECT id, key, name, enabled, created_at FROM api_keys ORDER BY id`)
+	rows, err := s.db.Query(`SELECT ` + keyColumns + ` FROM api_keys ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []APIKey
 	for rows.Next() {
-		var k APIKey
-		var enabled int
-		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &enabled, &k.CreatedAt); err != nil {
+		k, err := scanKey(rows)
+		if err != nil {
 			return nil, err
 		}
-		k.Enabled = enabled != 0
 		out = append(out, k)
 	}
 	return out, rows.Err()
@@ -231,6 +231,7 @@ func GenerateKey() (string, error) {
 // ==================== 用量 ====================
 
 // RecordUsage 记录一次请求（按分钟聚合落库以控制行数）。
+// 只写旧聚合表、不扣额度；网关对话请求改用 RecordRequest。
 func (s *Store) RecordUsage(apiKey, engine, model string, promptTokens, completionTokens int64, success bool) error {
 	ts := now() / 60 // 分钟粒度
 	// 使用事务把“更新已有聚合行 / 插入新行”串起来。SQLite 连接池虽然限制为
@@ -239,11 +240,14 @@ func (s *Store) RecordUsage(apiKey, engine, model string, promptTokens, completi
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
+	if err := recordUsageTx(tx, apiKey, engine, model, promptTokens, completionTokens, success, ts); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func recordUsageTx(tx *sql.Tx, apiKey, engine, model string, promptTokens, completionTokens int64, success bool, minute int64) error {
 	res, err := tx.Exec(`
 		UPDATE usage_log SET
 			requests = requests + 1,
@@ -251,21 +255,18 @@ func (s *Store) RecordUsage(apiKey, engine, model string, promptTokens, completi
 			prompt_tokens = prompt_tokens + ?,
 			completion_tokens = completion_tokens + ?
 		WHERE api_key = ? AND engine = ? AND model = ? AND ts = ?`,
-		boolToInt(success), promptTokens, completionTokens, apiKey, engine, model, ts)
+		boolToInt(success), promptTokens, completionTokens, apiKey, engine, model, minute)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		return tx.Commit()
+		return nil
 	}
 	_, err = tx.Exec(`
 		INSERT INTO usage_log (api_key, engine, model, requests, success, prompt_tokens, completion_tokens, ts)
 		VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
-		apiKey, engine, model, boolToInt(success), promptTokens, completionTokens, ts)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+		apiKey, engine, model, boolToInt(success), promptTokens, completionTokens, minute)
+	return err
 }
 
 // UsageSummary 按时间范围聚合用量（sinceUnix 为起始秒；按 key+model 分组）。

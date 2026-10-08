@@ -277,6 +277,10 @@ type Usage struct {
 	ToolTokens          int64 `json:"tool_tokens,omitempty"`
 	TotalTokens         int64 `json:"total_tokens"`
 	OutputTokensMissing bool  `json:"-"`
+	// Estimated 表示至少一部分计数来自本地估算而非上游 usage metadata：
+	// 上游没有返回用量（localCompleteUsage）、停止序列截断后只有权威输入计数
+	// （countedCompleteUsage），或输出数无法由 total 推出。
+	Estimated bool `json:"-"`
 }
 
 // Citation 表示模型返回的来源

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"web2api/internal/model"
+	"web2api/internal/store"
 )
 
 // handleChat 处理 /v1/chat/completions。
@@ -29,7 +31,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "gemini-flash"
 	}
+	if !s.modelAllowed(w, r, req.Model) {
+		return
+	}
 	ctx := r.Context()
+	start := time.Now()
 
 	// 流式 SSE
 	if req.Stream {
@@ -73,20 +79,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			send(delta, false)
 			return nil
 		})
-		apiKey := s.currentKey(r)
 		if runErr != nil {
 			s.logger.Printf("[chat] 流式请求失败 model=%q: %v", req.Model, runErr)
-			_ = s.st.RecordUsage(apiKey, "", req.Model, 0, 0, false)
+			s.recordChat(r, req, nil, true, runErr, start)
 			send("[Error] "+runErr.Error(), true)
 		} else {
-			engine := ""
-			completion := ""
-			if res != nil {
-				engine = res.Engine
-				completion = res.Text
-			}
-			_ = s.st.RecordUsage(apiKey, engine, req.Model,
-				estimateTokens(messagesText(req.Messages)), estimateTokens(completion), true)
+			s.recordChat(r, req, res, true, nil, start)
 			send("", true)
 		}
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -96,21 +94,78 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// 非流式
 	res, err := s.mgr.Chat(ctx, req)
-	apiKey := s.currentKey(r)
 	if err != nil {
 		s.logger.Printf("[chat] 请求失败 model=%q: %v", req.Model, err)
-		_ = s.st.RecordUsage(apiKey, "", req.Model, 0, 0, false)
+		s.recordChat(r, req, nil, false, err, start)
 		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 		return
 	}
-	_ = s.st.RecordUsage(apiKey, res.Engine, req.Model,
-		estimateTokens(messagesText(req.Messages)), estimateTokens(res.Text), true)
+	rec := s.recordChat(r, req, res, false, nil, start)
 	resp := model.NewCompletion(req.Model, res.Text)
 	resp.ID = "chatcmpl-" + model.NewID(12)
-	resp.Usage.PromptTokens = int(estimateTokens(messagesText(req.Messages)))
-	resp.Usage.CompletionTokens = int(estimateTokens(res.Text))
-	resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+	resp.Usage.PromptTokens = int(rec.PromptTokens)
+	resp.Usage.CompletionTokens = int(rec.CompletionTokens)
+	resp.Usage.TotalTokens = int(rec.TotalTokens)
+	// 扩展响应头：用量来源与本次计费（标准 usage 字段保持 OpenAI 口径不变）。
+	w.Header().Set("X-Web2api-Usage-Source", usageSource(rec.Estimated))
+	w.Header().Set("X-Web2api-Multiplier", strconv.FormatFloat(rec.Multiplier, 'f', -1, 64))
+	w.Header().Set("X-Web2api-Charged-Tokens", strconv.FormatInt(rec.ChargedTokens, 10))
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveUsage 优先使用引擎返回的上游权威用量；引擎没有用量时按文本长度估算，
+// 并标记 Estimated=true（管理台显示为“估算”）。
+func resolveUsage(req model.ChatRequest, res *model.ChatResult) model.TokenUsage {
+	if res != nil && res.Usage != nil {
+		return res.Usage.Normalize()
+	}
+	completion := ""
+	if res != nil {
+		completion = res.Text
+	}
+	return model.TokenUsage{
+		PromptTokens:     estimateTokens(messagesText(req.Messages)),
+		CompletionTokens: estimateTokens(completion),
+		Estimated:        true,
+	}.Normalize()
+}
+
+func usageSource(estimated bool) string {
+	if estimated {
+		return "estimated"
+	}
+	return "upstream"
+}
+
+// recordChat 写入逐请求用量并按倍率扣减 Key 额度。失败请求只记录、不扣额度。
+func (s *Server) recordChat(r *http.Request, req model.ChatRequest, res *model.ChatResult, stream bool, runErr error, start time.Time) store.UsageRecord {
+	rec := store.UsageRecord{
+		APIKey:    s.currentKey(r),
+		Model:     req.Model,
+		Endpoint:  "/v1/chat/completions",
+		Stream:    stream,
+		Success:   runErr == nil,
+		LatencyMs: time.Since(start).Milliseconds(),
+	}
+	if info, ok := keyInfoFrom(r); ok {
+		rec.KeyID = info.ID
+	}
+	if runErr != nil {
+		rec.Error = runErr.Error()
+	} else {
+		usage := resolveUsage(req, res)
+		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
+		rec.Estimated = usage.Estimated
+		if res != nil {
+			rec.Engine = res.Engine
+		}
+	}
+	saved, err := s.st.RecordRequest(rec)
+	if err != nil {
+		s.logger.Printf("[usage] 记录用量失败 model=%q: %v", req.Model, err)
+		return rec
+	}
+	return saved
 }
 
 // estimateTokens 粗略估算 Token 数（中英混合 ~4 字符/Token）。

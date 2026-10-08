@@ -335,6 +335,7 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 		return nil, err
 	}
 	var full strings.Builder
+	var usage *model.TokenUsage
 	finished := false
 	for event := range events {
 		if event.Err != nil {
@@ -375,6 +376,11 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 					}
 				}
 			}
+		case aistudio.EventUsage:
+			if event.Usage != nil {
+				converted := nativeTokenUsage(*event.Usage)
+				usage = &converted
+			}
 		case aistudio.EventFinish:
 			finished = true
 		case aistudio.EventError:
@@ -388,7 +394,20 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 		}
 	}
 	_ = finished
-	return &model.ChatResult{Text: full.String(), Engine: "b", Model: req.Model}, nil
+	return &model.ChatResult{Text: full.String(), Engine: "b", Model: req.Model, Usage: usage}, nil
+}
+
+// nativeTokenUsage 把 AI Studio usage metadata 映射为 OpenAI 口径：
+// prompt = 输入 + 工具输入，completion = 可见输出 + 思考，total 以上游为准。
+func nativeTokenUsage(u aistudio.Usage) model.TokenUsage {
+	out := model.TokenUsage{
+		PromptTokens:     u.InputTokens + u.ToolTokens,
+		CompletionTokens: u.OutputTokens + u.ReasoningTokens,
+		TotalTokens:      u.TotalTokens,
+		ReasoningTokens:  u.ReasoningTokens,
+		Estimated:        u.Estimated,
+	}
+	return out.Normalize()
 }
 
 // Chat 非流式对话。

@@ -52,6 +52,9 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model and prompt are required", "invalid_request_error", nil)
 		return
 	}
+	if !s.modelAllowed(w, r, req.Model) {
+		return
+	}
 	seconds := req.DurationSeconds
 	if seconds == 0 {
 		seconds = rawInt(req.Seconds)

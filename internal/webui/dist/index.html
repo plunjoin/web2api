@@ -1,446 +1,674 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
 <title>web2api · 号池管理台</title>
+<!-- 所有资源均由二进制内嵌提供（/admin/assets/），不依赖任何 CDN。 -->
 <script src="/admin/assets/vue.global.prod.js"></script>
 <link rel="stylesheet" href="/admin/assets/admin.css">
 <style>
   [v-cloak]{display:none}
   ::-webkit-scrollbar{width:8px;height:8px}
-  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+  ::-webkit-scrollbar-thumb{background:#2a2a30;border-radius:4px}
+  ::-webkit-scrollbar-track{background:transparent}
 </style>
 </head>
-<body class="bg-slate-100 min-h-screen">
-<div id="startup-error" role="alert" style="display:none;margin:2rem auto;max-width:40rem;padding:1rem;background:#fff;border:1px solid #fca5a5;border-radius:8px;color:#991b1b">管理台资源加载失败，请重新编译并重启服务后刷新页面。</div>
+<body>
+<div id="startup-error" role="alert" style="display:none;margin:2rem auto;max-width:40rem;padding:1rem;background:#1a1a1d;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5">管理台资源加载失败，请重新编译并重启服务后刷新页面。</div>
 <noscript>请启用 JavaScript 后使用管理台。</noscript>
 <div id="app" v-cloak>
 
-  <!-- 顶栏 -->
-  <header class="bg-slate-900 text-white shadow">
-    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <h1 class="text-lg font-bold tracking-wide">web2api <span class="text-emerald-400">号池管理台</span></h1>
-        <span v-if="connected" class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full">已连接</span>
-        <span v-else class="text-xs bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full">未连接</span>
+  <!-- ==================== 初始化 / 登录 ==================== -->
+  <div v-if="!authReady || !token" class="flex min-h-screen flex-col items-center justify-center px-4 py-10">
+    <div class="mb-6 text-center">
+      <div class="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-gradient-to-b from-indigo-500/30 to-indigo-500/5 text-indigo-300">
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h10"/></svg>
       </div>
-      <div class="flex items-center gap-2">
-        <span v-if="token" class="text-xs">{{ user.nickname }}</span>
-        <button v-if="token" @click="logout" class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition">退出登录</button>
-        <a href="/health" target="_blank"
-          class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 transition">健康检查</a>
-      </div>
+      <h1 class="text-lg font-semibold tracking-tight text-neutral-100">web2api 号池管理台</h1>
+      <p class="mt-1 text-xs text-neutral-500">Gemini 双引擎网关 · 账号、Key、额度与用量</p>
     </div>
-  </header>
-
-  <div v-if="!authReady" class="max-w-md mx-auto px-4 pt-6 text-center text-slate-600">
-    <p>{{ authError || '正在读取初始化状态…' }}</p>
-    <button v-if="authError" @click="bootstrap" class="mt-3 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm">重试</button>
-  </div>
-  <div v-else-if="!token" class="max-w-md mx-auto px-4 py-6">
-    <form @submit.prevent="submitAuth" class="bg-white rounded-xl shadow p-6 space-y-3">
-      <h2 class="text-lg font-bold">{{ initialized ? '管理员登录' : '首次初始化' }}</h2>
-      <p class="text-xs text-slate-500">{{ initialized ? '使用邮箱和密码登录管理台' : '设置管理员账号和 Redis 连接，完成后登录' }}</p>
-      <div><label for="admin-email" class="text-xs text-slate-500">邮箱</label><input id="admin-email" v-model="authForm.email" type="email" required maxlength="254" autocomplete="username" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"></div>
-      <div><label for="admin-password" class="text-xs text-slate-500">密码</label><input id="admin-password" v-model="authForm.password" type="password" required :minlength="initialized ? 1 : 8" :autocomplete="initialized ? 'current-password' : 'new-password'" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"><p v-if="!initialized" class="text-xs text-slate-400 mt-1">至少 8 个字符，最多 72 字节</p></div>
+    <div v-if="!authReady" class="modal max-w-sm text-center text-neutral-400">
+      <p>{{ authError || '正在读取初始化状态…' }}</p>
+      <button v-if="authError" @click="bootstrap" class="btn btn-primary mt-4">重试</button>
+    </div>
+    <form v-else @submit.prevent="submitAuth" class="modal max-w-sm space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold text-neutral-100">{{ initialized ? '管理员登录' : '首次初始化' }}</h2>
+        <p class="mt-0.5 text-xs text-neutral-500">{{ initialized ? '使用邮箱和密码登录管理台' : '设置管理员账号和 Redis 连接，完成后登录' }}</p>
+      </div>
+      <div><label for="admin-email" class="label">邮箱</label><input id="admin-email" v-model="authForm.email" type="email" required maxlength="254" autocomplete="username" class="input"></div>
+      <div><label for="admin-password" class="label">密码</label><input id="admin-password" v-model="authForm.password" type="password" required :minlength="initialized ? 1 : 8" :autocomplete="initialized ? 'current-password' : 'new-password'" class="input"><p v-if="!initialized" class="hint">至少 8 个字符，最多 72 字节</p></div>
       <template v-if="!initialized">
-        <div><label for="admin-nickname" class="text-xs text-slate-500">昵称</label><input id="admin-nickname" v-model="authForm.nickname" required maxlength="64" autocomplete="nickname" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"></div>
-        <div><label for="redis-url" class="text-xs text-slate-500">Redis 连接地址</label><input id="redis-url" v-model="authForm.redis_url" type="password" required autocomplete="off" spellcheck="false" placeholder="redis://:密码@127.0.0.1:6379/0" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"><p class="text-xs text-slate-400 mt-1">支持 redis:// 和 rediss://（TLS）；无密码可填 redis://127.0.0.1:6379/0。保存前会验证连接及读写权限。</p></div>
+        <div><label for="admin-nickname" class="label">昵称</label><input id="admin-nickname" v-model="authForm.nickname" required maxlength="64" autocomplete="nickname" class="input"></div>
+        <div><label for="redis-url" class="label">Redis 连接地址</label><input id="redis-url" v-model="authForm.redis_url" type="password" required autocomplete="off" spellcheck="false" placeholder="redis://:密码@127.0.0.1:6379/0" class="input"><p class="hint">支持 redis:// 和 rediss://（TLS）；无密码可填 redis://127.0.0.1:6379/0。保存前会验证连接及读写权限。</p></div>
       </template>
-      <p v-if="authError" role="alert" class="text-sm text-red-600">{{ authError }}</p>
-      <button :disabled="authBusy" class="w-full px-4 py-2 bg-slate-900 text-white rounded-lg text-sm disabled:opacity-50">{{ authBusy ? '正在处理…' : (initialized ? '登录' : '完成初始化') }}</button>
+      <p v-if="authError" role="alert" class="text-xs text-red-400">{{ authError }}</p>
+      <button :disabled="authBusy" class="btn btn-primary w-full">{{ authBusy ? '正在处理…' : (initialized ? '登录' : '完成初始化') }}</button>
     </form>
   </div>
 
-  <main v-else class="max-w-6xl mx-auto px-4 py-6">
-
-    <!-- Tab -->
-    <nav class="flex gap-1 mb-4 bg-white p-1 rounded-xl shadow-sm w-fit">
-      <button v-for="t in tabs" :key="t" @click="tab=t; refresh()"
-        class="px-4 py-2 text-sm rounded-lg transition"
-        :class="tab===t ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'">{{ t }}</button>
-    </nav>
-
-    <!-- 总览 -->
-    <section v-if="tab==='总览'" class="grid grid-cols-2 md:grid-cols-5 gap-4">
-      <div class="bg-white rounded-xl shadow p-4">
-        <div class="text-xs text-slate-500">账号总数</div>
-        <div class="text-2xl font-bold mt-1">{{ overview.accounts_total ?? '-' }}</div>
-      </div>
-      <div class="bg-white rounded-xl shadow p-4">
-        <div class="text-xs text-slate-500">就绪账号</div>
-        <div class="text-2xl font-bold mt-1 text-emerald-600">{{ overview.accounts_ready ?? '-' }}</div>
-      </div>
-      <div class="bg-white rounded-xl shadow p-4">
-        <div class="text-xs text-slate-500">引擎A 就绪 (Gemini)</div>
-        <div class="text-2xl font-bold mt-1 text-blue-600">{{ overview.engine_a_ready ?? '-' }}</div>
-      </div>
-      <div class="bg-white rounded-xl shadow p-4">
-        <div class="text-xs text-slate-500">引擎B 就绪 (AI Studio)</div>
-        <div class="text-2xl font-bold mt-1 text-violet-600">{{ overview.engine_b_ready ?? '-' }}</div>
-      </div>
-      <div class="bg-white rounded-xl shadow p-4">
-        <div class="text-xs text-slate-500">24h 请求</div>
-        <div class="text-2xl font-bold mt-1 text-amber-600">{{ overview.requests_24h ?? '-' }}</div>
-      </div>
-      <div class="col-span-2 md:col-span-5 bg-white rounded-xl shadow p-4">
-        <div class="text-sm font-semibold text-slate-700 mb-2">接入信息</div>
-        <div class="grid md:grid-cols-3 gap-2 text-sm text-slate-600">
-          <div class="bg-slate-50 rounded-lg p-3"><span class="text-slate-400">Base URL</span><br><code>{{ baseURL }}/v1</code></div>
-          <div class="bg-slate-50 rounded-lg p-3"><span class="text-slate-400">管理 API</span><br><code>{{ baseURL }}/admin/api/*</code></div>
-          <div class="bg-slate-50 rounded-lg p-3"><span class="text-slate-400">API Key</span><br>在「Key 管理」里创建</div>
+  <!-- ==================== 主界面 ==================== -->
+  <div v-else class="min-h-screen lg:flex">
+    <!-- 侧边栏（小屏为顶部横向导航） -->
+    <aside class="border-b border-white/[0.06] bg-[#0f0f12] lg:fixed lg:inset-y-0 lg:flex lg:w-56 lg:flex-col lg:border-b-0 lg:border-r">
+      <div class="flex h-12 items-center justify-between gap-2 px-4">
+        <div class="flex min-w-0 items-center gap-2">
+          <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-indigo-500/20 text-indigo-300">
+            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h10"/></svg>
+          </div>
+          <span class="truncate text-[13px] font-semibold text-neutral-100">web2api</span>
+          <span class="truncate text-xs text-neutral-500">号池管理台</span>
         </div>
+        <span :title="connected ? '已连接' : '未连接'" class="pill" :class="connected ? 'text-emerald-400' : 'text-red-400'"><span class="dot"></span><span class="lg:hidden">{{ connected ? '已连接' : '未连接' }}</span></span>
       </div>
-    </section>
-
-    <!-- 号池 -->
-    <section v-if="tab==='号池管理'">
-      <div class="flex flex-wrap gap-2 mb-4">
-        <button @click="addGeminiOpen=true"
-          class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition shadow">
-          + 添加 Gemini 号 (引擎A)
+      <nav class="flex gap-0.5 overflow-x-auto px-2 pb-2 lg:flex-1 lg:flex-col lg:overflow-visible lg:pb-0 lg:pt-1" aria-label="管理台导航">
+        <button v-for="(t, i) in tabs" :key="t.id" @click="go(t.id)" class="nav-item group"
+          :class="tab===t.id ? 'bg-white/[0.07] text-neutral-100' : 'text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200'"
+          :aria-current="tab===t.id ? 'page' : null" :title="t.label + '（快捷键 ' + (i + 1) + '）'">
+          <svg class="h-4 w-4 shrink-0" :class="tab===t.id ? 'text-indigo-400' : 'text-neutral-500 group-hover:text-neutral-400'" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" :d="t.icon"/></svg>
+          <span class="flex-1 text-left">{{ t.label }}</span>
+          <kbd class="hidden opacity-0 transition-opacity group-hover:opacity-100 lg:inline-flex">{{ i + 1 }}</kbd>
         </button>
-        <button @click="addStudioOpen=true"
-          class="px-4 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 transition shadow">
-          + 添加 AI Studio 号 (引擎B)
-        </button>
-        <button @click="refresh" class="px-4 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50 transition">刷新</button>
-        <div class="flex-1"></div>
-        <input v-model="accountQuery" type="search" placeholder="搜索标签或邮箱" class="text-sm px-3 py-2 rounded-lg bg-white shadow border border-transparent focus:border-slate-300 outline-none">
-        <select v-model="accountEngineFilter" class="text-sm px-3 py-2 rounded-lg bg-white shadow">
-          <option value="">全部引擎</option><option value="a">Gemini</option><option value="b">AI Studio</option>
-        </select>
-        <select v-model="accountStatusFilter" class="text-sm px-3 py-2 rounded-lg bg-white shadow">
-          <option value="">全部状态</option><option value="ok">就绪</option><option value="initializing">初始化中</option><option value="error">异常</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>
-        </select>
+      </nav>
+      <div class="hidden border-t border-white/[0.06] p-3 lg:block">
+        <div class="flex items-center gap-2.5 rounded-md px-1.5 py-1">
+          <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-500/20 text-[11px] font-semibold text-indigo-300">{{ (user.nickname || 'A').slice(0, 1).toUpperCase() }}</div>
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-xs font-medium text-neutral-200">{{ user.nickname || '管理员' }}</div>
+            <div class="truncate text-[11px] text-neutral-500">{{ user.email }}</div>
+          </div>
+        </div>
+        <div class="mt-2 flex gap-1">
+          <a href="/health" target="_blank" class="btn btn-ghost btn-sm flex-1">健康检查</a>
+          <button @click="logout" class="btn btn-ghost btn-sm flex-1">退出登录</button>
+        </div>
+        <div class="mt-2 px-1.5 text-[11px] text-neutral-600"><kbd>1</kbd>–<kbd>{{ tabs.length }}</kbd> 切换 · <kbd>R</kbd> 刷新 · <kbd>/</kbd> 搜索</div>
       </div>
+    </aside>
 
-      <div class="bg-white rounded-xl shadow overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
-            <tr>
-              <th class="px-4 py-3 text-left">ID</th>
-              <th class="px-4 py-3 text-left">引擎</th>
-              <th class="px-4 py-3 text-left">标签 / 邮箱</th>
-              <th class="px-4 py-3 text-left">状态</th>
-              <th class="px-4 py-3 text-left">模型数</th>
-              <th class="px-4 py-3 text-left">启用</th>
-              <th class="px-4 py-3 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="accounts.length===0">
-              <td colspan="7" class="px-4 py-8 text-center text-slate-400">暂无账号，点击上方按钮添加</td>
-            </tr>
-            <tr v-else-if="filteredAccounts.length===0">
-              <td colspan="7" class="px-4 py-8 text-center text-slate-400">没有符合筛选条件的账号</td>
-            </tr>
-            <tr v-for="acc in filteredAccounts" :key="acc.id" class="border-t border-slate-100 hover:bg-slate-50/50">
-              <td class="px-4 py-3 text-slate-400">#{{ acc.id }}</td>
-              <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded text-xs"
-                  :class="acc.engine==='a' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'">
-                  {{ acc.engine==='a' ? 'Gemini' : 'AI Studio' }}
-                </span>
-              </td>
-              <td class="px-4 py-3 font-medium text-slate-700">{{ acc.label }}</td>
-              <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded text-xs" :class="statusClass(acc.live.status)">
-                  {{ statusText(acc.live.status) }}
-                </span>
-                <div v-if="acc.live.detail" class="text-xs text-slate-400 mt-0.5">{{ acc.live.detail }}</div>
-              </td>
-              <td class="px-4 py-3 text-slate-600">{{ acc.live.models ?? '-' }}</td>
-              <td class="px-4 py-3">
-                <button @click.stop="toggleAccount(acc)"
-                  class="relative w-10 h-5 rounded-full transition"
-                  :class="acc.enabled ? 'bg-emerald-500' : 'bg-slate-300'">
-                  <span class="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all"
-                    :class="acc.enabled ? 'left-5' : 'left-0.5'"></span>
-                </button>
-              </td>
-              <td class="px-4 py-3 text-right space-x-1 whitespace-nowrap">
-                <button @click.stop="checkAccount(acc)" class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">检测</button>
-                <button v-if="acc.engine==='a'" @click.stop="openCreds(acc)"
-                  class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">换Cookie</button>
-                <button @click.stop="removeAccount(acc)"
-                  class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="text-xs text-slate-400 mt-3">
-        引擎A 添加后约几秒完成 Cookie 校验；引擎B 首次生成时启动 WAA Worker（约十几秒），状态与配额由上游协议实时回报。
-      </p>
-    </section>
+    <div class="min-w-0 flex-1 lg:pl-56">
+      <header class="sticky top-0 z-30 border-b border-white/[0.06] bg-[#0b0b0d]/80 backdrop-blur-md">
+        <div class="mx-auto flex h-12 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6">
+          <div class="flex min-w-0 items-center gap-2 text-[13px]">
+            <span class="text-neutral-500">web2api</span>
+            <svg class="h-3 w-3 text-neutral-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg>
+            <span class="font-medium text-neutral-100">{{ currentTab.label }}</span>
+            <span class="hidden truncate text-xs text-neutral-500 md:inline">— {{ currentTab.desc }}</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <button @click="refresh" class="btn btn-ghost btn-sm" title="刷新（R）">
+              <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M5.5 9A7 7 0 0118 7.5M18.5 15A7 7 0 016 16.5"/></svg>刷新
+            </button>
+            <button @click="logout" class="btn btn-ghost btn-sm lg:hidden">退出</button>
+          </div>
+        </div>
+      </header>
 
-    <!-- Key 管理 -->
-    <section v-if="tab==='Key 管理'">
-      <div class="flex gap-2 mb-4">
-        <button @click="createKey" class="px-4 py-2 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-700 transition shadow">+ 创建 Key</button>
-        <button @click="refresh" class="px-4 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50 transition">刷新</button>
-      </div>
-      <div class="bg-white rounded-xl shadow overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
-            <tr>
-              <th class="px-4 py-3 text-left">ID</th>
-              <th class="px-4 py-3 text-left">Key</th>
-              <th class="px-4 py-3 text-left">备注</th>
-              <th class="px-4 py-3 text-left">24h 请求</th>
-              <th class="px-4 py-3 text-left">启用</th>
-              <th class="px-4 py-3 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="keys.length===0">
-              <td colspan="6" class="px-4 py-8 text-center text-slate-400">暂无 Key，点击上方按钮创建（config.yaml 里的 api_keys 已自动导入）</td>
-            </tr>
-            <tr v-for="k in keys" :key="k.id" class="border-t border-slate-100 hover:bg-slate-50/50">
-              <td class="px-4 py-3 text-slate-400">#{{ k.id }}</td>
-              <td class="px-4 py-3 font-mono text-xs">
-                {{ k.key }}
-                <button @click.stop="copyKey(k.key)" class="ml-1 text-xs px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200">复制</button>
-              </td>
-              <td class="px-4 py-3 text-slate-600">{{ k.name || '-' }}</td>
-              <td class="px-4 py-3 text-slate-600">{{ k.requests_24h }}</td>
-              <td class="px-4 py-3">
-                <button @click.stop="toggleKey(k)"
-                  class="relative w-10 h-5 rounded-full transition"
-                  :class="k.enabled ? 'bg-emerald-500' : 'bg-slate-300'">
-                  <span class="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all"
-                    :class="k.enabled ? 'left-5' : 'left-0.5'"></span>
-                </button>
-              </td>
-              <td class="px-4 py-3 text-right">
-                <button @click.stop="removeKey(k)" class="text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">删除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+      <main class="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6">
 
-    <!-- 用量 -->
-    <section v-if="tab==='用量统计'">
-      <div class="flex gap-2 mb-4 items-center">
-        <select v-model="usageDays" @change="refresh" class="text-sm px-3 py-2 rounded-lg bg-white shadow">
-          <option :value="1">近 1 天</option>
-          <option :value="7">近 7 天</option>
-          <option :value="30">近 30 天</option>
-        </select>
-        <button @click="refresh" class="px-4 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50">刷新</button>
-      </div>
-      <div class="bg-white rounded-xl shadow overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
-            <tr>
-              <th class="px-4 py-3 text-left">API Key</th>
-              <th class="px-4 py-3 text-left">引擎</th>
-              <th class="px-4 py-3 text-left">模型</th>
-              <th class="px-4 py-3 text-right">请求</th>
-              <th class="px-4 py-3 text-right">成功</th>
-              <th class="px-4 py-3 text-right">Prompt Tokens</th>
-              <th class="px-4 py-3 text-right">Completion Tokens</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="usage.length===0">
-              <td colspan="7" class="px-4 py-8 text-center text-slate-400">暂无用量记录</td>
-            </tr>
-            <tr v-for="(u,i) in usage" :key="i" class="border-t border-slate-100">
-              <td class="px-4 py-3 font-mono text-xs">{{ maskKey(u.api_key) }}</td>
-              <td class="px-4 py-3">
-                <span v-if="u.engine" class="px-2 py-0.5 rounded text-xs"
-                  :class="u.engine==='a' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'">
-                  {{ u.engine==='a' ? 'Gemini' : 'AI Studio' }}
-                </span>
-                <span v-else class="text-xs text-slate-400">-</span>
-              </td>
-              <td class="px-4 py-3 text-slate-600">{{ u.model || '-' }}</td>
-              <td class="px-4 py-3 text-right font-semibold">{{ u.requests }}</td>
-              <td class="px-4 py-3 text-right text-emerald-600">{{ u.success_requests }}</td>
-              <td class="px-4 py-3 text-right text-slate-500">{{ u.prompt_tokens }}</td>
-              <td class="px-4 py-3 text-right text-slate-500">{{ u.completion_tokens }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+        <!-- ==================== 总览 ==================== -->
+        <template v-if="tab==='overview'">
+          <section class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+            <div class="stat"><div class="stat-label">账号总数</div><div class="stat-value">{{ fmt(overview.accounts_total) }}</div></div>
+            <div class="stat"><div class="stat-label">就绪账号</div><div class="stat-value text-emerald-400">{{ fmt(overview.accounts_ready) }}</div></div>
+            <div class="stat"><div class="stat-label">引擎A 就绪 · Gemini</div><div class="stat-value">{{ fmt(overview.engine_a_ready) }}</div></div>
+            <div class="stat"><div class="stat-label">引擎B 就绪 · AI Studio</div><div class="stat-value">{{ fmt(overview.engine_b_ready) }}</div></div>
+            <div class="stat"><div class="stat-label">24h 请求</div><div class="stat-value">{{ fmt(overview.requests_24h) }}</div></div>
+          </section>
+          <section class="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div class="stat"><div class="stat-label">24h Token（原始）</div><div class="stat-value">{{ fmt(overview.tokens_24h) }}</div></div>
+            <div class="stat"><div class="stat-label">24h 计费 Token（含倍率）</div><div class="stat-value text-indigo-300">{{ fmt(overview.charged_tokens_24h) }}</div></div>
+            <div class="stat"><div class="stat-label">已设额度的 Key</div><div class="stat-value">{{ fmt(overview.keys_limited) }}<span class="ml-1 text-sm font-normal text-neutral-500">/ {{ fmt(overview.keys_total) }}</span></div></div>
+            <div class="stat"><div class="stat-label">额度已用尽的 Key</div><div class="stat-value" :class="overview.keys_exhausted ? 'text-red-400' : 'text-neutral-500'">{{ fmt(overview.keys_exhausted) }}</div></div>
+          </section>
+          <section class="grid gap-3 lg:grid-cols-3">
+            <div class="card lg:col-span-2">
+              <div class="card-header"><span class="card-title">接入信息</span></div>
+              <div class="grid gap-2 p-4 md:grid-cols-3">
+                <div class="code p-3"><div class="mb-1 font-sans text-[11px] text-neutral-500">Base URL</div><span class="break-all text-neutral-200">{{ baseURL }}/v1</span></div>
+                <div class="code p-3"><div class="mb-1 font-sans text-[11px] text-neutral-500">管理 API</div><span class="break-all text-neutral-200">{{ baseURL }}/admin/api/*</span></div>
+                <div class="code p-3 font-sans"><div class="mb-1 text-[11px] text-neutral-500">API Key</div><button @click="go('keys')" class="text-indigo-400 hover:text-indigo-300">在「API Key」页创建 →</button></div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header"><span class="card-title">系统</span><button @click="go('settings')" class="btn btn-ghost btn-sm">设置 →</button></div>
+              <dl class="grid grid-cols-[auto,1fr] gap-x-4 gap-y-2 p-4 text-xs">
+                <dt class="text-neutral-500">版本</dt><dd class="truncate text-neutral-200">{{ versionText(overview.version) }}</dd>
+                <dt class="text-neutral-500">运行时长</dt><dd class="text-neutral-200">{{ fmtDuration(overview.uptime_seconds) }}</dd>
+                <dt class="text-neutral-500">Go</dt><dd class="text-neutral-400">{{ overview.version?.go_version || '-' }}</dd>
+              </dl>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-header">
+              <span class="card-title">近 24 小时</span>
+              <div class="flex items-center gap-3 text-[11px] text-neutral-500">
+                <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-sm bg-indigo-400/80"></span>计费 Token</span>
+                <span class="flex items-center gap-1.5"><span class="h-0.5 w-3 rounded bg-emerald-400"></span>请求数</span>
+              </div>
+            </div>
+            <div class="p-4">
+              <div v-if="!overviewSeries.length" class="flex h-40 items-center justify-center text-xs text-neutral-500">加载中…</div>
+              <div v-else class="relative">
+                <svg viewBox="0 0 600 160" preserveAspectRatio="none" class="h-40 w-full overflow-visible" role="img" :aria-label="'用量图表，共 ' + chart(overviewSeries).bars.length + ' 个时间段'">
+                  <line v-for="g in [0.25,0.5,0.75]" :key="g" x1="0" x2="600" :y1="150 - g*140" :y2="150 - g*140" stroke="rgba(255,255,255,0.05)" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <line x1="0" x2="600" y1="150" y2="150" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <rect v-for="b in chart(overviewSeries).bars" :key="b.ts" :x="b.x" :y="b.y" :width="b.w" :height="b.h" rx="1.5" class="fill-indigo-400/70 transition-colors hover:fill-indigo-300"><title>{{ b.title }}</title></rect>
+                  <polyline :points="chart(overviewSeries).line" fill="none" stroke="#34d399" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"></polyline>
+                </svg>
+                <div class="pointer-events-none absolute left-0 top-0 text-[10px] tabular-nums text-neutral-600">{{ fmtShort(chart(overviewSeries).maxTokens) }}</div>
+                <div class="mt-1.5 flex justify-between text-[10px] tabular-nums text-neutral-600"><span v-for="l in chart(overviewSeries).labels" :key="l">{{ l }}</span></div>
+              </div>
+            </div>
+          </section>
+          <section class="grid gap-3 lg:grid-cols-2">
+            <div class="card">
+              <div class="card-header"><span class="card-title">计费规则</span></div>
+              <div class="space-y-2.5 p-4 text-xs leading-relaxed text-neutral-400">
+                <p><span class="code px-1.5 py-0.5 text-neutral-200">计费 = ⌈总 Token × 模型倍率 × Key 倍率⌉</span></p>
+                <p>Token 数优先取上游真实用量（AI Studio usage metadata）；上游未返回时按文本长度估算，并标记 <span class="pill bg-amber-500/10 text-amber-300">估算</span>。</p>
+                <p>Key 计费 Token 达到额度后，新请求返回 <code class="text-neutral-200">429 insufficient_quota</code>。</p>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header"><span class="card-title">额度使用最高的 Key</span><button @click="go('keys')" class="btn btn-ghost btn-sm">全部 →</button></div>
+              <div v-if="!lowQuotaKeys.length" class="px-4 py-8 text-center text-xs text-neutral-500">没有设置额度的 Key</div>
+              <div v-else class="divide-y divide-white/[0.05]">
+                <div v-for="k in lowQuotaKeys" :key="k.id" class="px-4 py-2.5">
+                  <div class="flex items-baseline justify-between gap-2 text-xs"><span class="truncate text-neutral-200">{{ k.name || ('#' + k.id) }}</span><span class="tabular-nums text-neutral-500">{{ fmt(k.tokens_used) }} / {{ fmt(k.token_limit) }}</span></div>
+                  <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.06]"><div class="h-full rounded-full" :class="quotaBarClass(k)" :style="{ width: quotaPercent(k) + '%' }"></div></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </template>
 
-    <!-- 系统升级 -->
-    <section v-if="tab==='系统升级'" class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold text-slate-800">系统升级</h2>
-        <p class="text-sm text-slate-500 mt-1">从镜像仓库获取最新版本，直接在面板完成升级。检查更新时会预先下载镜像。</p>
-      </div>
-      <div class="bg-white rounded-xl shadow p-5 space-y-4">
-        <div class="grid md:grid-cols-2 gap-4 text-sm">
-          <div><div class="text-slate-500 mb-1">当前版本</div><div class="font-semibold">{{ upgradeState.current_version || (upgradeState.current_id ? '本地构建' : '未获取') }}</div><code class="text-xs text-slate-400 break-all">{{ upgradeState.current_id || '' }}</code></div>
-          <div><div class="text-slate-500 mb-1">最新版本</div><div class="font-semibold">{{ upgradeState.target_version || (upgradeState.target_id ? '镜像已获取' : '尚未检查') }}</div><code class="text-xs text-slate-400 break-all">{{ upgradeState.target_id || '' }}</code></div>
-        </div>
-        <div class="text-sm"><span class="text-slate-500">更新镜像：</span><code class="break-all">{{ upgradeState.image || 'ghcr.io/plunjoin/web2api:latest' }}</code></div>
-        <div role="status" aria-live="polite" class="rounded-lg bg-slate-100 p-4 text-sm">
-          <div class="font-semibold">{{ upgradeDisconnected ? '服务重启中，正在重新连接…' : upgradePhaseText(upgradeState.phase) }}</div>
-          <p class="mt-1 text-slate-600 break-words">{{ upgradeState.message || '正在读取升级状态…' }}</p>
-          <p v-if="upgradeError" class="mt-2 text-red-600">{{ upgradeError }}</p>
-        </div>
-        <div v-if="!upgradeState.enabled && upgradeState.reason" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-          {{ upgradeState.reason }}
-          <a href="https://github.com/plunjoin/web2api/blob/main/docker/README.md#面板一键升级" target="_blank" rel="noopener noreferrer" class="underline ml-1">查看启用步骤</a>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button @click="checkUpgrade" :disabled="!upgradeState.enabled || upgradeBusy || upgradeActionBusy" class="px-4 py-2 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">检查更新</button>
-          <button @click="upgradeConfirmOpen=true" :disabled="!upgradeState.enabled || upgradeState.phase!=='ready' || upgradeActionBusy" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50">一键升级</button>
-          <button @click="refreshUpgrade" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">刷新状态</button>
-        </div>
-        <p class="text-xs text-slate-500">升级时服务会短暂中断，面板会自动重新连接。配置、账号和用量数据保留；新容器启动失败时自动恢复旧容器。</p>
-      </div>
-    </section>
-
-    <!-- 接口文档 -->
-    <section v-if="tab==='接口文档'">
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <h2 class="text-lg font-semibold text-slate-800">管理 API 接口文档</h2>
-          <p class="text-xs text-slate-500 mt-1">OpenAPI {{ apiSpec.openapi || '3.1.0' }} · 管理请求使用登录后签发的 JWT</p>
-        </div>
-        <div class="flex gap-2">
-          <button @click="downloadDocs" class="px-3 py-2 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-700">下载 OpenAPI JSON</button>
-          <button @click="refresh" class="px-3 py-2 text-sm rounded-lg bg-white shadow hover:bg-slate-50">刷新</button>
-        </div>
-      </div>
-      <div v-if="docsLoading" class="bg-white rounded-xl shadow p-8 text-center text-slate-400">正在加载接口文档…</div>
-      <div v-else class="space-y-3">
-        <div v-for="item in docsRows" :key="item.method + item.path" class="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+        <!-- ==================== 号池管理 ==================== -->
+        <template v-if="tab==='accounts'">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-xs font-bold px-2 py-1 rounded" :class="methodClass(item.method)">{{ item.method }}</span>
-            <code class="text-sm font-semibold text-slate-800">{{ item.path }}</code>
-            <span class="text-sm text-slate-500">{{ item.summary }}</span>
-            <button @click="copyText(item.path)" class="ml-auto text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">复制路径</button>
+            <button @click="openAddGemini" class="btn btn-primary">+ 添加 Gemini 号 (引擎A)</button>
+            <button @click="openAddStudio" class="btn btn-secondary">+ 添加 AI Studio 号 (引擎B)</button>
+            <div class="flex-1"></div>
+            <input ref="searchInput" v-model="accountQuery" type="search" placeholder="搜索标签或邮箱  /" class="input w-full sm:w-56">
+            <select v-model="accountEngineFilter" class="input w-auto">
+              <option value="">全部引擎</option><option value="a">Gemini</option><option value="b">AI Studio</option>
+            </select>
+            <select v-model="accountStatusFilter" class="input w-auto">
+              <option value="">全部状态</option><option value="ok">就绪</option><option value="initializing">初始化中</option><option value="error">异常</option><option value="disabled">已停用</option><option value="cooldown">冷却中</option>
+            </select>
           </div>
-          <div v-if="item.path==='/admin/api/accounts' && item.method==='POST' || item.path==='/admin/api/keys' && item.method==='POST'" class="mt-3 rounded-lg bg-slate-900 text-slate-100 p-3 text-xs overflow-x-auto">
-            <div class="text-slate-400 mb-1">请求示例</div>
-            <code>{{ requestExample(item.path) }}</code>
+          <div class="card overflow-x-auto">
+            <table class="w-full">
+              <thead class="border-b border-white/[0.06]">
+                <tr><th class="th">ID</th><th class="th">引擎</th><th class="th">标签 / 邮箱</th><th class="th">状态</th><th class="th">模型数</th><th class="th">启用</th><th class="th text-right">操作</th></tr>
+              </thead>
+              <tbody class="divide-y divide-white/[0.05]">
+                <tr v-if="accounts.length===0"><td colspan="7" class="td py-12 text-center text-neutral-500">暂无账号，点击上方按钮添加</td></tr>
+                <tr v-else-if="filteredAccounts.length===0"><td colspan="7" class="td py-12 text-center text-neutral-500">没有符合筛选条件的账号</td></tr>
+                <tr v-for="acc in filteredAccounts" :key="acc.id" class="row">
+                  <td class="td tabular-nums text-neutral-500">#{{ acc.id }}</td>
+                  <td class="td"><span class="pill" :class="engineClass(acc.engine)">{{ engineText(acc.engine) }}</span></td>
+                  <td class="td font-medium text-neutral-100">{{ acc.label }}</td>
+                  <td class="td">
+                    <span class="pill" :class="statusClass(acc.live.status)"><span class="dot"></span>{{ statusText(acc.live.status) }}</span>
+                    <div v-if="acc.live.detail" class="mt-1 max-w-md text-xs text-neutral-500">{{ acc.live.detail }}</div>
+                  </td>
+                  <td class="td tabular-nums text-neutral-400">{{ acc.live.models ?? '-' }}</td>
+                  <td class="td">
+                    <button @click.stop="toggleAccount(acc)" class="toggle" :class="acc.enabled ? 'bg-indigo-500' : 'bg-white/15'" role="switch" :aria-checked="acc.enabled" :aria-label="acc.enabled ? '停用账号' : '启用账号'">
+                      <span class="toggle-knob" :class="acc.enabled ? 'left-[17px]' : 'left-[3px]'"></span>
+                    </button>
+                  </td>
+                  <td class="td space-x-1 whitespace-nowrap text-right">
+                    <button @click.stop="checkAccount(acc)" class="btn btn-ghost btn-sm">检测</button>
+                    <button v-if="acc.engine==='a'" @click.stop="openCreds(acc)" class="btn btn-ghost btn-sm">换Cookie</button>
+                    <button @click.stop="removeAccount(acc)" class="btn btn-danger btn-sm">删除</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </div>
-      </div>
-      <div class="mt-4 text-xs text-slate-500 bg-amber-50 border border-amber-100 rounded-lg p-3">
-        鉴权：登录后使用 <code>Authorization: Bearer &lt;JWT&gt;</code>。JWT 有效期 8 小时，退出后立即失效。接口返回 JSON，错误时包含 <code>error</code> 字段。
-      </div>
-    </section>
-  </main>
+          <p class="text-xs text-neutral-500">引擎A 添加后约几秒完成 Cookie 校验；引擎B 首次生成时启动 WAA Worker（约十几秒），状态与配额由上游协议实时回报。</p>
+        </template>
 
-  <div v-if="upgradeConfirmOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="upgradeConfirmOpen=false">
-    <div role="dialog" aria-modal="true" aria-labelledby="upgrade-confirm-title" class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
-      <h3 id="upgrade-confirm-title" class="font-bold text-lg">升级到最新镜像</h3>
-      <p class="text-sm text-slate-600 mt-3">将升级到 {{ upgradeState.target_version || '已检查的最新版本' }}。服务会短暂中断，完成后面板自动刷新。</p>
-      <p class="text-sm text-slate-500 mt-2">配置和数据卷继续使用；新容器启动失败时自动恢复旧容器。</p>
-      <div class="flex justify-end gap-2 mt-5">
-        <button @click="upgradeConfirmOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
-        <button @click="startUpgrade" :disabled="upgradeActionBusy" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50">确认升级</button>
-      </div>
+        <!-- ==================== Key 管理 ==================== -->
+        <template v-if="tab==='keys'">
+          <div class="flex flex-wrap items-center gap-2">
+            <button @click="openKeyForm()" class="btn btn-primary">+ 创建 Key</button>
+            <div class="flex-1"></div>
+            <input ref="keySearch" v-model="keyQuery" type="search" placeholder="搜索名称  /" class="input w-full sm:w-56">
+            <select v-model="keyFilter" class="input w-auto">
+              <option value="">全部</option><option value="active">可用</option><option value="disabled">已停用</option><option value="exhausted">额度用尽</option><option value="expired">已过期</option><option value="limited">有限制</option>
+            </select>
+          </div>
+          <div class="card overflow-x-auto">
+            <table class="w-full">
+              <thead class="border-b border-white/[0.06]">
+                <tr><th class="th min-w-[200px]">名称 / Key</th><th class="th whitespace-nowrap">状态</th><th class="th min-w-[180px]">额度（计费 Token）</th><th class="th">倍率</th><th class="th">限制</th><th class="th text-right">24h 计费</th><th class="th">启用</th><th class="th text-right">操作</th></tr>
+              </thead>
+              <tbody class="divide-y divide-white/[0.05]">
+                <tr v-if="keysLoading && !keys.length"><td colspan="8" class="td py-12 text-center text-neutral-500">加载中…</td></tr>
+                <tr v-else-if="keys.length===0"><td colspan="8" class="td py-12 text-center text-neutral-500">还没有 API Key。<button @click="openKeyForm()" class="text-indigo-400 hover:text-indigo-300">创建第一个 →</button></td></tr>
+                <tr v-else-if="filteredKeys.length===0"><td colspan="8" class="td py-12 text-center text-neutral-500">没有符合筛选条件的 Key</td></tr>
+                <tr v-for="k in filteredKeys" :key="k.id" class="row">
+                  <td class="td">
+                    <div class="font-medium text-neutral-100">{{ k.name || '未命名' }} <span class="ml-1 text-[11px] font-normal tabular-nums text-neutral-600">#{{ k.id }}</span></div>
+                    <div class="mt-0.5 flex items-center gap-1.5 whitespace-nowrap">
+                      <code class="font-mono text-[11px] text-neutral-500">{{ revealed[k.id] ? k.key : maskKey(k.key) }}</code>
+                      <button @click="revealed[k.id] = !revealed[k.id]" class="text-[11px] text-neutral-500 hover:text-neutral-300" :aria-label="revealed[k.id] ? '隐藏 Key' : '显示 Key'">{{ revealed[k.id] ? '隐藏' : '显示' }}</button>
+                      <button @click="copyText(k.key)" class="text-[11px] text-neutral-500 hover:text-neutral-300">复制</button>
+                    </div>
+                  </td>
+                  <td class="td"><span class="pill" :class="keyState(k).cls"><span class="dot"></span>{{ keyState(k).text }}</span></td>
+                  <td class="td">
+                    <template v-if="k.token_limit > 0">
+                      <div class="flex items-baseline justify-between gap-2 text-xs tabular-nums"><span class="text-neutral-200">{{ fmt(k.tokens_used) }}</span><span class="text-neutral-500">/ {{ fmt(k.token_limit) }}</span></div>
+                      <div class="mt-1 h-1 overflow-hidden rounded-full bg-white/[0.06]"><div class="h-full rounded-full" :class="quotaBarClass(k)" :style="{ width: quotaPercent(k) + '%' }"></div></div>
+                      <div class="mt-0.5 text-[11px] text-neutral-500">剩余 {{ fmt(k.tokens_remaining) }}</div>
+                    </template>
+                    <template v-else><span class="text-xs text-neutral-400">不限</span><div class="text-[11px] tabular-nums text-neutral-600">已用 {{ fmt(k.tokens_used) }}</div></template>
+                  </td>
+                  <td class="td tabular-nums text-neutral-300">{{ fmtMult(k.multiplier) }}</td>
+                  <td class="td text-[11px] leading-5 text-neutral-400">
+                    <div v-if="k.expires_at" :class="k.expired ? 'text-red-400' : ''">到期 {{ fmtDate(k.expires_at) }}</div>
+                    <div v-if="k.rpm_limit">{{ k.rpm_limit }} 次/分钟</div>
+                    <div v-if="k.allowed_models?.length" :title="k.allowed_models.join('\n')">{{ k.allowed_models.length }} 个模型可用</div>
+                    <span v-if="!k.expires_at && !k.rpm_limit && !k.allowed_models?.length" class="text-neutral-600">—</span>
+                  </td>
+                  <td class="td text-right tabular-nums text-neutral-300">{{ fmt(k.charged_tokens_24h) }}</td>
+                  <td class="td">
+                    <button @click="toggleKey(k)" class="toggle" :class="k.enabled ? 'bg-indigo-500' : 'bg-white/15'" role="switch" :aria-checked="k.enabled" :aria-label="k.enabled ? '停用 Key' : '启用 Key'">
+                      <span class="toggle-knob" :class="k.enabled ? 'left-[17px]' : 'left-[3px]'"></span>
+                    </button>
+                  </td>
+                  <td class="td whitespace-nowrap text-right">
+                    <button @click="openKeyForm(k)" class="btn btn-ghost btn-sm">编辑</button>
+                    <button @click="viewKeyUsage(k)" class="btn btn-ghost btn-sm">用量</button>
+                    <button @click="askConfirm('重置已用额度', '把「' + (k.name || '#' + k.id) + '」的已用计费 Token 归零？用量明细会保留。', () => resetKey(k))" :disabled="!k.tokens_used" class="btn btn-ghost btn-sm">重置</button>
+                    <button @click="askConfirm('重新生成密钥', '旧密钥将立即失效，使用它的客户端需要换成新密钥。额度、倍率和限制保持不变。', () => regenerateKey(k), true)" class="btn btn-ghost btn-sm">换新</button>
+                    <button @click="askConfirm('删除 Key', '删除「' + (k.name || '#' + k.id) + '」？使用它的客户端将立即失效，此操作不可撤销。', () => removeKey(k), true)" class="btn btn-danger btn-sm">删除</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="text-xs text-neutral-500">计费 Token = ⌈总 Token × 模型倍率 × Key 倍率⌉。额度在请求入口检查：已用 ≥ 额度时返回 <code class="text-neutral-300">429 insufficient_quota</code>；单次请求结束后才扣减，所以最后一个请求（及并发请求）可能略超额度。</p>
+        </template>
+
+        <!-- ==================== 用量统计 ==================== -->
+        <template v-if="tab==='usage'">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="inline-flex rounded-md border border-white/[0.08] bg-white/[0.02] p-0.5" role="group" aria-label="时间范围">
+              <button v-for="d in [1, 7, 30, 90]" :key="d" @click="usageFilters.days = d; loadUsage(true)" class="rounded px-2.5 py-1 text-xs" :class="usageFilters.days===d ? 'bg-white/[0.08] text-neutral-100' : 'text-neutral-400 hover:text-neutral-200'">{{ d === 1 ? '24 小时' : d + ' 天' }}</button>
+            </div>
+            <select v-model.number="usageFilters.key_id" @change="loadUsage(true)" class="input w-auto max-w-[200px]">
+              <option :value="0">全部 Key</option>
+              <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.name || ('#' + k.id) }}</option>
+            </select>
+            <input v-model.trim="usageFilters.model" @keyup.enter="loadUsage(true)" @change="loadUsage(true)" list="model-options" placeholder="模型（精确匹配）" class="input w-full sm:w-52">
+            <datalist id="model-options"><option v-for="m in modelIds" :key="m" :value="m"></option></datalist>
+            <div class="flex-1"></div>
+            <a :href="exportURL" @click.prevent="exportCSV" class="btn btn-secondary">导出 CSV</a>
+          </div>
+
+          <section class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <div class="stat"><div class="stat-label">请求</div><div class="stat-value">{{ fmt(usageTotals.requests) }}</div></div>
+            <div class="stat"><div class="stat-label">成功率</div><div class="stat-value" :class="successRate(usageTotals) < 95 ? 'text-amber-300' : 'text-emerald-400'">{{ usageTotals.requests ? successRate(usageTotals).toFixed(1) + '%' : '-' }}</div></div>
+            <div class="stat"><div class="stat-label">输入 Token</div><div class="stat-value">{{ fmtShort(usageTotals.prompt_tokens) }}</div></div>
+            <div class="stat"><div class="stat-label">输出 Token</div><div class="stat-value">{{ fmtShort(usageTotals.completion_tokens) }}</div></div>
+            <div class="stat"><div class="stat-label">总 Token</div><div class="stat-value">{{ fmtShort(usageTotals.total_tokens) }}</div></div>
+            <div class="stat"><div class="stat-label">计费 Token</div><div class="stat-value text-indigo-300">{{ fmtShort(usageTotals.charged_tokens) }}</div></div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <span class="card-title">趋势 · 按{{ usageSeriesBucket === 'hour' ? '小时' : '天' }}</span>
+              <div class="flex items-center gap-3 text-[11px] text-neutral-500">
+                <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-sm bg-indigo-400/80"></span>计费 Token</span>
+                <span class="flex items-center gap-1.5"><span class="h-0.5 w-3 rounded bg-emerald-400"></span>请求数</span>
+              </div>
+            </div>
+            <div class="p-4">
+              <div v-if="!usageSeries.length" class="flex h-40 items-center justify-center text-xs text-neutral-500">{{ usageLoading ? '加载中…' : '暂无数据' }}</div>
+              <div v-else class="relative">
+                <svg viewBox="0 0 600 160" preserveAspectRatio="none" class="h-40 w-full overflow-visible" role="img" :aria-label="'用量图表，共 ' + chart(usageSeries).bars.length + ' 个时间段'">
+                  <line v-for="g in [0.25,0.5,0.75]" :key="g" x1="0" x2="600" :y1="150 - g*140" :y2="150 - g*140" stroke="rgba(255,255,255,0.05)" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <line x1="0" x2="600" y1="150" y2="150" stroke="rgba(255,255,255,0.10)" stroke-width="1" vector-effect="non-scaling-stroke"></line>
+                  <rect v-for="b in chart(usageSeries).bars" :key="b.ts" :x="b.x" :y="b.y" :width="b.w" :height="b.h" rx="1.5" class="fill-indigo-400/70 transition-colors hover:fill-indigo-300"><title>{{ b.title }}</title></rect>
+                  <polyline :points="chart(usageSeries).line" fill="none" stroke="#34d399" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"></polyline>
+                </svg>
+                <div class="pointer-events-none absolute left-0 top-0 text-[10px] tabular-nums text-neutral-600">{{ fmtShort(chart(usageSeries).maxTokens) }}</div>
+                <div class="mt-1.5 flex justify-between text-[10px] tabular-nums text-neutral-600"><span v-for="l in chart(usageSeries).labels" :key="l">{{ l }}</span></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card overflow-x-auto">
+            <div class="card-header"><span class="card-title">按 Key × 模型</span><span class="text-[11px] text-neutral-500">{{ usageTotals.estimated_requests ? usageTotals.estimated_requests + ' 次请求的用量为估算' : '全部为上游真实用量' }}</span></div>
+            <table class="w-full">
+              <thead class="border-b border-white/[0.06]">
+                <tr><th class="th">Key</th><th class="th">模型</th><th class="th text-right">请求</th><th class="th text-right">成功率</th><th class="th text-right">输入</th><th class="th text-right">输出</th><th class="th text-right">总 Token</th><th class="th text-right">计费</th><th class="th text-right">平均延迟</th></tr>
+              </thead>
+              <tbody class="divide-y divide-white/[0.05]">
+                <tr v-if="!usageBreakdown.length"><td colspan="9" class="td py-10 text-center text-neutral-500">{{ usageLoading ? '加载中…' : '所选范围内没有请求' }}</td></tr>
+                <tr v-for="row in usageBreakdown" :key="row.key_id + '|' + row.model" class="row">
+                  <td class="td"><div class="text-neutral-200">{{ row.key_name || (row.key_id ? '#' + row.key_id : '无 Key（开放模式）') }}</div><code class="font-mono text-[11px] text-neutral-600">{{ row.key_masked }}</code></td>
+                  <td class="td font-mono text-xs text-neutral-300">{{ row.model }}</td>
+                  <td class="td text-right tabular-nums">{{ fmt(row.requests) }}</td>
+                  <td class="td text-right tabular-nums" :class="successRate(row) < 95 ? 'text-amber-300' : 'text-neutral-400'">{{ successRate(row).toFixed(0) }}%</td>
+                  <td class="td text-right tabular-nums text-neutral-400">{{ fmt(row.prompt_tokens) }}</td>
+                  <td class="td text-right tabular-nums text-neutral-400">{{ fmt(row.completion_tokens) }}</td>
+                  <td class="td text-right tabular-nums">{{ fmt(row.total_tokens) }}<span v-if="row.estimated_requests" class="pill ml-1.5 bg-amber-500/10 text-amber-300" :title="row.estimated_requests + ' 次为估算'">估算</span></td>
+                  <td class="td text-right tabular-nums text-indigo-300">{{ fmt(row.charged_tokens) }}</td>
+                  <td class="td text-right tabular-nums text-neutral-400">{{ fmtMs(row.avg_latency_ms) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="card overflow-x-auto">
+            <div class="card-header">
+              <span class="card-title">请求明细</span>
+              <div class="flex items-center gap-2 text-xs text-neutral-500">
+                <span class="tabular-nums">{{ usageRecordsTotal ? (usagePage * usagePageSize + 1) + '–' + Math.min((usagePage + 1) * usagePageSize, usageRecordsTotal) + ' / ' + fmt(usageRecordsTotal) : '0 条' }}</span>
+                <button @click="usagePage--; loadRecords()" :disabled="usagePage===0" class="btn btn-ghost btn-sm" aria-label="上一页">‹</button>
+                <button @click="usagePage++; loadRecords()" :disabled="(usagePage + 1) * usagePageSize >= usageRecordsTotal" class="btn btn-ghost btn-sm" aria-label="下一页">›</button>
+              </div>
+            </div>
+            <table class="w-full">
+              <thead class="border-b border-white/[0.06]">
+                <tr><th class="th">时间</th><th class="th">Key</th><th class="th">模型</th><th class="th">结果</th><th class="th text-right">输入 / 输出 / 总</th><th class="th text-right">倍率</th><th class="th text-right">计费</th><th class="th text-right">延迟</th></tr>
+              </thead>
+              <tbody class="divide-y divide-white/[0.05]">
+                <tr v-if="!usageRecords.length"><td colspan="8" class="td py-10 text-center text-neutral-500">{{ usageLoading ? '加载中…' : '暂无记录' }}</td></tr>
+                <tr v-for="r in usageRecords" :key="r.id" class="row">
+                  <td class="td whitespace-nowrap tabular-nums text-xs text-neutral-400">{{ fmtTime(r.ts) }}</td>
+                  <td class="td text-xs"><span class="text-neutral-300">{{ r.key_name || (r.key_id ? '#' + r.key_id : '—') }}</span></td>
+                  <td class="td font-mono text-xs text-neutral-300">{{ r.model }}<span v-if="r.stream" class="ml-1.5 text-[10px] text-neutral-600">stream</span></td>
+                  <td class="td">
+                    <span v-if="r.success" class="pill bg-emerald-500/10 text-emerald-400">成功</span>
+                    <span v-else class="pill bg-red-500/10 text-red-400" :title="r.error">失败</span>
+                    <div v-if="r.error" class="mt-0.5 max-w-xs truncate text-[11px] text-neutral-500" :title="r.error">{{ r.error }}</div>
+                  </td>
+                  <td class="td whitespace-nowrap text-right tabular-nums text-xs text-neutral-400">{{ fmt(r.prompt_tokens) }} / {{ fmt(r.completion_tokens) }} / <span class="text-neutral-200">{{ fmt(r.total_tokens) }}</span><span v-if="r.estimated" class="pill ml-1.5 bg-amber-500/10 text-amber-300">估算</span></td>
+                  <td class="td text-right tabular-nums text-xs text-neutral-400" :title="'模型 ' + fmtMult(r.model_multiplier) + ' × Key ' + fmtMult(r.key_multiplier)">{{ fmtMult(r.multiplier) }}</td>
+                  <td class="td text-right tabular-nums text-indigo-300">{{ fmt(r.charged_tokens) }}</td>
+                  <td class="td text-right tabular-nums text-xs text-neutral-400">{{ fmtMs(r.latency_ms) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <details class="card">
+            <summary class="cursor-pointer select-none px-4 py-3 text-xs text-neutral-400 hover:text-neutral-200">旧版聚合（按 Key × 引擎 × 模型，含 /v1/chat 以外的历史口径）</summary>
+            <div class="overflow-x-auto border-t border-white/[0.06]">
+              <table class="w-full">
+                <thead class="border-b border-white/[0.06]"><tr><th class="th">Key</th><th class="th">引擎</th><th class="th">模型</th><th class="th text-right">请求</th><th class="th text-right">成功</th><th class="th text-right">输入</th><th class="th text-right">输出</th></tr></thead>
+                <tbody class="divide-y divide-white/[0.05]">
+                  <tr v-if="!usageLegacy.length"><td colspan="7" class="td py-8 text-center text-neutral-500">暂无数据</td></tr>
+                  <tr v-for="(u, i) in usageLegacy" :key="i" class="row">
+                    <td class="td font-mono text-[11px] text-neutral-500">{{ maskKey(u.api_key) }}</td>
+                    <td class="td"><span v-if="u.engine" class="pill" :class="engineClass(u.engine)">{{ engineText(u.engine) }}</span><span v-else class="text-neutral-600">—</span></td>
+                    <td class="td font-mono text-xs text-neutral-300">{{ u.model }}</td>
+                    <td class="td text-right tabular-nums">{{ fmt(u.requests) }}</td>
+                    <td class="td text-right tabular-nums text-neutral-400">{{ fmt(u.success_requests) }}</td>
+                    <td class="td text-right tabular-nums text-neutral-400">{{ fmt(u.prompt_tokens) }}</td>
+                    <td class="td text-right tabular-nums text-neutral-400">{{ fmt(u.completion_tokens) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </template>
+
+        <!-- ==================== 模型 ==================== -->
+        <template v-if="tab==='models'">
+          <div class="flex flex-wrap items-center gap-2">
+            <input ref="modelSearch" v-model="modelQuery" type="search" placeholder="搜索模型  /" class="input w-full sm:w-64">
+            <div class="inline-flex rounded-md border border-white/[0.08] bg-white/[0.02] p-0.5" role="group" aria-label="能力筛选">
+              <button v-for="c in capFilters" :key="c.id" @click="modelCap = c.id" class="rounded px-2.5 py-1 text-xs" :class="modelCap===c.id ? 'bg-white/[0.08] text-neutral-100' : 'text-neutral-400 hover:text-neutral-200'">{{ c.label }}</button>
+            </div>
+            <div class="flex-1"></div>
+            <span class="text-xs text-neutral-500">{{ filteredModels.length }} / {{ models.length }} 个模型</span>
+          </div>
+          <div class="grid gap-3 xl:grid-cols-[1fr,380px]">
+            <div class="card overflow-x-auto">
+              <table class="w-full">
+                <thead class="border-b border-white/[0.06]"><tr><th class="th">模型 ID</th><th class="th">引擎</th><th class="th">能力</th><th class="th text-right">倍率</th><th class="th">状态</th></tr></thead>
+                <tbody class="divide-y divide-white/[0.05]">
+                  <tr v-if="!models.length"><td colspan="5" class="td py-12 text-center text-neutral-500">{{ modelsLoading ? '加载中…' : '没有可用模型：请先在「号池」添加并启用账号' }}</td></tr>
+                  <tr v-for="m in filteredModels" :key="m.id + m.engine" class="row">
+                    <td class="td"><div class="flex items-center gap-1.5"><code class="font-mono text-xs text-neutral-100">{{ m.id }}</code><button @click="copyText(m.id)" class="text-[11px] text-neutral-600 hover:text-neutral-300" aria-label="复制模型 ID">复制</button></div><div v-if="m.display_name && m.display_name !== m.id" class="text-[11px] text-neutral-500">{{ m.display_name }}</div></td>
+                    <td class="td"><span v-if="m.engine" class="pill" :class="engineClass(m.engine)">{{ engineText(m.engine) }}</span></td>
+                    <td class="td"><div class="flex flex-wrap gap-1"><span v-for="c in modelCaps(m.id)" :key="c" class="pill" :class="capClass(c)">{{ capText(c) }}</span></div></td>
+                    <td class="td text-right tabular-nums" :class="m.multiplier !== 1 ? 'text-indigo-300' : 'text-neutral-500'">{{ fmtMult(m.multiplier) }}</td>
+                    <td class="td"><span class="pill" :class="m.available ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/[0.06] text-neutral-500'"><span class="dot"></span>{{ m.available ? '可用' : '不可用' }}</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="space-y-3">
+              <div class="card">
+                <div class="card-header"><span class="card-title">4K 请求示例（本机已验证）</span></div>
+                <div class="space-y-3 p-4">
+                  <div v-for="ex in fourKExamples" :key="ex.title">
+                    <div class="mb-1 flex items-center justify-between"><span class="text-xs font-medium text-neutral-200">{{ ex.title }}</span><button @click="copyText(ex.body)" class="text-[11px] text-neutral-500 hover:text-neutral-300">复制</button></div>
+                    <div class="mb-1 font-mono text-[11px] text-neutral-500">POST {{ ex.path }}</div>
+                    <pre class="code overflow-x-auto p-2.5 text-[11px] leading-relaxed">{{ ex.body }}</pre>
+                    <p class="mt-1 text-[11px] leading-relaxed text-neutral-500">{{ ex.note }}</p>
+                  </div>
+                </div>
+              </div>
+              <p class="px-1 text-[11px] leading-relaxed text-neutral-500">能力标签根据模型 ID 推断，仅供参考；实际支持范围以上游模型目录为准。倍率在「设置 → 模型倍率」中修改。</p>
+            </div>
+          </div>
+        </template>
+
+        <!-- ==================== 设置 ==================== -->
+        <template v-if="tab==='settings'">
+          <section class="card">
+            <div class="card-header">
+              <div><span class="card-title">模型倍率</span><p class="mt-0.5 text-[11px] text-neutral-500">计费 Token = ⌈总 Token × 模型倍率 × Key 倍率⌉。未单独设置的模型使用默认倍率 <code class="text-neutral-300">*</code>。</p></div>
+            </div>
+            <div class="grid gap-4 p-4 lg:grid-cols-[320px,1fr]">
+              <form @submit.prevent="saveMultiplier" class="space-y-3">
+                <div><label for="mult-model" class="label">模型</label><input id="mult-model" v-model.trim="multForm.model" list="model-options-mult" required placeholder="如 gemini-3.5-flash，* 为默认" class="input font-mono"><datalist id="model-options-mult"><option value="*"></option><option v-for="m in multModels" :key="m" :value="m"></option></datalist></div>
+                <div><label for="mult-value" class="label">倍率</label><input id="mult-value" v-model.number="multForm.multiplier" type="number" step="0.01" min="0" max="1000" required class="input"><p class="hint">0 – 1000；0 表示该模型不计费。</p></div>
+                <p v-if="multError" class="text-xs text-red-400">{{ multError }}</p>
+                <button :disabled="multBusy" class="btn btn-primary">{{ multBusy ? '保存中…' : '保存倍率' }}</button>
+              </form>
+              <div class="overflow-x-auto rounded-md border border-white/[0.06]">
+                <table class="w-full">
+                  <thead class="border-b border-white/[0.06]"><tr><th class="th">模型</th><th class="th text-right">倍率</th><th class="th">更新时间</th><th class="th text-right">操作</th></tr></thead>
+                  <tbody class="divide-y divide-white/[0.05]">
+                    <tr class="row"><td class="td"><code class="font-mono text-xs text-neutral-200">*</code> <span class="ml-1 text-[11px] text-neutral-500">默认</span></td><td class="td text-right tabular-nums">{{ fmtMult(multDefault) }}</td><td class="td text-xs text-neutral-500">—</td><td class="td text-right"><button @click="multForm.model='*'; multForm.multiplier=multDefault" class="btn btn-ghost btn-sm">编辑</button></td></tr>
+                    <tr v-for="m in multipliers.filter(x => x.model !== '*')" :key="m.model" class="row">
+                      <td class="td font-mono text-xs text-neutral-200">{{ m.model }}</td>
+                      <td class="td text-right tabular-nums text-indigo-300">{{ fmtMult(m.multiplier) }}</td>
+                      <td class="td text-xs tabular-nums text-neutral-500">{{ fmtTime(m.updated_at) }}</td>
+                      <td class="td whitespace-nowrap text-right"><button @click="multForm.model=m.model; multForm.multiplier=m.multiplier" class="btn btn-ghost btn-sm">编辑</button><button @click="askConfirm('删除倍率', '删除「' + m.model + '」的单独倍率？之后按默认倍率计费。', () => deleteMultiplier(m))" class="btn btn-danger btn-sm">删除</button></td>
+                    </tr>
+                    <tr v-if="!multipliers.filter(x => x.model !== '*').length"><td colspan="4" class="td py-6 text-center text-xs text-neutral-500">没有单独设置倍率的模型</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section class="grid gap-3 lg:grid-cols-[1fr,320px]">
+            <div class="card">
+              <div class="card-header"><span class="card-title">系统升级</span><span class="pill" :class="upgradePhaseClass">{{ upgradeDisconnected ? '重连中' : upgradePhaseText(upgradeState.phase) }}</span></div>
+              <div class="space-y-3 p-4">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="rounded-md border border-white/[0.06] p-3"><div class="text-[11px] text-neutral-500">当前版本</div><div class="mt-0.5 font-medium text-neutral-100">{{ upgradeState.current_version || (upgradeState.current_id ? '本地构建' : '未获取') }}</div><code class="break-all text-[11px] text-neutral-600">{{ upgradeState.current_id || '' }}</code></div>
+                  <div class="rounded-md border border-white/[0.06] p-3"><div class="text-[11px] text-neutral-500">最新版本</div><div class="mt-0.5 font-medium text-neutral-100">{{ upgradeState.target_version || (upgradeState.target_id ? '镜像已获取' : '尚未检查') }}</div><code class="break-all text-[11px] text-neutral-600">{{ upgradeState.target_id || '' }}</code></div>
+                </div>
+                <div class="text-xs text-neutral-500">更新镜像：<code class="break-all text-neutral-300">{{ upgradeState.image || 'ghcr.io/plunjoin/web2api:latest' }}</code></div>
+                <div class="rounded-md border p-3 text-xs" :class="upgradeState.phase==='failed' ? 'border-red-500/30 bg-red-500/[0.06]' : 'border-white/[0.06] bg-white/[0.02]'">
+                  <div class="font-medium" :class="upgradeState.phase==='failed' ? 'text-red-300' : 'text-neutral-200'">{{ upgradeDisconnected ? '服务重启中，正在重新连接…' : upgradePhaseText(upgradeState.phase) }}</div>
+                  <p class="mt-1 whitespace-pre-line break-words leading-relaxed text-neutral-400">{{ upgradeState.message || '正在读取升级状态…' }}</p>
+                  <p v-if="upgradeError" class="mt-2 text-red-400">{{ upgradeError }}</p>
+                </div>
+                <div v-if="!upgradeState.enabled && upgradeState.reason && upgradeState.reason !== upgradeState.message" class="whitespace-pre-line rounded-md border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs leading-relaxed text-amber-200">{{ upgradeState.reason }}</div>
+                <div class="flex gap-2">
+                  <button @click="checkUpgrade" :disabled="!upgradeState.enabled || upgradeBusy || upgradeActionBusy" class="btn btn-secondary">检查更新</button>
+                  <button @click="askConfirm('升级到最新镜像', '将升级到 ' + (upgradeState.target_version || '已检查的最新版本') + '。服务会短暂中断，失败时自动恢复旧容器，完成后页面自动刷新。', startUpgrade)" :disabled="!upgradeState.enabled || upgradeState.phase!=='ready' || upgradeActionBusy" class="btn btn-primary">一键升级</button>
+                </div>
+                <p class="text-[11px] leading-relaxed text-neutral-500">拉取镜像失败（HTTP 403）时，错误信息会指出具体原因与需要的设置（如 <code class="text-neutral-300">WEB2API_UPGRADE_REGISTRY_USER</code> / <code class="text-neutral-300">WEB2API_UPGRADE_REGISTRY_PASSWORD</code>）。详见 docker/README.md。</p>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header"><span class="card-title">版本信息</span></div>
+              <dl class="grid grid-cols-[auto,1fr] gap-x-4 gap-y-2 p-4 text-xs">
+                <dt class="text-neutral-500">版本</dt><dd class="text-neutral-200">{{ versionInfo.version || '-' }}</dd>
+                <dt class="text-neutral-500">提交</dt><dd class="font-mono text-neutral-300">{{ versionInfo.commit || '-' }}<span v-if="versionInfo.modified" class="pill ml-1.5 bg-amber-500/10 text-amber-300">有未提交改动</span></dd>
+                <dt class="text-neutral-500">提交时间</dt><dd class="text-neutral-400">{{ versionInfo.build_time ? fmtTime(Date.parse(versionInfo.build_time) / 1000) : '-' }}</dd>
+                <dt class="text-neutral-500">Go</dt><dd class="text-neutral-400">{{ versionInfo.go_version || '-' }}</dd>
+                <dt class="text-neutral-500">运行时长</dt><dd class="text-neutral-400">{{ fmtDuration(overview.uptime_seconds) }}</dd>
+                <dt class="text-neutral-500">健康检查</dt><dd><a href="/health" target="_blank" class="text-indigo-400 hover:text-indigo-300">/health ↗</a></dd>
+              </dl>
+            </div>
+          </section>
+        </template>
+
+        <!-- ==================== 接口文档 ==================== -->
+        <template v-if="tab==='docs'">
+          <div class="flex flex-wrap items-center gap-2">
+            <input ref="docsSearch" v-model="docsQuery" type="search" placeholder="搜索路径或说明  /" class="input w-full sm:w-64">
+            <div class="flex-1"></div>
+            <button @click="downloadDocs" :disabled="!docsRows.length" class="btn btn-secondary">下载 OpenAPI JSON</button>
+          </div>
+          <div class="card">
+            <div class="card-header"><div><span class="card-title">{{ apiSpec.info?.title || '管理 API' }}</span><span v-if="apiSpec.info?.version" class="ml-2 text-[11px] text-neutral-500">v{{ apiSpec.info.version }}</span></div><span class="text-[11px] text-neutral-500">鉴权：<code class="text-neutral-300">Authorization: Bearer &lt;登录返回的 access_token&gt;</code></span></div>
+            <div v-if="docsLoading && !docsRows.length" class="py-12 text-center text-xs text-neutral-500">加载中…</div>
+            <div v-else class="divide-y divide-white/[0.05]">
+              <div v-for="row in filteredDocs" :key="row.method + row.path" class="row flex items-start gap-3 px-4 py-2.5">
+                <span class="pill w-16 shrink-0 justify-center font-mono" :class="methodClass(row.method)">{{ row.method }}</span>
+                <div class="min-w-0 flex-1"><code class="break-all font-mono text-xs text-neutral-100">{{ row.path }}</code><div class="mt-0.5 text-xs text-neutral-500">{{ row.summary }}</div></div>
+              </div>
+              <div v-if="!filteredDocs.length" class="py-10 text-center text-xs text-neutral-500">没有匹配的接口</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">网关错误码（/v1/*）</span></div>
+            <table class="w-full">
+              <thead class="border-b border-white/[0.06]"><tr><th class="th">HTTP</th><th class="th">type</th><th class="th">code</th><th class="th">含义</th></tr></thead>
+              <tbody class="divide-y divide-white/[0.05] text-xs">
+                <tr v-for="e in gatewayErrors" :key="e[2]" class="row"><td class="td tabular-nums">{{ e[0] }}</td><td class="td font-mono text-neutral-300">{{ e[1] }}</td><td class="td font-mono text-neutral-300">{{ e[2] }}</td><td class="td text-neutral-400">{{ e[3] }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+
+      </main>
     </div>
   </div>
 
-  <!-- 添加 Gemini 号 -->
-  <div v-if="addGeminiOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="addGeminiOpen=false">
-    <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
-      <h3 class="font-bold text-lg mb-1">添加 Gemini 号（引擎A）</h3>
-      <p class="text-xs text-slate-400 mb-4">浏览器登录 gemini.google.com → F12 → Application → Cookies → 复制两个值</p>
-      <div class="space-y-3">
-        <div>
-          <label class="text-xs text-slate-500">标签（备注名）</label>
-          <input v-model="geminiForm.label" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="主号">
-        </div>
-        <div>
-          <label class="text-xs text-slate-500">__Secure-1PSID</label>
-          <input v-model="geminiForm.psid" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs" placeholder="粘贴 Cookie 值">
-        </div>
-        <div>
-          <label class="text-xs text-slate-500">__Secure-1PSIDTS</label>
-          <input v-model="geminiForm.psidts" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs" placeholder="粘贴 Cookie 值">
-        </div>
+  <!-- ==================== 弹窗 ==================== -->
+  <div v-if="addGeminiOpen" class="modal-mask" @click.self="addGeminiOpen=false">
+    <form @submit.prevent="submitGemini" role="dialog" aria-modal="true" aria-labelledby="dlg-gemini" class="modal max-w-md space-y-3">
+      <div><h3 id="dlg-gemini" class="text-sm font-semibold text-neutral-100">添加 Gemini 号（引擎A）</h3><p class="mt-0.5 text-xs text-neutral-500">从已登录 gemini.google.com 的浏览器复制 Cookie。</p></div>
+      <div><label class="label" for="g-label">标签</label><input id="g-label" v-model="geminiForm.label" class="input" placeholder="主号"></div>
+      <div><label class="label" for="g-psid">__Secure-1PSID</label><input id="g-psid" v-model="geminiForm.psid" required autocomplete="off" spellcheck="false" class="input font-mono" placeholder="粘贴 Cookie 值"></div>
+      <div><label class="label" for="g-psidts">__Secure-1PSIDTS</label><input id="g-psidts" v-model="geminiForm.psidts" autocomplete="off" spellcheck="false" class="input font-mono" placeholder="粘贴 Cookie 值"></div>
+      <p v-if="formError" class="text-xs text-red-400">{{ formError }}</p>
+      <div class="flex justify-end gap-2 pt-1"><button type="button" @click="addGeminiOpen=false" class="btn btn-secondary">取消</button><button class="btn btn-primary">添加</button></div>
+    </form>
+  </div>
+
+  <div v-if="addStudioOpen" class="modal-mask" @click.self="addStudioOpen=false">
+    <form @submit.prevent="submitStudio" role="dialog" aria-modal="true" aria-labelledby="dlg-studio" class="modal max-w-lg space-y-3">
+      <div><h3 id="dlg-studio" class="text-sm font-semibold text-neutral-100">添加 AI Studio 号（引擎B）</h3><p class="mt-0.5 text-xs text-neutral-500">粘贴 Playwright storage_state JSON（含 google.com Cookie）。</p></div>
+      <div><label class="label" for="s-email">邮箱</label><input id="s-email" v-model="studioForm.email" type="email" required class="input" placeholder="you@gmail.com"></div>
+      <div><label class="label" for="s-state">storage_state</label><textarea id="s-state" v-model="studioForm.storage_state" rows="6" required spellcheck="false" class="input font-mono text-[11px]" placeholder='{"cookies":[{"name":"...","value":"...","domain":".google.com","path":"/"}],"origins":[]}'></textarea></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="label" for="s-locale">locale（可选）</label><input id="s-locale" v-model="studioForm.locale" class="input" placeholder="en-US"></div>
+        <div><label class="label" for="s-tz">timezone（可选）</label><input id="s-tz" v-model="studioForm.timezone" class="input" placeholder="America/New_York"></div>
       </div>
-      <div v-if="formError" class="mt-3 text-sm text-red-600">{{ formError }}</div>
-      <div class="flex justify-end gap-2 mt-5">
-        <button @click="addGeminiOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
-        <button @click="submitGemini" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500">添加</button>
+      <p v-if="formError" class="text-xs text-red-400">{{ formError }}</p>
+      <div class="flex justify-end gap-2 pt-1"><button type="button" @click="addStudioOpen=false" class="btn btn-secondary">取消</button><button class="btn btn-primary">添加</button></div>
+    </form>
+  </div>
+
+  <div v-if="credsOpen" class="modal-mask" @click.self="credsOpen=false">
+    <form @submit.prevent="submitCreds" role="dialog" aria-modal="true" aria-labelledby="dlg-creds" class="modal max-w-md space-y-3">
+      <div><h3 id="dlg-creds" class="text-sm font-semibold text-neutral-100">更换 Cookie · {{ credsTarget?.label }}</h3><p class="mt-0.5 text-xs text-neutral-500">保存后立即重新校验。</p></div>
+      <div><label class="label" for="c-psid">__Secure-1PSID</label><input id="c-psid" v-model="credsForm.psid" required autocomplete="off" spellcheck="false" class="input font-mono"></div>
+      <div><label class="label" for="c-psidts">__Secure-1PSIDTS</label><input id="c-psidts" v-model="credsForm.psidts" autocomplete="off" spellcheck="false" class="input font-mono"></div>
+      <p v-if="formError" class="text-xs text-red-400">{{ formError }}</p>
+      <div class="flex justify-end gap-2 pt-1"><button type="button" @click="credsOpen=false" class="btn btn-secondary">取消</button><button class="btn btn-primary">保存</button></div>
+    </form>
+  </div>
+
+  <div v-if="keyFormOpen" class="modal-mask" @click.self="keyFormOpen=false">
+    <form @submit.prevent="submitKeyForm" role="dialog" aria-modal="true" aria-labelledby="dlg-key" class="modal max-w-lg space-y-3">
+      <div><h3 id="dlg-key" class="text-sm font-semibold text-neutral-100">{{ keyForm.id ? '编辑 Key' : '创建 Key' }}</h3><p class="mt-0.5 text-xs text-neutral-500">所有限制留空 / 0 表示不限。</p></div>
+      <div><label class="label" for="k-name">名称 / 备注</label><input id="k-name" v-model="keyForm.name" maxlength="200" class="input" placeholder="如：团队 A 测试"></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="label" for="k-limit">Token 额度</label><input id="k-limit" v-model.number="keyForm.token_limit" type="number" min="0" step="1" class="input" placeholder="0 = 不限"><p class="hint">按计费 Token（含倍率）</p></div>
+        <div><label class="label" for="k-mult">Key 倍率</label><input id="k-mult" v-model.number="keyForm.multiplier" type="number" min="0" max="1000" step="0.01" class="input"><p class="hint">分组默认倍率，默认 1</p></div>
+        <div><label class="label" for="k-rpm">每分钟请求上限</label><input id="k-rpm" v-model.number="keyForm.rpm_limit" type="number" min="0" step="1" class="input" placeholder="0 = 不单独限制"></div>
+        <div><label class="label" for="k-exp">过期时间</label><input id="k-exp" v-model="keyForm.expires" type="datetime-local" class="input"><p class="hint">留空 = 永不过期</p></div>
       </div>
+      <div><label class="label" for="k-models">模型白名单</label><textarea id="k-models" v-model="keyForm.models" rows="2" spellcheck="false" class="input font-mono text-xs" placeholder="留空 = 全部模型；逗号或换行分隔，支持末尾 * 前缀，如 gemini-3.5-*"></textarea></div>
+      <label v-if="keyForm.id && keyForm.tokens_used" class="flex items-center gap-2 text-xs text-neutral-400"><input v-model="keyForm.reset_usage" type="checkbox" class="rounded border-white/20 bg-transparent text-indigo-500 focus:ring-indigo-500/40">同时把已用额度（{{ fmt(keyForm.tokens_used) }}）归零</label>
+      <p v-if="formError" class="text-xs text-red-400">{{ formError }}</p>
+      <div class="flex justify-end gap-2 pt-1"><button type="button" @click="keyFormOpen=false" class="btn btn-secondary">取消</button><button :disabled="keyFormBusy" class="btn btn-primary">{{ keyFormBusy ? '保存中…' : (keyForm.id ? '保存' : '创建') }}</button></div>
+    </form>
+  </div>
+
+  <div v-if="createdKey" class="modal-mask" @click.self="createdKey=null">
+    <div role="dialog" aria-modal="true" aria-labelledby="dlg-created" class="modal max-w-lg space-y-3">
+      <div><h3 id="dlg-created" class="text-sm font-semibold text-neutral-100">{{ createdKey.title }}</h3><p class="mt-0.5 text-xs text-neutral-500">请现在复制保存。之后可在列表中点「显示」查看，但请勿在不安全的地方传播。</p></div>
+      <div class="code flex items-center gap-2 p-3"><code class="flex-1 break-all text-neutral-100">{{ createdKey.key }}</code><button @click="copyText(createdKey.key)" class="btn btn-secondary btn-sm">复制</button></div>
+      <div class="flex justify-end"><button @click="createdKey=null" class="btn btn-primary">完成</button></div>
     </div>
   </div>
 
-  <!-- 添加 AI Studio 号 -->
-  <div v-if="addStudioOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="addStudioOpen=false">
-    <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6">
-      <h3 class="font-bold text-lg mb-1">添加 AI Studio 号（引擎B）</h3>
-      <p class="text-xs text-slate-400 mb-4">可复用 AIStudio2API 生成的 storage-state.json 内容（auth/&lt;邮箱&gt;/ 目录）</p>
-      <div class="space-y-3">
-        <div>
-          <label class="text-xs text-slate-500">Google 邮箱（账号 ID）</label>
-          <input v-model="studioForm.email" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="you@gmail.com">
-        </div>
-        <div>
-          <label class="text-xs text-slate-500">storage-state.json 内容</label>
-          <textarea v-model="studioForm.storage_state" rows="6"
-            class="mt-1 w-full border rounded-lg px-3 py-2 text-xs font-mono"
-            placeholder='{"cookies":[{"name":"...","value":"...","domain":".google.com","path":"/",...}],"origins":[]}'></textarea>
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-xs text-slate-500">Locale（可选）</label>
-            <input v-model="studioForm.locale" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="en-US">
-          </div>
-          <div>
-            <label class="text-xs text-slate-500">Timezone（可选）</label>
-            <input v-model="studioForm.timezone" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="America/New_York">
-          </div>
-        </div>
-      </div>
-      <div v-if="formError" class="mt-3 text-sm text-red-600">{{ formError }}</div>
-      <div class="flex justify-end gap-2 mt-5">
-        <button @click="addStudioOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
-        <button @click="submitStudio" class="px-4 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500">添加</button>
-      </div>
+  <div v-if="confirmState" class="modal-mask z-[60]" @click.self="confirmState=null">
+    <div role="alertdialog" aria-modal="true" aria-labelledby="dlg-confirm" class="modal max-w-sm space-y-3">
+      <h3 id="dlg-confirm" class="text-sm font-semibold text-neutral-100">{{ confirmState.title }}</h3>
+      <p class="text-xs leading-relaxed text-neutral-400">{{ confirmState.message }}</p>
+      <div class="flex justify-end gap-2 pt-1"><button @click="confirmState=null" class="btn btn-secondary">取消</button><button ref="confirmButton" @click="runConfirm" :disabled="confirmState.busy" class="btn" :class="confirmState.danger ? 'btn-danger-solid' : 'btn-primary'">{{ confirmState.busy ? '处理中…' : '确认' }}</button></div>
     </div>
   </div>
 
-  <!-- 换 Cookie -->
-  <div v-if="credsOpen" class="fixed inset-0 bg-black/40 flex items-center justify-center z-40" @click.self="credsOpen=false">
-    <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
-      <h3 class="font-bold text-lg mb-4">更新 Cookie：{{ credsTarget?.label }}</h3>
-      <div class="space-y-3">
-        <div>
-          <label class="text-xs text-slate-500">__Secure-1PSID</label>
-          <input v-model="credsForm.psid" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs">
-        </div>
-        <div>
-          <label class="text-xs text-slate-500">__Secure-1PSIDTS</label>
-          <input v-model="credsForm.psidts" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs">
-        </div>
-      </div>
-      <div v-if="formError" class="mt-3 text-sm text-red-600">{{ formError }}</div>
-      <div class="flex justify-end gap-2 mt-5">
-        <button @click="credsOpen=false" class="px-4 py-2 text-sm rounded-lg bg-slate-100 hover:bg-slate-200">取消</button>
-        <button @click="submitCreds" class="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500">保存</button>
-      </div>
+  <div class="pointer-events-none fixed bottom-4 right-4 z-[70] flex flex-col items-end gap-2" aria-live="polite">
+    <div v-for="t in toasts" :key="t.id" class="pointer-events-auto flex max-w-sm items-start gap-2 rounded-lg border border-white/10 bg-[#18181c] px-3 py-2 text-xs text-neutral-200 shadow-lg shadow-black/40">
+      <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="t.ok ? 'bg-emerald-400' : 'bg-red-400'"></span><span class="break-words">{{ t.msg }}</span>
     </div>
   </div>
-
-  <!-- Toast -->
-  <div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg text-sm text-white"
-    :class="toast.ok ? 'bg-emerald-600' : 'bg-red-600'">{{ toast.msg }}</div>
 </div>
 
 <script>
 if (!window.Vue) document.getElementById('startup-error').style.display = 'block';
-const { createApp, ref, reactive, computed, onMounted } = Vue;
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } = Vue;
 createApp({
   setup() {
-    const tabs = ['总览', '号池管理', 'Key 管理', '用量统计', '接口文档', '系统升级'];
-    const tab = ref('总览');
+    // ---------- 导航 ----------
+    const tabs = [
+      { id: 'overview', label: '总览', desc: '号池、Key 与用量概况', icon: 'M4 5h6v6H4zM14 5h6v4h-6zM14 13h6v6h-6zM4 15h6v4H4z' },
+      { id: 'accounts', label: '号池', desc: 'Gemini / AI Studio 账号与健康状态', icon: 'M16 19v-1a4 4 0 00-4-4H7a4 4 0 00-4 4v1M9.5 10a3 3 0 100-6 3 3 0 000 6zM21 19v-1a4 4 0 00-3-3.87M16 4.13a3 3 0 010 5.74' },
+      { id: 'keys', label: 'API Key', desc: '额度、倍率、过期时间、模型白名单与限流', icon: 'M15 7a2 2 0 012 2m4 0a6 6 0 01-7.74 5.74L11 17H9v2H7v2H3v-3.59l6.26-6.26A6 6 0 1121 9z' },
+      { id: 'usage', label: '用量', desc: '逐请求明细、趋势与导出', icon: 'M4 19h16M7 16V10M12 16V5M17 16v-4' },
+      { id: 'models', label: '模型', desc: '模型目录、能力与 4K 示例', icon: 'M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zM12 12l8-4.5M12 12v9M12 12L4 7.5' },
+      { id: 'settings', label: '设置', desc: '模型倍率、系统升级与版本', icon: 'M10.3 4.3a1.7 1.7 0 013.4 0 1.7 1.7 0 002.6 1.1 1.7 1.7 0 012.3 2.3 1.7 1.7 0 001.1 2.6 1.7 1.7 0 010 3.4 1.7 1.7 0 00-1.1 2.6 1.7 1.7 0 01-2.3 2.3 1.7 1.7 0 00-2.6 1.1 1.7 1.7 0 01-3.4 0 1.7 1.7 0 00-2.6-1.1 1.7 1.7 0 01-2.3-2.3 1.7 1.7 0 00-1.1-2.6 1.7 1.7 0 010-3.4 1.7 1.7 0 001.1-2.6 1.7 1.7 0 012.3-2.3 1.7 1.7 0 002.6-1.1zM12 15a3 3 0 100-6 3 3 0 000 6z' },
+      { id: 'docs', label: '接口文档', desc: '管理 API（OpenAPI 3.1）与错误码', icon: 'M4 5a2 2 0 012-2h9l5 5v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zM14 3v5h5M8 13h8M8 17h5' },
+    ];
+    // 兼容旧版本的 hash（如 #upgrade）
+    const legacyTabs = { upgrade: 'settings', '系统升级': 'settings', '用量统计': 'usage', 'Key 管理': 'keys', '号池管理': 'accounts', '接口文档': 'docs', '总览': 'overview' };
+    const tabFromHash = () => {
+      const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+      const id = legacyTabs[h] || h;
+      return tabs.some((t) => t.id === id) ? id : 'overview';
+    };
+    const tab = ref(tabFromHash());
+    const currentTab = computed(() => tabs.find((t) => t.id === tab.value) || tabs[0]);
+    const go = (id) => { if (tab.value === id) return; tab.value = id; history.replaceState(null, '', '#' + id); refresh(); };
+
+    // ---------- 会话 ----------
     localStorage.removeItem('admin_token');
     const token = ref(sessionStorage.getItem('admin_jwt') || '');
     const user = ref({});
@@ -450,17 +678,47 @@ createApp({
     const authError = ref('');
     const authForm = reactive({ email: '', password: '', nickname: '', redis_url: '' });
     const connected = ref(false);
-    const toast = ref(null);
+    const baseURL = location.origin;
 
+    // ---------- 提示与确认 ----------
+    const toasts = ref([]);
+    let toastSeq = 0;
+    const notify = (msg, ok = true) => {
+      const id = ++toastSeq;
+      toasts.value.push({ id, msg, ok });
+      setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id); }, ok ? 2600 : 5000);
+    };
+    const confirmState = ref(null);
+    const confirmButton = ref(null);
+    const askConfirm = (title, message, action, danger = false) => {
+      confirmState.value = { title, message, action, danger, busy: false };
+      nextTick(() => confirmButton.value?.focus());
+    };
+    const runConfirm = async () => {
+      const state = confirmState.value;
+      if (!state || state.busy) return;
+      state.busy = true;
+      try { await state.action(); } finally { if (confirmState.value === state) confirmState.value = null; }
+    };
+
+    const api = async (path, opts = {}) => {
+      const res = await fetch(path, {
+        ...opts,
+        headers: { 'Authorization': 'Bearer ' + token.value, 'Content-Type': 'application/json', ...(opts.headers || {}) },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401 && token.value) clearSession();
+        const error = new Error(data.error?.message || data.error || ('HTTP ' + res.status));
+        error.status = res.status;
+        throw error;
+      }
+      return data;
+    };
+
+    // ---------- 数据 ----------
     const overview = ref({});
-    const upgradeState = ref({ enabled: false, phase: 'idle' });
-    const upgradeError = ref('');
-    const upgradeDisconnected = ref(false);
-    const upgradeActionBusy = ref(false);
-    const upgradeConfirmOpen = ref(false);
-    const upgradeBusy = computed(() => ['checking', 'starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase));
-    let upgradePolling = false;
-    const upgradePhaseText = (phase) => ({ idle: '等待检查', checking: '正在检查并下载镜像', ready: '有可用更新', up_to_date: '已是最新版本', starting: '正在启动升级任务', upgrading: '正在切换容器', restarting: '正在等待新版本就绪', completed: '升级成功', rolled_back: '已恢复旧版本', failed: '任务失败' }[phase] || '升级状态');
+    const overviewSeries = ref([]);
     const accounts = ref([]);
     const accountQuery = ref('');
     const accountEngineFilter = ref('');
@@ -474,95 +732,183 @@ createApp({
           (!accountStatusFilter.value || acc.live?.status === accountStatusFilter.value);
       });
     });
+
     const keys = ref([]);
-    const usage = ref([]);
-    const usageDays = ref(7);
+    const keysLoading = ref(false);
+    const keyQuery = ref('');
+    const keyFilter = ref('');
+    const revealed = reactive({});
+    const keyState = (k) => {
+      if (!k.enabled) return { text: '已停用', cls: 'bg-white/[0.06] text-neutral-500' };
+      if (k.expired) return { text: '已过期', cls: 'bg-red-500/10 text-red-400' };
+      if (k.quota_exhausted) return { text: '额度用尽', cls: 'bg-red-500/10 text-red-400' };
+      if (k.token_limit > 0 && quotaPercent(k) >= 80) return { text: '额度紧张', cls: 'bg-amber-500/10 text-amber-300' };
+      return { text: '可用', cls: 'bg-emerald-500/10 text-emerald-400' };
+    };
+    const filteredKeys = computed(() => {
+      const q = keyQuery.value.trim().toLowerCase();
+      return keys.value.filter((k) => {
+        if (q && !(`${k.name || ''} #${k.id}`).toLowerCase().includes(q)) return false;
+        switch (keyFilter.value) {
+          case 'active': return k.enabled && !k.expired && !k.quota_exhausted;
+          case 'disabled': return !k.enabled;
+          case 'exhausted': return k.quota_exhausted;
+          case 'expired': return k.expired;
+          case 'limited': return k.token_limit > 0 || k.rpm_limit > 0 || k.expires_at > 0 || k.allowed_models?.length;
+          default: return true;
+        }
+      });
+    });
+    const lowQuotaKeys = computed(() => keys.value.filter((k) => k.token_limit > 0)
+      .sort((a, b) => quotaPercent(b) - quotaPercent(a)).slice(0, 5));
+
+    const keyFormOpen = ref(false);
+    const keyFormBusy = ref(false);
+    const keyForm = reactive({});
+    const createdKey = ref(null);
+    const formError = ref('');
+
+    const usageFilters = reactive({ days: 7, key_id: 0, model: '' });
+    const usageTotals = ref({});
+    const usageBreakdown = ref([]);
+    const usageLegacy = ref([]);
+    const usageSeries = ref([]);
+    const usageSeriesBucket = ref('day');
+    const usageRecords = ref([]);
+    const usageRecordsTotal = ref(0);
+    const usagePage = ref(0);
+    const usagePageSize = 50;
+    const usageLoading = ref(false);
+
+    const models = ref([]);
+    const modelsLoading = ref(false);
+    const modelQuery = ref('');
+    const modelCap = ref('');
+    const capFilters = [{ id: '', label: '全部' }, { id: 'text', label: '文本' }, { id: 'image', label: '图片' }, { id: 'video', label: '视频' }, { id: 'audio', label: '音频' }, { id: '4k', label: '4K' }];
+
+    const multipliers = ref([]);
+    const multDefault = ref(1);
+    const multModels = ref([]);
+    const multForm = reactive({ model: '', multiplier: 1 });
+    const multBusy = ref(false);
+    const multError = ref('');
+    const versionInfo = ref({});
+
+    const upgradeState = ref({ enabled: false, phase: 'idle' });
+    const upgradeError = ref('');
+    const upgradeDisconnected = ref(false);
+    const upgradeActionBusy = ref(false);
+    const upgradeBusy = computed(() => ['checking', 'starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase));
+    let upgradePolling = false;
+    const upgradePhaseText = (phase) => ({ idle: '等待检查', checking: '正在检查并下载镜像', ready: '有可用更新', up_to_date: '已是最新版本', starting: '正在启动升级任务', upgrading: '正在切换容器', restarting: '正在等待新版本就绪', completed: '升级成功', rolled_back: '已恢复旧版本', failed: '任务失败' }[phase] || '升级状态');
+    const upgradePhaseClass = computed(() => ({
+      ready: 'bg-indigo-500/15 text-indigo-300', up_to_date: 'bg-emerald-500/10 text-emerald-400', completed: 'bg-emerald-500/10 text-emerald-400',
+      failed: 'bg-red-500/10 text-red-400', rolled_back: 'bg-amber-500/10 text-amber-300',
+    }[upgradeState.value.phase] || 'bg-white/[0.06] text-neutral-400'));
+
     const apiSpec = ref({});
     const docsLoading = ref(false);
+    const docsQuery = ref('');
     const docsRows = computed(() => {
       const paths = apiSpec.value.paths || {};
       return Object.entries(paths).flatMap(([path, item]) => Object.entries(item)
         .filter(([method]) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
         .map(([method, operation]) => ({ path, method: method.toUpperCase(), summary: operation.summary || '' })));
     });
+    const filteredDocs = computed(() => {
+      const q = docsQuery.value.trim().toLowerCase();
+      return q ? docsRows.value.filter((r) => (r.path + ' ' + r.summary + ' ' + r.method).toLowerCase().includes(q)) : docsRows.value;
+    });
+    const gatewayErrors = [
+      [401, 'authentication_error', '—', 'API Key 缺失、无效或已停用'],
+      [401, 'authentication_error', 'key_expired', 'Key 已过期（expires_at）'],
+      [403, 'permission_error', 'model_not_allowed', '模型不在该 Key 的白名单内'],
+      [429, 'insufficient_quota', 'token_quota_exceeded', 'Key 的计费 Token 额度已用尽'],
+      [429, 'rate_limit_error', 'rpm_limit_exceeded', '超过该 Key 的每分钟请求上限（含 Retry-After）'],
+      [429, 'rate_limit_error', '—', '超过全局限流'],
+    ];
 
-    const addGeminiOpen = ref(false);
-    const addStudioOpen = ref(false);
-    const credsOpen = ref(false);
-    const formError = ref('');
-    const geminiForm = reactive({ label: '', psid: '', psidts: '' });
-    const studioForm = reactive({ email: '', storage_state: '', locale: '', timezone: '' });
-    const credsForm = reactive({ psid: '', psidts: '' });
-    const credsTarget = ref(null);
-
-    const baseURL = location.origin;
-
-    const api = async (path, opts = {}) => {
-      const res = await fetch(path, {
-        ...opts,
-        headers: { 'Authorization': 'Bearer ' + token.value, 'Content-Type': 'application/json', ...(opts.headers||{}) },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 401 && token.value) clearSession();
-        const error = new Error(data.error || ('HTTP ' + res.status));
-        error.status = res.status;
-        throw error;
-      }
-      return data;
+    // ---------- 加载 ----------
+    const loadOverview = async () => {
+      const [o, ks, ts] = await Promise.all([api('/admin/api/overview'), api('/admin/api/keys'), api('/admin/api/usage/timeseries?days=1')]);
+      overview.value = o; keys.value = ks.keys || []; overviewSeries.value = ts.points || [];
     };
-
-    const notify = (msg, ok=true) => {
-      toast.value = { msg, ok };
-      setTimeout(() => toast.value = null, 2600);
+    const loadKeys = async () => {
+      keysLoading.value = true;
+      try { keys.value = (await api('/admin/api/keys')).keys || []; } finally { keysLoading.value = false; }
     };
+    const usageQuery = (extra = {}) => {
+      const p = new URLSearchParams({ days: usageFilters.days, ...extra });
+      if (usageFilters.key_id) p.set('key_id', usageFilters.key_id);
+      if (usageFilters.model) p.set('model', usageFilters.model);
+      return p.toString();
+    };
+    const loadRecords = async () => {
+      const d = await api('/admin/api/usage/records?' + usageQuery({ limit: usagePageSize, offset: usagePage.value * usagePageSize }));
+      usageRecords.value = d.records || []; usageRecordsTotal.value = d.total || 0;
+    };
+    const loadUsage = async (resetPage = false) => {
+      if (resetPage) usagePage.value = 0;
+      usageLoading.value = true;
+      try {
+        const [u, ts] = await Promise.all([api('/admin/api/usage?' + usageQuery()), api('/admin/api/usage/timeseries?' + usageQuery()), loadRecords()]);
+        usageTotals.value = u.totals || {}; usageBreakdown.value = u.breakdown || []; usageLegacy.value = u.usage || [];
+        usageSeries.value = ts.points || []; usageSeriesBucket.value = ts.bucket;
+      } catch (e) { notify('加载用量失败：' + e.message, false); }
+      finally { usageLoading.value = false; }
+    };
+    const loadModels = async () => {
+      modelsLoading.value = true;
+      try { models.value = (await api('/admin/api/models')).models || []; } finally { modelsLoading.value = false; }
+    };
+    const loadMultipliers = async () => {
+      const d = await api('/admin/api/multipliers');
+      multipliers.value = d.multipliers || []; multDefault.value = d.default_multiplier ?? 1; multModels.value = d.models || [];
+    };
+    const modelIds = computed(() => [...new Set([...models.value.map((m) => m.id), ...multModels.value])].sort());
 
     const refresh = async () => {
       if (!token.value) return;
-      if (tab.value === '系统升级') { await refreshUpgrade(); return; }
       try {
-        const o = await api('/admin/api/overview');
-        overview.value = o;
-        if (tab.value === '号池管理') {
-          accounts.value = (await api('/admin/api/accounts')).accounts || [];
-        } else if (tab.value === 'Key 管理') {
-          keys.value = (await api('/admin/api/keys')).keys || [];
-        } else if (tab.value === '用量统计') {
-          usage.value = (await api('/admin/api/usage?days=' + usageDays.value)).usage || [];
-        } else if (tab.value === '接口文档') {
-          docsLoading.value = true;
-          apiSpec.value = await api('/admin/api/docs');
+        switch (tab.value) {
+          case 'overview': await loadOverview(); break;
+          case 'accounts': accounts.value = (await api('/admin/api/accounts')).accounts || []; break;
+          case 'keys': await loadKeys(); break;
+          case 'usage': await Promise.all([loadKeys(), models.value.length ? null : loadModels().catch(() => {}), loadUsage()]); break;
+          case 'models': await loadModels(); break;
+          case 'settings': {
+            const [, v, o] = await Promise.all([loadMultipliers(), api('/admin/api/version'), api('/admin/api/overview')]);
+            versionInfo.value = v; overview.value = o;
+            refreshUpgrade();
+            break;
+          }
+          case 'docs':
+            docsLoading.value = true;
+            try { apiSpec.value = await api('/admin/api/docs'); } finally { docsLoading.value = false; }
+            break;
         }
         connected.value = true;
       } catch (e) {
-        connected.value = false;
         if (e.status === 401) authError.value = '登录已失效，请重新登录';
-        else notify('加载失败：' + e.message, false);
-      } finally {
-        docsLoading.value = false;
+        else { connected.value = !!e.status; notify('加载失败：' + e.message, false); }
       }
     };
 
+    // ---------- 升级 ----------
     const refreshUpgrade = async () => {
       if (!token.value || upgradePolling) return;
       upgradePolling = true;
       try {
         const wasUpgrading = ['starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase);
         const status = await api('/admin/api/upgrade', { signal: AbortSignal.timeout(8000) });
-        upgradeState.value = status;
-        upgradeError.value = '';
-        upgradeDisconnected.value = false;
-        connected.value = true;
-        if (wasUpgrading && status.phase === 'completed' && status.current_id === status.target_id) {
-          setTimeout(() => location.reload(), 500);
-        }
+        upgradeState.value = status; upgradeError.value = ''; upgradeDisconnected.value = false; connected.value = true;
+        if (wasUpgrading && status.phase === 'completed' && status.current_id === status.target_id) setTimeout(() => location.reload(), 500);
       } catch (e) {
         if (e.status === 401) authError.value = '登录已失效，请重新登录';
         else if (['starting', 'upgrading', 'restarting'].includes(upgradeState.value.phase)) upgradeDisconnected.value = true;
         else upgradeError.value = '无法读取升级状态：' + e.message;
       } finally { upgradePolling = false; }
     };
-
     const checkUpgrade = async () => {
       upgradeActionBusy.value = true;
       try {
@@ -572,9 +918,7 @@ createApp({
       } catch (e) { notify(e.message, false); }
       finally { upgradeActionBusy.value = false; }
     };
-
     const startUpgrade = async () => {
-      upgradeConfirmOpen.value = false;
       upgradeActionBusy.value = true;
       const previous = upgradeState.value;
       upgradeState.value = { ...previous, phase: 'starting', message: '正在启动升级任务…' };
@@ -582,33 +926,33 @@ createApp({
         await api('/admin/api/upgrade', { method: 'POST', signal: AbortSignal.timeout(20000) });
         await refreshUpgrade();
       } catch (e) {
-        if (e.status) { upgradeState.value = previous; notify(e.message, false); }
-        else { upgradeDisconnected.value = true; }
+        if (e.status) { upgradeState.value = previous; notify(e.message, false); } else { upgradeDisconnected.value = true; }
       } finally { upgradeActionBusy.value = false; }
     };
 
+    // ---------- 认证 ----------
     const clearSession = () => {
       token.value = ''; user.value = {}; connected.value = false;
       sessionStorage.removeItem('admin_jwt');
-      overview.value = {}; accounts.value = []; keys.value = []; usage.value = []; apiSpec.value = {};
-      addGeminiOpen.value = false; addStudioOpen.value = false; credsOpen.value = false;
-      upgradeState.value = { enabled: false, phase: 'idle' }; upgradeConfirmOpen.value = false; upgradeError.value = ''; upgradeDisconnected.value = false;
+      overview.value = {}; overviewSeries.value = []; accounts.value = []; keys.value = []; apiSpec.value = {};
+      usageRecords.value = []; usageBreakdown.value = []; usageLegacy.value = []; usageSeries.value = []; usageTotals.value = {};
+      models.value = []; multipliers.value = []; createdKey.value = null; confirmState.value = null;
+      Object.keys(revealed).forEach((k) => delete revealed[k]);
+      closeModals();
+      upgradeState.value = { enabled: false, phase: 'idle' }; upgradeError.value = ''; upgradeDisconnected.value = false;
     };
-
     const bootstrap = async () => {
       authError.value = ''; authReady.value = false;
       try {
         initialized.value = (await api('/admin/api/setup')).initialized;
         if (!initialized.value) clearSession();
         if (token.value) {
-          try { user.value = (await api('/admin/api/auth/me')).user; }
-          catch (e) { if (e.status !== 401) throw e; }
+          try { user.value = (await api('/admin/api/auth/me')).user; } catch (e) { if (e.status !== 401) throw e; }
         }
         authReady.value = true;
         await refresh();
       } catch (e) { authError.value = e.message; }
     };
-
     const submitAuth = async () => {
       if (authBusy.value) return;
       authBusy.value = true; authError.value = '';
@@ -628,14 +972,21 @@ createApp({
         if (e.status === 409) await bootstrap();
       } finally { authBusy.value = false; }
     };
-
     const logout = async () => {
-      try {
-        await api('/admin/api/auth/logout', { method: 'POST' });
-        clearSession(); authError.value = ''; notify('已退出登录');
-      } catch (e) { notify(e.message, false); }
+      try { await api('/admin/api/auth/logout', { method: 'POST' }); } catch (e) { /* 会话已失效也照样清理 */ }
+      clearSession(); authError.value = ''; notify('已退出登录');
     };
 
+    // ---------- 号池 ----------
+    const addGeminiOpen = ref(false);
+    const addStudioOpen = ref(false);
+    const credsOpen = ref(false);
+    const geminiForm = reactive({ label: '', psid: '', psidts: '' });
+    const studioForm = reactive({ email: '', storage_state: '', locale: '', timezone: '' });
+    const credsForm = reactive({ psid: '', psidts: '' });
+    const credsTarget = ref(null);
+    const openAddGemini = () => { formError.value = ''; addGeminiOpen.value = true; };
+    const openAddStudio = () => { formError.value = ''; addStudioOpen.value = true; };
     const submitGemini = async () => {
       formError.value = '';
       try {
@@ -645,12 +996,11 @@ createApp({
         ], origins: [] });
         await api('/admin/api/accounts', { method: 'POST', body: JSON.stringify({ engine: 'a', label: geminiForm.label, storage_state }) });
         addGeminiOpen.value = false;
-        geminiForm.label = ''; geminiForm.psid = ''; geminiForm.psidts = '';
+        Object.assign(geminiForm, { label: '', psid: '', psidts: '' });
         notify('已添加，Cookie 校验进行中');
         setTimeout(refresh, 1500);
       } catch (e) { formError.value = e.message; }
     };
-
     const submitStudio = async () => {
       formError.value = '';
       try {
@@ -661,139 +1011,283 @@ createApp({
         setTimeout(refresh, 1500);
       } catch (e) { formError.value = e.message; }
     };
-
     const toggleAccount = async (acc) => {
       try {
         await api('/admin/api/accounts/' + acc.id, { method: 'PATCH', body: JSON.stringify({ enabled: !acc.enabled }) });
         acc.enabled = !acc.enabled;
+        notify(acc.enabled ? '账号已启用' : '账号已停用');
       } catch (e) { notify(e.message, false); }
     };
-
     const checkAccount = async (acc) => {
       try {
         await api(`/admin/api/accounts/${acc.id}/check`, { method: 'POST' });
-        notify('检测已触发');
-        setTimeout(refresh, 2500);
+        notify('检测已触发'); setTimeout(refresh, 2500);
       } catch (e) { notify(e.message, false); }
     };
-
-    const openCreds = (acc) => {
-      credsTarget.value = acc;
-      credsForm.psid = ''; credsForm.psidts = '';
-      formError.value = '';
-      credsOpen.value = true;
-    };
-
+    const openCreds = (acc) => { credsTarget.value = acc; credsForm.psid = ''; credsForm.psidts = ''; formError.value = ''; credsOpen.value = true; };
     const submitCreds = async () => {
       formError.value = '';
       try {
         await api(`/admin/api/accounts/${credsTarget.value.id}/credentials`, { method: 'PUT', body: JSON.stringify(credsForm) });
-        credsOpen.value = false;
-        notify('Cookie 已更新，重新校验中');
-        setTimeout(refresh, 2500);
+        credsOpen.value = false; notify('Cookie 已更新，重新校验中'); setTimeout(refresh, 2500);
       } catch (e) { formError.value = e.message; }
     };
+    const removeAccount = (acc) => askConfirm('删除账号', `确定删除账号「${acc.label}」？凭据将一并清除，此操作不可撤销。`, async () => {
+      try { await api('/admin/api/accounts/' + acc.id, { method: 'DELETE' }); notify('已删除'); refresh(); } catch (e) { notify(e.message, false); }
+    }, true);
 
-    const removeAccount = async (acc) => {
-      if (!confirm(`确定删除账号「${acc.label}」？凭据将一并清除。`)) return;
-      try {
-        await api('/admin/api/accounts/' + acc.id, { method: 'DELETE' });
-        notify('已删除');
-        refresh();
-      } catch (e) { notify(e.message, false); }
+    // ---------- Key ----------
+    const toLocalInput = (ts) => {
+      if (!ts) return '';
+      const d = new Date(ts * 1000);
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     };
-
-    const createKey = async () => {
-      const name = prompt('Key 备注（可留空）', '');
-      if (name === null) return;
-      try {
-        const d = await api('/admin/api/keys', { method: 'POST', body: JSON.stringify({ name }) });
-        notify('已创建：' + d.key.key);
-        refresh();
-      } catch (e) { notify(e.message, false); }
+    const openKeyForm = (k = null) => {
+      formError.value = '';
+      Object.assign(keyForm, {
+        id: k?.id || 0, name: k?.name || '', token_limit: k?.token_limit || 0, multiplier: k?.multiplier ?? 1,
+        rpm_limit: k?.rpm_limit || 0, expires: toLocalInput(k?.expires_at), models: (k?.allowed_models || []).join('\n'),
+        tokens_used: k?.tokens_used || 0, reset_usage: false,
+      });
+      keyFormOpen.value = true;
+      nextTick(() => document.getElementById('k-name')?.focus());
     };
-
+    const submitKeyForm = async () => {
+      formError.value = '';
+      const num = (v, def = 0) => (v === '' || v === null || v === undefined ? def : Number(v));
+      const payload = {
+        name: (keyForm.name || '').trim(),
+        token_limit: num(keyForm.token_limit), multiplier: num(keyForm.multiplier, 1), rpm_limit: num(keyForm.rpm_limit),
+        expires_at: keyForm.expires ? Math.floor(new Date(keyForm.expires).getTime() / 1000) : 0,
+        allowed_models: (keyForm.models || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
+      };
+      if (!Number.isInteger(payload.token_limit) || payload.token_limit < 0) { formError.value = 'Token 额度必须是非负整数'; return; }
+      if (!Number.isInteger(payload.rpm_limit) || payload.rpm_limit < 0) { formError.value = '每分钟请求上限必须是非负整数'; return; }
+      if (!(payload.multiplier >= 0 && payload.multiplier <= 1000)) { formError.value = 'Key 倍率必须在 0 到 1000 之间'; return; }
+      if (!keyForm.id && payload.expires_at && payload.expires_at * 1000 < Date.now()) { formError.value = '过期时间不能早于现在'; return; }
+      keyFormBusy.value = true;
+      try {
+        if (keyForm.id) {
+          if (keyForm.reset_usage) payload.reset_usage = true;
+          await api('/admin/api/keys/' + keyForm.id, { method: 'PATCH', body: JSON.stringify(payload) });
+          notify('Key 已保存');
+        } else {
+          const d = await api('/admin/api/keys', { method: 'POST', body: JSON.stringify(payload) });
+          createdKey.value = { title: 'Key 已创建', key: d.key.key };
+        }
+        keyFormOpen.value = false;
+        await loadKeys();
+      } catch (e) { formError.value = e.message; }
+      finally { keyFormBusy.value = false; }
+    };
+    const patchKey = (k, body) => api('/admin/api/keys/' + k.id, { method: 'PATCH', body: JSON.stringify(body) });
     const toggleKey = async (k) => {
+      try { await patchKey(k, { enabled: !k.enabled }); k.enabled = !k.enabled; notify(k.enabled ? 'Key 已启用' : 'Key 已停用'); } catch (e) { notify(e.message, false); }
+    };
+    const resetKey = async (k) => {
+      try { await patchKey(k, { reset_usage: true }); notify('已用额度已归零'); await loadKeys(); } catch (e) { notify(e.message, false); }
+    };
+    const regenerateKey = async (k) => {
       try {
-        await api('/admin/api/keys/' + k.id, { method: 'PATCH', body: JSON.stringify({ enabled: !k.enabled }) });
-        k.enabled = !k.enabled;
+        const d = await api(`/admin/api/keys/${k.id}/regenerate`, { method: 'POST' });
+        createdKey.value = { title: '新密钥已生成', key: d.key.key };
+        await loadKeys();
       } catch (e) { notify(e.message, false); }
     };
-
     const removeKey = async (k) => {
-      if (!confirm(`确定删除这个 Key？使用它的客户端将立即失效。`)) return;
+      try { await api('/admin/api/keys/' + k.id, { method: 'DELETE' }); notify('已删除'); await loadKeys(); } catch (e) { notify(e.message, false); }
+    };
+    const viewKeyUsage = (k) => { usageFilters.key_id = k.id; usageFilters.model = ''; usagePage.value = 0; go('usage'); };
+
+    // ---------- 用量 ----------
+    const exportURL = computed(() => '/admin/api/usage/export.csv?' + usageQuery());
+    const exportCSV = async () => {
       try {
-        await api('/admin/api/keys/' + k.id, { method: 'DELETE' });
-        notify('已删除');
-        refresh();
-      } catch (e) { notify(e.message, false); }
+        const res = await fetch(exportURL.value, { headers: { Authorization: 'Bearer ' + token.value } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        const name = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'web2api-usage.csv';
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a'); link.href = url; link.download = name; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (e) { notify('导出失败：' + e.message, false); }
     };
 
-    const copyKey = (key) => {
-      copyText(key);
+    // ---------- 模型 ----------
+    const modelCaps = (id) => {
+      const s = (id || '').toLowerCase();
+      const caps = [];
+      if (/veo|omni/.test(s)) caps.push('video');
+      if (/image|banana|imagen/.test(s)) caps.push('image');
+      if (/tts|audio|lyria|live|transcribe|translate/.test(s)) caps.push('audio');
+      if (/veo-3\.1-fast|omni|banana/.test(s)) caps.push('4k'); // 仅标注本机已验证 4K 的模型
+      if (!caps.length || /^gemini-[\d.]+-(flash|pro)|latest|gemma|deep-research|antigravity|robotics/.test(s) && !/image|tts/.test(s)) caps.unshift('text');
+      return [...new Set(caps)];
+    };
+    const capText = (c) => ({ text: '文本', image: '图片', video: '视频', audio: '音频', '4k': '4K' }[c] || c);
+    const capClass = (c) => ({
+      text: 'bg-white/[0.06] text-neutral-300', image: 'bg-pink-500/10 text-pink-300', video: 'bg-sky-500/10 text-sky-300',
+      audio: 'bg-teal-500/10 text-teal-300', '4k': 'bg-indigo-500/15 text-indigo-300',
+    }[c] || 'bg-white/[0.06] text-neutral-400');
+    const filteredModels = computed(() => {
+      const q = modelQuery.value.trim().toLowerCase();
+      return models.value.filter((m) => (!q || (m.id + ' ' + (m.display_name || '')).toLowerCase().includes(q)) && (!modelCap.value || modelCaps(m.id).includes(modelCap.value)));
+    });
+    const fourKExamples = [
+      { title: '4K 图片（chat）', path: '/v1/chat/completions', body: JSON.stringify({ model: 'gemini-nano-banana-2.1', messages: [{ role: 'user', content: 'a red apple on a table' }], image_size: '4K', max_tokens: 2048 }, null, 2), note: 'image_size 取 512 / 1K / 2K / 4K（K 大写），并给足 max_tokens。本机返回 image/jpeg 5504×3072。' },
+      { title: '4K Omni 视频（chat）', path: '/v1/chat/completions', body: JSON.stringify({ model: 'gemini-omni-1.1-flash', messages: [{ role: 'user', content: 'a red circle moving once, 2 seconds' }], resolution: '4k' }, null, 2), note: 'resolution 取 360p / 720p / 1080p / 4k（k 小写）。本机返回 h264 3840×2160。' },
+      { title: '4K Veo 长视频任务', path: '/v1/videos', body: JSON.stringify({ model: 'veo-3.1-fast-generate-preview', prompt: 'a red circle moving once', size: '4k', seconds: 8 }, null, 2), note: '4k 必须配 seconds: 8（默认 4 秒会被上游拒绝）。返回 202，成片 3840×2160、8 秒。' },
+    ];
+
+    // ---------- 设置 ----------
+    const saveMultiplier = async () => {
+      multError.value = '';
+      const value = Number(multForm.multiplier);
+      if (!multForm.model) { multError.value = '请填写模型'; return; }
+      if (!(value >= 0 && value <= 1000)) { multError.value = '倍率必须在 0 到 1000 之间'; return; }
+      multBusy.value = true;
+      try {
+        await api('/admin/api/multipliers', { method: 'PUT', body: JSON.stringify({ model: multForm.model, multiplier: value }) });
+        notify(`已保存：${multForm.model} × ${fmtMult(value)}`);
+        multForm.model = ''; multForm.multiplier = 1;
+        await loadMultipliers();
+      } catch (e) { multError.value = e.message; }
+      finally { multBusy.value = false; }
+    };
+    const deleteMultiplier = async (m) => {
+      try { await api('/admin/api/multipliers/' + encodeURIComponent(m.model), { method: 'DELETE' }); notify('已删除'); await loadMultipliers(); } catch (e) { notify(e.message, false); }
     };
 
-    const copyText = (value) => {
-      if (navigator.clipboard) navigator.clipboard.writeText(value).then(() => notify('已复制'));
-      else notify('当前浏览器不支持复制，请手动选择', false);
-    };
-
+    // ---------- 文档 ----------
     const downloadDocs = () => {
       const blob = new Blob([JSON.stringify(apiSpec.value, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url; link.download = 'web2api-admin-openapi.json'; link.click();
+      const link = document.createElement('a'); link.href = url; link.download = 'web2api-admin-openapi.json'; link.click();
       URL.revokeObjectURL(url);
     };
-
     const methodClass = (method) => ({
-      GET: 'bg-emerald-100 text-emerald-700', POST: 'bg-blue-100 text-blue-700',
-      PUT: 'bg-amber-100 text-amber-700', PATCH: 'bg-violet-100 text-violet-700',
-      DELETE: 'bg-red-100 text-red-700',
-    }[method] || 'bg-slate-100 text-slate-600');
+      GET: 'bg-emerald-500/10 text-emerald-400', POST: 'bg-sky-500/10 text-sky-300', PUT: 'bg-amber-500/10 text-amber-300',
+      PATCH: 'bg-violet-500/10 text-violet-300', DELETE: 'bg-red-500/10 text-red-400',
+    }[method] || 'bg-white/[0.06] text-neutral-400');
 
-    const requestExample = (path) => {
-      if (path === '/admin/api/accounts') return '{"engine":"b","email":"you@gmail.com","storage_state":"{...}"}';
-      if (path.endsWith('/gemini')) return '{"label":"主号","psid":"...","psidts":"..."}';
-      if (path.endsWith('/aistudio')) return '{"email":"you@gmail.com","storage_state":"{...}"}';
-      return '{"name":"客户端"}';
+    // ---------- 图表 ----------
+    const chartCache = new WeakMap();
+    const chart = (points) => {
+      if (!points || !points.length) return { bars: [], line: '', labels: [], maxTokens: 0 };
+      if (chartCache.has(points)) return chartCache.get(points);
+      const n = points.length, slot = 600 / n, w = Math.max(1, slot * 0.7);
+      const maxTokens = Math.max(1, ...points.map((p) => p.charged_tokens));
+      const maxReq = Math.max(1, ...points.map((p) => p.requests));
+      const hourly = n > 1 && points[1].ts - points[0].ts < 86400;
+      const label = (ts) => { const d = new Date(ts * 1000); return hourly ? String(d.getHours()).padStart(2, '0') + ':00' : (d.getMonth() + 1) + '/' + d.getDate(); };
+      const bars = points.map((p, i) => {
+        const h = p.charged_tokens ? Math.max(1.5, (p.charged_tokens / maxTokens) * 140) : 0;
+        return { ts: p.ts, x: i * slot + (slot - w) / 2, w, h, y: 150 - h,
+          title: `${label(p.ts)}${hourly ? '' : ''} · 请求 ${p.requests}（成功 ${p.success_requests}）· 总 Token ${fmt(p.total_tokens)} · 计费 ${fmt(p.charged_tokens)}${p.avg_latency_ms ? ' · 平均 ' + fmtMs(p.avg_latency_ms) : ''}` };
+      });
+      const line = points.map((p, i) => `${(i * slot + slot / 2).toFixed(1)},${(150 - (p.requests / maxReq) * 140).toFixed(1)}`).join(' ');
+      const idx = [...new Set([0, Math.floor((n - 1) / 4), Math.floor((n - 1) / 2), Math.floor((3 * (n - 1)) / 4), n - 1])];
+      const result = { bars, line, labels: idx.map((i) => label(points[i].ts)), maxTokens };
+      chartCache.set(points, result);
+      return result;
     };
 
+    // ---------- 格式化 ----------
+    const fmt = (n) => (n === null || n === undefined || n === '' ? '-' : Number(n).toLocaleString('zh-CN'));
+    const fmtShort = (n) => {
+      if (n === null || n === undefined) return '-';
+      const v = Number(n);
+      if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
+      if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
+      if (Math.abs(v) >= 1e4) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+      return v.toLocaleString('zh-CN');
+    };
+    const fmtMult = (m) => (m === null || m === undefined ? '-' : '×' + Number(Number(m).toFixed(4)));
+    const fmtTime = (ts) => (ts ? new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false }) : '-');
+    const fmtDate = (ts) => (ts ? new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-');
+    const fmtMs = (ms) => (!ms ? '-' : ms >= 1000 ? (ms / 1000).toFixed(ms >= 10000 ? 0 : 1) + 's' : ms + 'ms');
+    const fmtDuration = (s) => {
+      if (!s && s !== 0) return '-';
+      const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+      return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分` : `${m} 分钟`;
+    };
+    const versionText = (v) => (!v ? '-' : v.version + (v.commit ? ` · ${v.commit.slice(0, 7)}` : '') + (v.modified ? '（含未提交改动）' : ''));
+    const successRate = (r) => (r && r.requests ? (r.success_requests / r.requests) * 100 : 0);
+    const quotaPercent = (k) => (k.token_limit > 0 ? Math.min(100, (k.tokens_used / k.token_limit) * 100) : 0);
+    const quotaBarClass = (k) => { const p = quotaPercent(k); return p >= 100 ? 'bg-red-500' : p >= 80 ? 'bg-amber-400' : 'bg-indigo-400'; };
+    // 与服务端 store.MaskKey 一致：短 Key 也必须脱敏
+    const maskKey = (k) => (!k ? '-' : k.length > 12 ? k.slice(0, 7) + '…' + k.slice(-4) : k.length > 4 ? k.slice(0, 3) + '…' + k.slice(-2) : '****');
+    const copyText = (value) => {
+      if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(value).then(() => notify('已复制'), () => notify('复制失败，请手动选择', false));
+      else {
+        const ta = document.createElement('textarea'); ta.value = value; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); notify('已复制'); } catch (e) { notify('当前浏览器不支持复制，请手动选择', false); }
+        ta.remove();
+      }
+    };
+    const engineText = (e) => ({ a: 'Gemini', b: 'AI Studio', upstream: '上游' }[e] || e || '-');
+    const engineClass = (e) => ({ a: 'bg-sky-500/10 text-sky-300', b: 'bg-violet-500/10 text-violet-300' }[e] || 'bg-white/[0.06] text-neutral-400');
     const statusClass = (s) => ({
-      ok: 'bg-emerald-100 text-emerald-700',
-      initializing: 'bg-amber-100 text-amber-700',
-      busy: 'bg-sky-100 text-sky-700',
-      error: 'bg-red-100 text-red-700',
-      disabled: 'bg-slate-200 text-slate-500',
-      cooldown: 'bg-orange-100 text-orange-700',
-      unloaded: 'bg-slate-100 text-slate-400',
-    }[s] || 'bg-slate-100 text-slate-500');
+      ok: 'bg-emerald-500/10 text-emerald-400', initializing: 'bg-amber-500/10 text-amber-300', busy: 'bg-sky-500/10 text-sky-300',
+      error: 'bg-red-500/10 text-red-400', disabled: 'bg-white/[0.06] text-neutral-500', cooldown: 'bg-orange-500/10 text-orange-300',
+      unloaded: 'bg-white/[0.04] text-neutral-500',
+    }[s] || 'bg-white/[0.06] text-neutral-400');
+    const statusText = (s) => ({ ok: '就绪', initializing: '初始化中', busy: '使用中', error: '异常', disabled: '已停用', cooldown: '冷却中', unloaded: '未加载' }[s] || s || '-');
 
-    const statusText = (s) => ({
-      ok: '就绪', initializing: '初始化中', busy: '使用中', error: '异常', disabled: '已停用',
-      cooldown: '冷却中', unloaded: '未加载',
-    }[s] || s || '-');
+    // ---------- 键盘 ----------
+    const searchInput = ref(null), keySearch = ref(null), modelSearch = ref(null), docsSearch = ref(null);
+    const closeModals = () => { addGeminiOpen.value = false; addStudioOpen.value = false; credsOpen.value = false; keyFormOpen.value = false; };
+    const anyModal = () => confirmState.value || createdKey.value || keyFormOpen.value || addGeminiOpen.value || addStudioOpen.value || credsOpen.value;
+    const onKey = (e) => {
+      if (!token.value) return;
+      if (e.key === 'Escape') {
+        if (confirmState.value) confirmState.value = null;
+        else if (createdKey.value) createdKey.value = null;
+        else if (anyModal()) closeModals();
+        else if (document.activeElement?.blur) document.activeElement.blur();
+        return;
+      }
+      const el = e.target;
+      if (e.metaKey || e.ctrlKey || e.altKey || anyModal() || (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)))) return;
+      const n = Number(e.key);
+      if (n >= 1 && n <= tabs.length) { e.preventDefault(); go(tabs[n - 1].id); }
+      else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); refresh(); notify('已刷新'); }
+      else if (e.key === '/') {
+        const target = { accounts: searchInput, keys: keySearch, models: modelSearch, docs: docsSearch }[tab.value];
+        if (target?.value) { e.preventDefault(); target.value.focus(); }
+      }
+    };
+    const onHash = () => { const id = tabFromHash(); if (id !== tab.value) { tab.value = id; refresh(); } };
 
-    const maskKey = (k) => k && k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-4) : (k || '-');
-
+    let timers = [];
     onMounted(() => {
       bootstrap();
-      setInterval(() => { if (tab.value === '号池管理' || tab.value === '总览') refresh(); }, 10000);
-      setInterval(() => { if (token.value && (tab.value === '系统升级' || upgradeBusy.value)) refreshUpgrade(); }, 2500);
+      window.addEventListener('keydown', onKey);
+      window.addEventListener('hashchange', onHash);
+      timers.push(setInterval(() => { if (!document.hidden && (tab.value === 'accounts' || tab.value === 'overview')) refresh(); }, 10000));
+      timers.push(setInterval(() => { if (token.value && (tab.value === 'settings' || upgradeBusy.value)) refreshUpgrade(); }, 2500));
     });
+    onBeforeUnmount(() => { window.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', onHash); timers.forEach(clearInterval); });
 
     return {
-      tabs, tab, token, user, initialized, authReady, authBusy, authError, authForm, bootstrap, submitAuth, logout, connected, toast, baseURL,
-      overview, accounts, keys, usage, usageDays,
-      upgradeState, upgradeError, upgradeDisconnected, upgradeActionBusy, upgradeConfirmOpen, upgradeBusy, upgradePhaseText, refreshUpgrade, checkUpgrade, startUpgrade,
-      accountQuery, accountEngineFilter, accountStatusFilter, filteredAccounts,
-      apiSpec, docsLoading, docsRows,
-      addGeminiOpen, addStudioOpen, credsOpen, formError,
-      geminiForm, studioForm, credsForm, credsTarget,
-      refresh, submitGemini, submitStudio,
-      toggleAccount, checkAccount, openCreds, submitCreds, removeAccount,
-      createKey, toggleKey, removeKey, copyKey, copyText, downloadDocs, methodClass, requestExample,
-      statusClass, statusText, maskKey,
+      tabs, tab, currentTab, go, token, user, initialized, authReady, authBusy, authError, authForm, bootstrap, submitAuth, logout, connected, baseURL,
+      toasts, notify, confirmState, confirmButton, askConfirm, runConfirm,
+      overview, overviewSeries, lowQuotaKeys, accounts, accountQuery, accountEngineFilter, accountStatusFilter, filteredAccounts,
+      addGeminiOpen, addStudioOpen, credsOpen, formError, geminiForm, studioForm, credsForm, credsTarget,
+      openAddGemini, openAddStudio, submitGemini, submitStudio, toggleAccount, checkAccount, openCreds, submitCreds, removeAccount,
+      keys, keysLoading, keyQuery, keyFilter, filteredKeys, revealed, keyState, keyFormOpen, keyFormBusy, keyForm, createdKey,
+      openKeyForm, submitKeyForm, toggleKey, resetKey, regenerateKey, removeKey, viewKeyUsage,
+      usageFilters, usageTotals, usageBreakdown, usageLegacy, usageSeries, usageSeriesBucket, usageRecords, usageRecordsTotal, usagePage, usagePageSize, usageLoading,
+      loadUsage, loadRecords, exportURL, exportCSV, modelIds,
+      models, modelsLoading, modelQuery, modelCap, capFilters, filteredModels, modelCaps, capText, capClass, fourKExamples,
+      multipliers, multDefault, multModels, multForm, multBusy, multError, saveMultiplier, deleteMultiplier, versionInfo,
+      upgradeState, upgradeError, upgradeDisconnected, upgradeActionBusy, upgradeBusy, upgradePhaseText, upgradePhaseClass, refreshUpgrade, checkUpgrade, startUpgrade,
+      apiSpec, docsLoading, docsQuery, docsRows, filteredDocs, downloadDocs, methodClass, gatewayErrors,
+      refresh, chart, fmt, fmtShort, fmtMult, fmtTime, fmtDate, fmtMs, fmtDuration, versionText, successRate, quotaPercent, quotaBarClass,
+      maskKey, copyText, engineText, engineClass, statusClass, statusText,
+      searchInput, keySearch, modelSearch, docsSearch,
     };
   },
 }).mount('#app');
