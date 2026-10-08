@@ -1,10 +1,27 @@
 # ============================================================
 # web2api Dockerfile —— 多阶段构建
-# 阶段1: golang:1.27-alpine 编译（CGO_ENABLED=0，纯 Go 含 modernc.org/sqlite）
-# 阶段2: alpine 运行（~15MB 基础镜像 + 证书 + 时区）
+# 阶段1: node 构建 React 前端（web/ → internal/webui/dist）
+# 阶段2: golang:1.27-alpine 编译（CGO_ENABLED=0，纯 Go 含 modernc.org/sqlite），前端随二进制内嵌
+# 阶段3: alpine 运行（~15MB 基础镜像 + 证书 + 时区）
+#
+# 前端产物与平台无关，只在构建机架构上构建一次（$BUILDPLATFORM），多架构镜像共用。
+# 仓库里也提交了一份构建好的 internal/webui/dist，所以不用 Docker 时 go build 不需要 Node。
 # ============================================================
 
-# ---------- 构建阶段 ----------
+# ---------- 前端构建阶段 ----------
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+
+WORKDIR /src/web
+
+# 先拷依赖清单，利用 Docker 层缓存
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY web/ ./
+# vite 输出到 ../internal/webui/dist（即 /src/internal/webui/dist）
+RUN npm run build
+
+# ---------- Go 构建阶段 ----------
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 # 安装编译所需工具（git 用于 go mod 下载公开依赖）
@@ -21,6 +38,10 @@ RUN go mod download
 # 拷贝源码
 COPY main.go ./
 COPY internal ./internal
+
+# 用本次构建出的前端替换仓库里提交的那份（先删除，避免旧的哈希文件残留进二进制）
+RUN rm -rf ./internal/webui/dist
+COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 
 # 交叉编译：纯 Go、无 CGO、Linux/amd64（可改 arm64 部署到 ARM 服务器）
 ARG TARGETOS=linux

@@ -55,8 +55,11 @@ func (o KeyOptions) validate() error {
 
 func storeError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		status = http.StatusNotFound
+	case errors.Is(err, store.ErrCodeRedeemed), errors.Is(err, store.ErrEmailTaken):
+		status = http.StatusConflict
 	}
 	writeJSON(w, status, map[string]any{"error": err.Error()})
 }

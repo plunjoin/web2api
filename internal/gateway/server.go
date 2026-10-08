@@ -4,7 +4,9 @@
 //	GET  /v1/models            — 聚合模型列表
 //	GET  /health               — 健康检查（免鉴权）
 //	GET  /v1/accounts          — 引擎与账号状态
-//	/admin                     — Web 管理台（号池/Key/用量）
+//	/admin                     — Web 管理台（号池/Key/用户/兑换码/用量）
+//	/console, /login, /register — 用户控制台与登录注册（同一个单页应用）
+//	/api/*                     — 用户与登录 REST API
 //	/admin/api/*               — 管理 REST API（JWT + Redis 会话）
 //	GET  /v1/docs              — 对外 API OpenAPI 3.1 文档
 //	/v1/images|videos|audio|files/* — 多模态透传（仅 upstream 模式引擎B）
@@ -106,8 +108,16 @@ func (s *Server) Handler() http.Handler {
 	adminAPI := admin.New(s.mgr, s.st, s.logger, s.updater)
 	adminAPI.Mount(mux)
 	mux.Handle("GET /admin/assets/", webui.Assets())
-	mux.HandleFunc("GET /admin", webui.ServeIndex)
-	mux.HandleFunc("GET /admin/", webui.ServeIndex)
+	// 单页应用：管理台、用户控制台、登录与注册共用同一个入口页面。
+	for _, p := range []string{"/admin", "/admin/", "/console", "/console/", "/login", "/register"} {
+		mux.HandleFunc("GET "+p, webui.ServeIndex)
+	}
+	// 未知的 API 路径返回 JSON 404，而不是落到单页应用的 HTML 上。
+	// （按方法逐个注册，避免与 "GET /admin/" 冲突。）
+	for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
+		mux.HandleFunc(m+" /admin/api/", apiNotFound)
+	}
+	mux.HandleFunc("/api/", apiNotFound)
 
 	mux.HandleFunc("/", s.handleRoot)
 
@@ -307,8 +317,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// handleRoot 根路径提示。
+func apiNotFound(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]any{"error": "接口不存在: " + r.Method + " " + r.URL.Path})
+}
+
+// handleRoot 根路径：浏览器访问 / 时进入单页应用（按登录状态跳到控制台或登录页），
+// 其他客户端（curl、健康探测等）仍得到原来的 JSON 服务说明。
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" && r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		webui.ServeIndex(w, r)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": "web2api",
 		"status":  "running",
@@ -322,7 +341,8 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET  /v1/videos/{id}/content",
 			"GET  /v1/models",
 			"GET  /v1/accounts",
-			"GET  /admin        (号池管理台)",
+			"GET  /admin        (管理台)",
+			"GET  /console      (用户控制台)",
 			"GET  /admin/api/docs (管理 API OpenAPI 文档)",
 			"多模态透传: /v1/images|videos|audio|files/*（仅 upstream 模式）",
 		},

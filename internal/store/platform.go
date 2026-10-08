@@ -833,11 +833,16 @@ func (s *Store) DisableRedeemBatch(batch string) (int64, error) {
 
 // DeleteRedeemCode 删除兑换码。已兑换的码删除后，对应流水仍保留（ref_id 指向原码 ID）。
 func (s *Store) DeleteRedeemCode(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM redeem_codes WHERE id = ?`, id)
+	// 已兑换的码是“谁兑换了什么”的凭据，只能保留（可停用的也只有未兑换的）。
+	res, err := s.db.Exec(`DELETE FROM redeem_codes WHERE id = ? AND redeemed_at = 0`, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		var exists int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM redeem_codes WHERE id = ?`, id).Scan(&exists); err == nil && exists > 0 {
+			return ErrCodeRedeemed
+		}
 		return ErrNotFound
 	}
 	return nil

@@ -1,4 +1,8 @@
 # 构建产物
+/web2api
+*.log
+web/node_modules/
+node_modules/
 web2api.exe
 web2api.exe~
 *.exe

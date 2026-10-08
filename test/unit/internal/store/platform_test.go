@@ -418,3 +418,29 @@ func lower(s string) string {
 	}
 	return string(out)
 }
+
+// 已兑换的兑换码是充值凭据，不能删除；未兑换的可以删除。
+func TestRedeemedCodeCannotBeDeleted(t *testing.T) {
+	s := openPlatformStore(t)
+	u := mustUser(t, s, "keep@example.com", 0, 1)
+	codes, err := s.CreateRedeemCodes(NewCodes{Amount: 50, Count: 2, Operator: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Redeem(u.ID, codes[0].Code); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRedeemCode(codes[0].ID); !errors.Is(err, ErrCodeRedeemed) {
+		t.Fatalf("删除已兑换的码应返回 ErrCodeRedeemed，得到 %v", err)
+	}
+	if err := s.DeleteRedeemCode(codes[1].ID); err != nil {
+		t.Fatalf("未兑换的码应可删除: %v", err)
+	}
+	if err := s.DeleteRedeemCode(codes[1].ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("重复删除应返回 ErrNotFound，得到 %v", err)
+	}
+	if c, err := s.GetRedeemCode(codes[0].ID); err != nil || c.RedeemedBy != u.ID {
+		t.Fatalf("已兑换的码应保留: %+v %v", c, err)
+	}
+	assertIntegrity(t, s)
+}

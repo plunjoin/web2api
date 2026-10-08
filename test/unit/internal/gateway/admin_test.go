@@ -145,8 +145,41 @@ func TestAdminAPIFull(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	rec2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusOK || !strings.Contains(rec2.Body.String(), "号池管理台") {
+	if rec2.Code != http.StatusOK || !strings.Contains(rec2.Body.String(), `id="root"`) {
 		t.Fatalf("管理台页面异常: %d", rec2.Code)
+	}
+}
+
+// TestSPARoutes 单页应用的各个入口返回同一个页面；未知 API 路径返回 JSON 404 而不是 HTML。
+func TestSPARoutes(t *testing.T) {
+	up := mockEngineB(t)
+	srv := newTestServer(t, up.URL, nil)
+	get := func(path, accept string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	for _, path := range []string{"/admin", "/admin/users", "/console", "/console/keys", "/login", "/register"} {
+		rec := get(path, "text/html")
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="root"`) || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s: status=%d cache=%q", path, rec.Code, rec.Header().Get("Cache-Control"))
+		}
+	}
+	for _, path := range []string{"/admin/api/does-not-exist", "/api/does-not-exist"} {
+		rec := get(path, "text/html")
+		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("%s: want JSON 404, got %d %q", path, rec.Code, rec.Header().Get("Content-Type"))
+		}
+	}
+	if rec := get("/", "text/html,application/xhtml+xml"); !strings.Contains(rec.Body.String(), `id="root"`) {
+		t.Fatalf("browser / should get the app, got %d", rec.Code)
+	}
+	if rec := get("/", ""); !strings.Contains(rec.Body.String(), `"service":"web2api"`) {
+		t.Fatalf("API client / should keep the JSON banner, got %q", rec.Body.String())
 	}
 }
 
