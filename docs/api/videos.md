@@ -17,7 +17,7 @@ curl http://localhost:8800/v1/videos \
     "prompt": "一只橘猫在雨后的东京街头奔跑",
     "seconds": 8,
     "aspect_ratio": "16:9",
-    "resolution": "1080p"
+    "size": "4k"
   }'
 ```
 
@@ -30,10 +30,21 @@ curl http://localhost:8800/v1/videos \
 | `seconds` | 否 | `4` | 时长（秒），整数或整数文本，如 `8` 或 `"8"`；常见 4/6/8，实际以模型目录为准 |
 | `duration_seconds` | 否 | 无 | `seconds` 的整数别名，非零时优先；不要同时指定两者 |
 | `aspect_ratio` | 否 | `16:9` | 常见 `16:9`、`9:16`，实际以模型目录为准 |
-| `resolution` | 否 | `720p` | 实际生成分辨率；常见 `720p`、`1080p`、`4k`，以模型和上游支持为准 |
-| `size` | 否 | 自动推导 | 仅改变返回的尺寸标签，不控制生成分辨率，通常省略 |
+| `size` | 否 | 无 | 生成分辨率。取值 `360p`、`720p`、`1080p`、`4k`，`4k` 的 k 小写。网关把这个字符串原样交给上游。4K 用这个字段，不要用 `resolution` |
+| `resolution` | 否 | `720p` | 不是本路由的 4K 字段。若另外传了合法分辨率，它会覆盖 `size` |
 
-服务默认值不代表所有模型都接受对应组合；高分辨率与时长的组合也受上游限制。示例 `8 秒 / 1080p` 需所选模型支持。
+服务默认值不代表所有模型都接受对应组合。`veo-3.1-fast-generate-preview` 上，`size: "4k"` 配默认 4 秒会被上游拒绝，原文是 `4k is not supported for a duration of 4 seconds.` 同一模型改成 `seconds: 8` 后创建返回 HTTP 202，成片为 h264、3840×2160、时长 8.0 秒。`veo-3.1-generate-preview` 未验证：当时没有符合条件的 AI Studio 账户。
+
+`veo-3.1-fast-generate-preview` 的 4K 请求体：
+
+```json
+{
+  "model": "veo-3.1-fast-generate-preview",
+  "prompt": "a red circle moving once",
+  "size": "4k",
+  "seconds": 8
+}
+```
 
 创建成功返回 `202`。响应中的 `id` 用于后续查询，此时还没有视频文件：
 
@@ -97,7 +108,7 @@ curl http://localhost:8800/v1/videos/video_abc123/content \
 
 账户池遇到上游 `429` 会记录冷却并尝试其他符合条件的账户。若没有可用账户，请恢复上游额度或配置具备视频生成资格且有剩余额度的账户。模型出现在目录中、聊天可用或账户显示 Pro/Ultra，均不能保证这次 Veo 生成有可用额度。
 
-请求中的 `seconds: 8`、`aspect_ratio: "16:9"`、`resolution: "1080p"` 会按原值编码到视频协议，支持范围由上游实时模型目录校验。降低分辨率或缩短时长不能保证消除配额错误。
+请求中的 `seconds: 8`、`aspect_ratio: "16:9"`、`size: "4k"` 会按原值编码到视频协议。`4k` 是字符串，不是枚举数字。支持范围由上游实时模型目录校验。降低分辨率或缩短时长不能保证消除配额错误。
 
 ## 与 Gemini Interactions 视频的区别
 
@@ -107,7 +118,7 @@ curl http://localhost:8800/v1/videos/video_abc123/content \
 | --- | --- |
 | input 的 text / image / video 等 Content 块 | 只有 prompt 文本；参考图、首尾帧、编辑视频输入未接入 |
 | generation_config.video_config.task：text_to_video / image_to_video / reference_to_video / edit / extend | 没有此配置对象，当前只开放文生视频 |
-| response_format.video 的 aspect_ratio / resolution | 使用顶层同名字段，需 Veo 模型支持；不是官方格式对象的映射 |
+| response_format.video 的 aspect_ratio / resolution | 比例仍用顶层 `aspect_ratio`。分辨率用顶层 `size`（如 `4k`），不是官方 `response_format`，也不是聊天接口的 `resolution` |
 | response_format.video.duration：如 "8s" | seconds：8 或 "8"；duration_seconds 为整数别名 |
 | response_format.video.delivery / gcs_uri | 未开放内联 / URI 选择或 GCS 输出；统一从网关视频内容路由下载 |
 | background、store、webhook_config、continuation_token | 没有这些官方生命周期参数；Veo 创建返回 202 的独立任务 |

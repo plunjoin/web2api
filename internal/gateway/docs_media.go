@@ -39,7 +39,13 @@ const nativeMediaDescription = `## 图片生成（引擎B native）
 
 ## 当前聊天适配参数
 
-该接口接收 model、messages、stream、temperature、top_p、max_tokens、user；user 仅解析，未进入生成请求，采样参数不保证每种私有 RPC 都编码。原生图片/音频输出模态由模型目录自动选择。当前 HTTP 聊天适配器未映射 image_config、speech_config、response_modalities、voice、size、n 或 response_format；传入这些额外字段不会设置生成参数。原生消息适配只提取文本，不能用 image_url 或 input_audio 完成参考图编辑、音频输入。
+该接口接收 model、messages、stream、temperature、top_p、max_tokens、user，以及 image_size、resolution。user 仅解析，未进入生成请求，采样参数不保证每种私有 RPC 都编码。原生图片/音频输出模态由模型目录自动选择。
+
+image_size 是图片输出边长，取值 512、1K、2K、4K，K 必须大写。图片请求需要足够大的 max_tokens；省略时本机曾返回 HTTP 200 且正文为空，max_tokens 2048 配 image_size 4K 返回过 image/jpeg、5504x3072。
+
+resolution 是 Omni 视频分辨率，取值 360p、720p、1080p、4k，4k 的 k 小写。gemini-omni-1.1-flash 配 resolution 4k 返回过 video/mp4、h264、3840x2160。Veo 长任务不要用这个字段，改走 /v1/videos 的 size。
+
+image_config、speech_config、response_modalities、voice、OpenAI 的 size、n 或 response_format 仍然不会设置生成参数。原生消息适配只提取文本，不能用 image_url 或 input_audio 完成参考图编辑、音频输入。
 
 stream=true 时媒体链接也放在 choices[0].delta.content 中，需拼接分片后再提取完整链接。普通聊天仍使用同一接口；失败状态码见 responses。`
 
@@ -51,9 +57,11 @@ func addMediaAPIDocs(spec map[string]any) {
 	chat["summary"] = "聊天补全 / 原生图片和音频生成"
 	chat["description"] = nativeMediaDescription
 	chat["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["examples"] = map[string]any{
-		"chat":  mediaExample("文本聊天", nativeMediaRequest("gemini-2.5-flash", "什么是号池？")),
-		"image": mediaExample("native 图片生成", nativeMediaRequest("gemini-3.1-flash-image", "生成一张被浓雾笼罩的森林图片，气氛阴森")),
-		"audio": mediaExample("native 音频生成", nativeMediaRequest("gemini-2.5-flash-preview-tts", "请用平静的中文声音朗读：欢迎来到雾中的森林。")),
+		"chat":    mediaExample("文本聊天", nativeMediaRequest("gemini-2.5-flash", "什么是号池？")),
+		"image":   mediaExample("native 图片生成", nativeMediaRequest("gemini-3.1-flash-image", "生成一张被浓雾笼罩的森林图片，气氛阴森")),
+		"image4k": mediaExample("4K 图片", map[string]any{"model": "gemini-nano-banana-2.1", "messages": []any{map[string]any{"role": "user", "content": "draw a simple red circle"}}, "image_size": "4K", "max_tokens": 2048}),
+		"omni4k":  mediaExample("Omni 4k 视频", map[string]any{"model": "gemini-omni-1.1-flash", "messages": []any{map[string]any{"role": "user", "content": "a red circle moving once, 2 seconds"}}, "resolution": "4k"}),
+		"audio":   mediaExample("native 音频生成", nativeMediaRequest("gemini-2.5-flash-preview-tts", "请用平静的中文声音朗读：欢迎来到雾中的森林。")),
 	}
 	chatResponse := chat["responses"].(map[string]any)["200"].(map[string]any)
 	chatResponse["description"] = "stream=false 返回聊天 JSON；媒体在 choices[0].message.content。stream=true 返回 SSE，增量在 choices[0].delta.content，最后 data: [DONE]。"
@@ -66,6 +74,9 @@ func addMediaAPIDocs(spec map[string]any) {
 	chatProperties["model"].(map[string]any)["description"] = "GET /v1/models 中的模型 ID。原生图片选择图片模型，音频选择 TTS/音频模型；模型可见不代表有剩余额度。"
 	chatProperties["messages"].(map[string]any)["description"] = "至少一条消息。原生媒体生成用 user 角色的文本描述图片、朗读文本或音乐；当前原生适配只提取文本。"
 	chatProperties["stream"].(map[string]any)["description"] = "false 返回完整 JSON，适合先验证媒体输出；true 返回 SSE，需拼接 delta.content。"
+	chatProperties["image_size"] = map[string]any{"type": "string", "enum": []string{"512", "1K", "2K", "4K"}, "description": "图片输出边长。K 必须大写。图片请求请同时给足够大的 max_tokens，2048 已配合 4K 返回过图；省略时正文可能为空。"}
+	chatProperties["resolution"] = map[string]any{"type": "string", "enum": []string{"360p", "720p", "1080p", "4k"}, "description": "Omni 聊天视频分辨率。4k 的 k 小写。不是 Veo 的 size。"}
+	chatProperties["max_tokens"].(map[string]any)["description"] = "输出 token 上限。图片生成不要省略；本机省略时曾 HTTP 200 且没有图片，2048 配 image_size 4K 返回过图。"
 	schemas["ChatMessage"].(map[string]any)["properties"].(map[string]any)["content"] = map[string]any{
 		"description": "推荐使用字符串。结构化内容中，当前 native 模式只提取 type=text 的文本段。",
 		"oneOf":       []any{map[string]any{"type": "string"}, map[string]any{"type": "array", "items": map[string]any{"type": "object"}}},
@@ -97,13 +108,13 @@ func addVideoAPIDocs(paths, schemas map[string]any) {
 ` + "```bash\n" + `curl http://localhost:8800/v1/videos \
   -H 'Authorization: Bearer sk-xxxxxxxx' \
   -H 'Content-Type: application/json' \
-  -d '{"model":"veo-3.1-fast-generate-preview","prompt":"被浓雾笼罩的森林，体现阴森的感觉","aspect_ratio":"16:9","seconds":8,"resolution":"1080p"}'
+  -d '{"model":"veo-3.1-fast-generate-preview","prompt":"a red circle moving once","size":"4k","seconds":8}'
 ` + "```\n" + `
 时长、比例和分辨率由上游实时模型目录校验；示例参数需该模型支持。HTTP 429 / 协议码 8 表示上游限流或配额问题，需检查对应账户资格、计费和用量，降低分辨率不能保证恢复。
 
 当前创建接口只接受文本提示词，每次一个结果；参考图、首尾帧、负向提示词等扩展参数尚未映射。`
 	create["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["examples"] = map[string]any{
-		"forest":   mediaExample("8 秒 / 1080p / 横屏", map[string]any{"model": "veo-3.1-fast-generate-preview", "prompt": "被浓雾笼罩的森林，体现阴森的感觉", "aspect_ratio": "16:9", "seconds": 8, "resolution": "1080p"}),
+		"forest":   mediaExample("8 秒 / 4k", map[string]any{"model": "veo-3.1-fast-generate-preview", "prompt": "a red circle moving once", "size": "4k", "seconds": 8}),
 		"defaults": mediaExample("使用默认参数（需模型支持）", map[string]any{"model": "veo-3.1-fast-generate-preview", "prompt": "一只橘猫在雨后的街头奔跑"}),
 	}
 	created := map[string]any{"id": "video_abc123", "object": "video", "status": "in_progress", "model": "veo-3.1-fast-generate-preview", "created_at": 1760000000, "seconds": "8", "size": "1920x1080"}
@@ -119,11 +130,11 @@ func addVideoAPIDocs(paths, schemas map[string]any) {
 	descriptions := map[string]string{
 		"model":            "实时目录中支持视频长任务的 Veo 模型 ID；需要账户具备生成资格和可用额度。",
 		"prompt":           "视频内容描述，必填且不能全为空白；当前只支持文本提示词。",
-		"seconds":          "时长（秒），可用整数或整数文本，如 8 或 \"8\"。默认 4；常见 4/6/8，实际以模型目录为准。",
+		"seconds":          "时长（秒），可用整数或整数文本，如 8 或 \"8\"。默认 4。veo-3.1-fast-generate-preview 的 4k 不能用默认 4 秒，需 seconds 8。",
 		"duration_seconds": "seconds 的整数别名；非零时优先于 seconds，不要同时指定两者。",
 		"aspect_ratio":     "视频比例，默认 16:9；常见 16:9、9:16，实际以模型目录为准。",
-		"resolution":       "实际生成分辨率，默认 720p；常见 720p、1080p、4k，支持范围和时长组合由上游决定。",
-		"size":             "仅设置返回任务的尺寸标签，不控制生成分辨率。通常省略，服务会按 resolution 和 aspect_ratio 推导，如 1920x1080。",
+		"resolution":       "不是本路由的 4K 字段。若传入合法分辨率，会覆盖 size。4K 请用 size。",
+		"size":             "生成分辨率，原样作为字符串交给上游。取值 360p、720p、1080p、4k，4k 的 k 小写。veo-3.1-fast-generate-preview 的 4k 需要 seconds 8；4 秒会被上游拒绝。",
 	}
 	for name, description := range descriptions {
 		props[name].(map[string]any)["description"] = description

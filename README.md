@@ -148,7 +148,7 @@ curl "http://localhost:8800/admin/api/usage?days=30" \
 
 Gemini 官方参数审计（2026-10-07）：[参数映射与实现遗漏](docs/api/gemini.md)、[官方全部字段对照](docs/api/gemini-schema.md)、[中文参考详解](docs/api/gemini-reference.md)。完整表由保存的官方 OpenAPI 自动生成，包含请求、响应、工具、agent、沙箱和 SSE 的深层字段。新增[官方 Gemini 后端](docs/api/gemini-official.md)，启用后官方 Interactions 参数和 SSE 完整转发；网页登录态聊天的字段限制单独标注。
 
-生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接；`/v1/images/generations` 与 `/v1/audio/speech` 需要 upstream 模式开启透传，并由上游实现。
+生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接。图片尺寸是顶层 `image_size`（`4K`，K 大写），Omni 视频分辨率是顶层 `resolution`（`4k`，k 小写）。Veo 用 `POST /v1/videos` 的 `size`，`veo-3.1-fast-generate-preview` 的 4K 需要 `seconds: 8`。`/v1/images/generations` 与 `/v1/audio/speech` 需要 upstream 模式开启透传，并由上游实现。
 端点：`POST /v1/chat/completions`（SSE 流式 + 非流式）、`GET /v1/models`、
 `GET /health`、`GET /v1/accounts`。Veo 使用独立长任务接口：
 `POST /v1/videos` 创建、`GET /v1/videos/{id}` 轮询、

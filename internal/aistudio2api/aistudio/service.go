@@ -568,6 +568,7 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		pinned = true
 	}
 	var requestErr error
+	fellBackToPlayground := false
 	for attempt := 0; attempt < accountAttemptLimit(s.pool, pinned); attempt++ {
 		lease, owned, err := resolveAccountLease(ctx, s.pool, selection)
 		if err != nil && selection.Channel == ChannelBuild && ctx.Err() == nil {
@@ -594,6 +595,17 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 			go forwardEventsWithLease(ctx, events, forwarded, lease, s.pool, modelID)
 			return forwarded, nil
 		}
+		// Build 上的按模型日额度用尽时，同一账号的 Playground 仍可能能生成。
+		if owned && !fellBackToPlayground && lease.Channel() == ChannelBuild && quotaExhausted(err) {
+			if releaseErr := lease.Release(); releaseErr != nil {
+				return nil, errors.Join(err, releaseErr)
+			}
+			fellBackToPlayground = true
+			selection.PlaygroundOnly = true
+			selection.Channel = ""
+			attempt--
+			continue
+		}
 		requestErr = err
 		retryable := retryableAccountError(err)
 		var stateErr error
@@ -614,6 +626,19 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		}
 	}
 	return nil, requestErr
+}
+
+// quotaExhausted 判断上游是额度耗尽，而不是请求形状错误。
+func quotaExhausted(err error) bool {
+	var rpcError *RPCError
+	if !errors.As(err, &rpcError) {
+		return false
+	}
+	if rpcError.StatusCode != http.StatusTooManyRequests && rpcError.Code != 8 {
+		return false
+	}
+	message := strings.ToLower(rpcError.Message)
+	return strings.Contains(message, "quota") || strings.Contains(message, "rate")
 }
 
 func accountAttemptLimit(pool *AccountPool, pinned bool) int {

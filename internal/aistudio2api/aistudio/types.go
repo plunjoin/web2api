@@ -222,6 +222,8 @@ type GenerationConfig struct {
 	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
 	ThinkingBudget      *int64               `json:"thinking_budget,omitempty"`
 	Seed                *int64               `json:"seed,omitempty"`
+	// VideoResolution 是 Omni 输出分辨率，取值 360p、720p、1080p、4k。
+	VideoResolution string `json:"-"`
 }
 
 // GenerateRequest 表示供应商无关的生成请求

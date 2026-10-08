@@ -276,7 +276,7 @@ func buildContents(messages []model.ChatMessage) (string, []aistudio.Content) {
 }
 
 // buildGenerateRequest 组装协议请求。
-func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) aistudio.GenerateRequest {
+func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) (aistudio.GenerateRequest, error) {
 	system, contents := buildContents(req.Messages)
 	gen := aistudio.GenerateRequest{
 		ID:       "web2api-" + model.NewID(8),
@@ -294,7 +294,23 @@ func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) aistu
 		value := int64(*req.MaxTokens)
 		gen.Config.MaxOutputTokens = &value
 	}
-	return gen
+	if size := strings.TrimSpace(req.ImageSize); size != "" {
+		switch size {
+		case "512", "1K", "2K", "4K":
+			gen.Config.ImageConfig = &aistudio.ImageConfig{ImageSize: size}
+		default:
+			return aistudio.GenerateRequest{}, fmt.Errorf("image_size 必须是 512、1K、2K 或 4K")
+		}
+	}
+	if resolution := strings.ToLower(strings.TrimSpace(req.Resolution)); resolution != "" {
+		switch resolution {
+		case "360p", "720p", "1080p", "4k":
+			gen.Config.VideoResolution = resolution
+		default:
+			return aistudio.GenerateRequest{}, fmt.Errorf("resolution 必须是 360p、720p、1080p 或 4k")
+		}
+	}
+	return gen, nil
 }
 
 // generate 执行一次生成并消费事件流。
@@ -302,7 +318,10 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 	if e.service == nil {
 		return nil, errors.New("引擎B 未初始化")
 	}
-	genReq := e.buildGenerateRequest(req)
+	genReq, err := e.buildGenerateRequest(req)
+	if err != nil {
+		return nil, err
+	}
 	timeout := time.Duration(e.cfg.RequestTimeoutSeconds) * time.Second
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

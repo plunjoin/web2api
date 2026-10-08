@@ -59,13 +59,36 @@ func EncodeCreateInteractionStreamRequest(request GenerateRequest, defaults Gene
 	}
 	interaction[17] = []any{wireModelName(request.Model), config}
 	interaction[26] = []any{steps}
-	// field 54 视频输出配置：官网默认输出分辨率枚举 1
-	interaction[53] = []any{[]any{[]any{nil, nil, nil, []any{nil, nil, nil, nil, nil, int64(1)}}}}
+	resolution, err := interactionVideoResolution(request.Config.VideoResolution)
+	if err != nil {
+		return nil, nil, err
+	}
+	// field 54 → KWa field 6。请求枚举与 ListModels 相反：1=360p，2=720p，3=1080p，4=4k。
+	interaction[53] = []any{[]any{[]any{nil, nil, nil, []any{nil, nil, nil, nil, nil, resolution}}}}
 	body, err := json.Marshal([]any{int64(1), int64(1), nil, interaction, nil, int64(1)})
 	if err != nil {
 		return nil, nil, fmt.Errorf("编码 CreateInteractionStream: %w", err)
 	}
 	return body, binding, nil
+}
+
+// interactionVideoResolution 把手册分辨率换成 Interaction 视频配置枚举。
+func interactionVideoResolution(value string) (int64, error) {
+	// 未传时保持官网原先写死的 1。显式取值来自前端 lxa，不是 ListModels 的 videoResolutions。
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return 1, nil
+	case "360p":
+		return 1, nil
+	case "720p":
+		return 2, nil
+	case "1080p":
+		return 3, nil
+	case "4k":
+		return 4, nil
+	default:
+		return 0, fmt.Errorf("视频分辨率必须是 360p、720p、1080p 或 4k")
+	}
 }
 
 // encodeInteractionSteps 把规范消息编码为 Interaction input steps，用户为 step field 1、模型为 field 2

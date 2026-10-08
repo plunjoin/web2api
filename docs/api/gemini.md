@@ -87,7 +87,7 @@
 | `transcription_config` | 自定义词汇、语言、逐字 / 智能模式 | 内部支持 WordTimestamps / SpeakerLabels / CustomVocabulary / LanguageCodes / SmartTranscription；与官方 mode 多态结构不同；HTTP 没有音频输入或配置映射 |
 | `video_config.task` | `text_to_video` / `image_to_video` / `reference_to_video` / `edit` / `extend` | 没有此官方对象；Veo 路由当前只支持文本生成视频 |
 | `temperature`、`top_p` | number，OpenAPI 标记 deprecated | HTTP 同名字段传入 native Config 或兼容上游；某些私有 Interaction 路径不编码它们，不保证所有模型生效 |
-| `image_config.aspect_ratio`、`image_config.image_size` | 旧图像配置，deprecated | 内部 ImageConfig 已定义，HTTP 未开放；官方新协议位置为 response_format 的 image 分支 |
+| `image_config.aspect_ratio`、`image_config.image_size` | 旧图像配置，deprecated | 比例的 HTTP 字段仍未开放。尺寸用聊天顶层 `image_size`（`512`、`1K`、`2K`、`4K`，K 大写），不是这个旧对象，也不是 `response_format` |
 
 官方转写配置当前还保留 `adaptation_phrases`、`language_hints`、顶层 `diarization_mode`、顶层 `timestamp_granularities` 四个废弃字段。新配置把后两项放进 `mode: {type:"verbatim", ...}`，智能模式用 `mode: "smart"` 或 `{type:"smart"}`；它们全部收录在字段完整表中。
 
@@ -96,9 +96,9 @@
 | 分支 | 官方全部字段 | 当前网关情况 |
 | --- | --- | --- |
 | text | `type: "text"`、`mime_type`（text/plain、application/json）、`schema` | 内部有 ResponseMIMEType / ResponseSchema，但 HTTP 未映射；在提示词里要求 JSON 不等同于服务端 schema 校验 |
-| image | `type: "image"`、`aspect_ratio`、`image_size`、`mime_type`、`delivery` | 内部有比例 / 尺寸结构但 HTTP 未开放；Markdown 输出不能保证指定格式、尺寸、交付方式 |
+| image | `type: "image"`、`aspect_ratio`、`image_size`、`mime_type`、`delivery` | 不能传这个对象。尺寸用聊天顶层 `image_size`。Markdown 输出仍不能保证指定 MIME 或交付方式 |
 | audio | `type: "audio"`、`mime_type`、`sample_rate`、`bit_rate`、`delivery` | HTTP 未映射声音 / 编码 / 采样率 / 码率 / 交付方式；结果按实际 MIME 处理 |
-| video | `type: "video"`、`aspect_ratio`、`resolution`、`duration`、`delivery`、`gcs_uri` | Veo 有比例、分辨率、秒数的相似能力；不能传此对象，不能据此启用 Omni 编辑 / 延长或 GCS 输出 |
+| video | `type: "video"`、`aspect_ratio`、`resolution`、`duration`、`delivery`、`gcs_uri` | 不能传此对象，也不能据此启用 Omni 编辑 / 延长或 GCS 输出。Omni 聊天用顶层 `resolution`（`4k` 小写 k）。Veo 长任务用 `POST /v1/videos` 的 `size`，并配 `seconds` |
 
 图片完整宽高比为 `1:1`、`2:3`、`3:2`、`3:4`、`4:3`、`4:5`、`5:4`、`9:16`、`16:9`、`21:9`、`1:8`、`8:1`、`1:4`、`4:1`；尺寸为 `512`、`1K`、`2K`、`4K`，K 大写。字段枚举是协议范围，不代表每个图像模型支持全部值。图像输出 MIME 在参考中仅声明 image/jpeg，而部分指南使用 image/png，保留待确认状态。
 

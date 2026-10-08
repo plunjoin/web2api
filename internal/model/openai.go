@@ -9,14 +9,18 @@ import (
 
 // ChatRequest 是 OpenAI 兼容的 /v1/chat/completions 请求体。
 type ChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []ChatMessage   `json:"messages"`
-	Stream      bool            `json:"stream,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	User        string          `json:"user,omitempty"`
-	Extra       json.RawMessage `json:"-"`
+	Model       string        `json:"model"`
+	Messages    []ChatMessage `json:"messages"`
+	Stream      bool          `json:"stream,omitempty"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	MaxTokens   *int          `json:"max_tokens,omitempty"`
+	TopP        *float64      `json:"top_p,omitempty"`
+	User        string        `json:"user,omitempty"`
+	// ImageSize 是图像模型输出边长：512、1K、2K、4K。K 必须大写。
+	ImageSize string `json:"image_size,omitempty"`
+	// Resolution 是 Omni 视频输出分辨率：360p、720p、1080p、4k。k 必须小写。
+	Resolution string          `json:"resolution,omitempty"`
+	Extra      json.RawMessage `json:"-"`
 }
 
 // ChatResult 一次对话的结果。

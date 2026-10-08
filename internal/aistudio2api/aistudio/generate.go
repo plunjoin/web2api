@@ -535,6 +535,33 @@ func speakerSegments(part Part, pattern *regexp.Regexp) []Part {
 	return result
 }
 
+// expandMediaOutputBudget 让媒体模型使用目录里的输出上限，而不是更小的调用方预算。
+// 调用方没传，或已经不低于目录上限时，请求保持原样。
+func expandMediaOutputBudget(request GenerateRequest, entry modelEntry) GenerateRequest {
+	limit := entry.defaults.MaxOutputTokens
+	if limit <= 0 || !mediaOutputBudgetModel(entry) {
+		return request
+	}
+	if request.Config.MaxOutputTokens != nil && *request.Config.MaxOutputTokens >= limit {
+		return request
+	}
+	request.Config.MaxOutputTokens = nil
+	return request
+}
+
+// mediaOutputBudgetModel 覆盖图像、Lyria 音乐，以及走 CreateInteractionStream 的 Omni 视频。
+func mediaOutputBudgetModel(entry modelEntry) bool {
+	if entry.defaults.ImageRoute || entry.defaults.InteractionStream || entry.defaults.OutputResolution {
+		return true
+	}
+	caps := entry.model.Capabilities
+	if caps["image_route"] || caps["music_route"] || caps["interactions_api"] {
+		return true
+	}
+	id := strings.ToLower(strings.TrimPrefix(entry.model.ID, "models/"))
+	return strings.HasPrefix(id, "lyria-") || strings.Contains(id, "omni") || strings.Contains(id, "nano-banana") || strings.Contains(id, "image")
+}
+
 func observedSafetySettings() []any {
 	settings := make([]any, 0, 4)
 	for category := int64(7); category <= 10; category++ {
@@ -562,6 +589,9 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	if err := validateTranscriptionConfig(request.Config.TranscriptionConfig, entry.model); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
+	// 图像、音乐和 Omni 视频如果沿用聊天默认的很小 max_tokens，
+	// 上游会在产出媒体前结束：Lyria/Omni 返回协议 400，图像模型则 HTTP 200 但没有图片。
+	request = expandMediaOutputBudget(request, entry)
 	if entry.defaults.InteractionStream && !build {
 		return c.generateInteraction(ctx, request, entry)
 	}

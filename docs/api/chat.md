@@ -15,10 +15,12 @@
 | `top_p` | number；未填时使用默认配置 | 传入内部 Config；部分 Interaction RPC 不编码它 | 发送同名字段 |
 | `max_tokens` | integer；未填时使用模型默认输出预算 | 转成 max_output_tokens，按模型范围校验 | 发送同名字段 |
 | `user` | string | HTTP 可解析，但未用于生成请求或用户隔离 | 未发送到上游 |
+| `image_size` | `512` / `1K` / `2K` / `4K`；K 必须大写 | 图片模型的输出边长。省略 `max_tokens` 时可能 HTTP 200 但没有图片，`2048` 已配合 `4K` 返回过图 | 未作为同名字段保证转发 |
+| `resolution` | `360p` / `720p` / `1080p` / `4k`；`4k` 的 k 小写 | Omni 等视频聊天模型的输出分辨率，例如 `gemini-omni-1.1-flash` | 未作为同名字段保证转发 |
 
 引擎 A 的原生网页模式把消息拼成文本提示词，不映射 temperature、top_p、max_tokens 或 user。引擎 A 的远程 upstream 模式使用上表的兼容上游传递规则。
 
-未知顶层字段会被忽略。即使开启 `upstream` 和 `passthrough: true`，聊天入口仍重新组装以上固定字段，不能原样发送 tools、tool_choice、response_format、seed、stop、thinking_level、generation_config、previous_interaction_id、background 等扩展参数。专用媒体 / 文件路径的原样透传规则见[多模态透传](/api/passthrough)。聊天 JSON 读取上限为 8 MiB，不适合直接套用官方的大文件内联示例。
+除下表已列出的 `image_size` 和 `resolution` 外，未知顶层字段会被忽略。即使开启 `upstream` 和 `passthrough: true`，聊天入口仍重新组装以上固定字段，不能原样发送 tools、tool_choice、response_format、seed、stop、thinking_level、generation_config、previous_interaction_id、background 等扩展参数。专用媒体 / 文件路径的原样透传规则见[多模态透传](/api/passthrough)。聊天 JSON 读取上限为 8 MiB，不适合直接套用官方的大文件内联示例。
 
 ## 非流式请求
 
@@ -63,4 +65,16 @@ curl -N http://localhost:8800/v1/chat/completions \
 
 多轮聊天由客户端在 messages 中携带历史，例如 user → assistant → user。官方 previous_interaction_id、Step[] 回放、thought signature 和 function_result 续接是另一种协议，当前没有对应入口。
 
-原生模式生成图片或音频时，在此接口选择对应的图片/TTS/音频模型。结果通过 `choices[0].message.content` 中的 Markdown 媒体链接返回，详见[图片生成](/api/images)与[音频生成](/api/audio)。
+原生模式生成图片、Omni 视频或音频时，在此接口选择对应模型。结果通过 `choices[0].message.content` 中的 Markdown 媒体链接返回，详见[图片生成](/api/images)与[音频生成](/api/audio)。
+
+图片尺寸用顶层 `image_size`（`512`、`1K`、`2K`、`4K`，K 大写），并给出足够大的 `max_tokens`。Omni 视频分辨率用顶层 `resolution`（`360p`、`720p`、`1080p`、`4k`，k 小写），不要把 Veo 长任务的 `size` 用在这里。
+
+```json
+{
+  "model": "gemini-omni-1.1-flash",
+  "messages": [{"role": "user", "content": "a red circle moving once, 2 seconds"}],
+  "resolution": "4k"
+}
+```
+
+本机该请求返回 HTTP 200、`video/mp4`、h264、3840×2160，时长约 3 秒。

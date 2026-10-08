@@ -115,10 +115,26 @@ func normalizeVideoRequest(request VideoRequest) VideoRequest {
 	if request.DurationSeconds == 0 {
 		request.DurationSeconds = 4
 	}
-	if strings.TrimSpace(request.Resolution) == "" {
+	if token, ok := videoResolutionToken(request.Resolution); ok {
+		request.Resolution = token
+	} else if strings.TrimSpace(request.Resolution) != "" {
+		return request
+	} else if token, ok := videoResolutionToken(request.Size); ok {
+		request.Resolution = token
+	} else {
 		request.Resolution = "720p"
 	}
 	return request
+}
+
+// videoResolutionToken 识别手册里的视频分辨率。4k 的 k 为小写。
+func videoResolutionToken(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "360p", "368p", "720p", "1080p", "4k":
+		return strings.ToLower(strings.TrimSpace(value)), true
+	default:
+		return "", false
+	}
 }
 
 // EncodeGetGenerateVideoOperationRequest 编码当前网页轮询数组协议
