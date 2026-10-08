@@ -11,6 +11,7 @@ import (
 	"time"
 
 	aistudio "web2api/internal/aistudio2api/aistudio"
+	"web2api/internal/store"
 )
 
 // videoCreateRequest 是 OpenAI 风格的视频创建请求。Veo 的实际 RPC 是
@@ -62,6 +63,18 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	if seconds == 0 {
 		seconds = 4
 	}
+	// 用户 Key：视频没有 Token 用量，按「秒 × 每秒计费 Token」在创建成功后扣费；未配置单价时不开放。
+	var videoPrice int64
+	if info, ok := keyInfoFrom(r); ok && info.UserID > 0 {
+		settings, err := s.st.GetPlatformSettings()
+		if err != nil || settings.VideoTokensPerSecond <= 0 {
+			writeError(w, http.StatusForbidden, "Video generation is not enabled for user API keys (视频接口未对用户 Key 开放).",
+				"permission_error", "endpoint_not_allowed")
+			return
+		}
+		videoPrice = settings.VideoTokensPerSecond
+	}
+	start := time.Now()
 	operation, err := s.mgr.GenerateVideo(r.Context(), aistudio.VideoRequest{
 		Model: req.Model, Prompt: req.Prompt, Count: 1,
 		AspectRatio: req.AspectRatio, DurationSeconds: seconds,
@@ -71,6 +84,15 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("[video] 创建失败 model=%q: %v", req.Model, err)
 		writeVideoError(w, err)
 		return
+	}
+	if videoPrice > 0 {
+		info, _ := keyInfoFrom(r)
+		if _, err := s.st.RecordRequest(store.UsageRecord{
+			KeyID: info.ID, APIKey: s.currentKey(r), Engine: "b", Model: req.Model, Endpoint: "/v1/videos",
+			Success: true, TotalTokens: int64(seconds) * videoPrice, LatencyMs: time.Since(start).Milliseconds(),
+		}); err != nil {
+			s.logger.Printf("[video] 记录视频扣费失败 model=%q: %v", req.Model, err)
+		}
 	}
 	writeJSON(w, http.StatusAccepted, videoResponse{
 		ID: operation.ID, Object: "video", Status: videoStatus(operation),

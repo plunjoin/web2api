@@ -44,6 +44,8 @@ type APIKey struct {
 	TokensUsed int64 `json:"tokens_used"`
 	// Multiplier 是 Key 倍率（分组默认倍率），与模型倍率相乘，默认 1。
 	Multiplier float64 `json:"multiplier"`
+	// UserID 归属用户（0 = 无归属：config Key 或管理员直接创建的 Key）。
+	UserID int64 `json:"user_id"`
 	// TokensRemaining 剩余额度；不限额时为 null。
 	TokensRemaining *int64 `json:"tokens_remaining"`
 	// QuotaExhausted 额度是否已用尽（用尽后请求返回 429 insufficient_quota）。
@@ -194,6 +196,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_ts ON usage_records(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_key ON usage_records(key_id, ts)`,
 	}
+	statements = append(statements, platformSchema...)
 	for _, stmt := range statements {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("迁移失败: %w", err)
@@ -208,8 +211,20 @@ func (s *Store) migrate() error {
 		{"api_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "rpm_limit", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_records", "latency_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "user_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "user_multiplier", "REAL NOT NULL DEFAULT 1"},
+		{"usage_records", "refunded_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.ddl); err != nil {
+			return fmt.Errorf("迁移失败: %w", err)
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_user ON usage_records(user_id, ts)`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("迁移失败: %w", err)
 		}
 	}

@@ -82,7 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/docs", s.handlePublicDocs)
 	mux.HandleFunc("GET /v1/gemini-docs", s.handleGeminiDocs)
 	for _, path := range geminiapi.Mounts() {
-		mux.HandleFunc(path, s.withGeminiAuth(s.withModelGuard(s.gemini.ServeHTTP)))
+		mux.HandleFunc(path, s.withGeminiAuth(s.withUserMeteringGuard(s.withModelGuard(s.gemini.ServeHTTP))))
 	}
 	// 本机登录导出工具：脚本本身不含凭据，运行时仍需管理员 JWT。
 	mux.HandleFunc("GET /tools/export-storage.sh", s.handleExportToolScript)
@@ -96,8 +96,8 @@ func (s *Server) Handler() http.Handler {
 
 	// 多模态透传
 	for _, sub := range []string{"images", "videos", "audio", "files", "embeddings"} {
-		mux.HandleFunc("/v1/"+sub+"/", s.withAuth(s.withModelGuard(s.handlePassthrough)))
-		mux.HandleFunc("/v1/"+sub, s.withAuth(s.withModelGuard(s.handlePassthrough)))
+		mux.HandleFunc("/v1/"+sub+"/", s.withAuth(s.withUserMeteringGuard(s.withModelGuard(s.handlePassthrough))))
+		mux.HandleFunc("/v1/"+sub, s.withAuth(s.withUserMeteringGuard(s.withModelGuard(s.handlePassthrough))))
 	}
 
 	mux.HandleFunc("GET /v1/accounts", s.withAuth(s.handleAccounts))
@@ -242,6 +242,15 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeQuotaExceeded(w, info)
 			return
 		}
+		if info.UserID > 0 && !info.UserEnabled {
+			writeError(w, http.StatusForbidden, "The account that owns this API key is disabled (Key 所属账号已停用).",
+				"permission_error", "account_disabled")
+			return
+		}
+		if info.BalanceExhausted() {
+			writeInsufficientBalance(w, info)
+			return
+		}
 		if ok, retryAfter := s.rpm.Allow(info.ID, info.RPMLimit, now); !ok {
 			writeRPMExceeded(w, info.RPMLimit, retryAfter)
 			return
@@ -273,6 +282,15 @@ func writeQuotaExceeded(w http.ResponseWriter, info store.KeyAuth) {
 		"API key token quota exhausted (Token 额度已用尽): used %d of %d charged tokens. "+
 			"Ask the administrator to raise token_limit or reset usage for this key.",
 		info.TokensUsed, info.TokenLimit), "insufficient_quota", "token_quota_exceeded")
+}
+
+// writeInsufficientBalance Key 所属用户余额不足：HTTP 402 + OpenAI 兼容错误体。
+func writeInsufficientBalance(w http.ResponseWriter, info store.KeyAuth) {
+	w.Header().Set("X-Web2api-Balance", strconv.FormatInt(info.Balance, 10))
+	writeError(w, http.StatusPaymentRequired, fmt.Sprintf(
+		"Insufficient balance (余额不足): your account balance is %d tokens. "+
+			"Redeem a code in the console or ask the administrator to top up.", info.Balance),
+		"insufficient_quota", "insufficient_balance")
 }
 
 func writeError(w http.ResponseWriter, status int, msg, errType string, code any) {

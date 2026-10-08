@@ -110,6 +110,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Web2api-Usage-Source", usageSource(rec.Estimated))
 	w.Header().Set("X-Web2api-Multiplier", strconv.FormatFloat(rec.Multiplier, 'f', -1, 64))
 	w.Header().Set("X-Web2api-Charged-Tokens", strconv.FormatInt(rec.ChargedTokens, 10))
+	if rec.UserID > 0 && rec.ChargedTokens > 0 {
+		w.Header().Set("X-Web2api-Balance", strconv.FormatInt(rec.BalanceAfter, 10))
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

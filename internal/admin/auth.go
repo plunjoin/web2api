@@ -31,6 +31,23 @@ type claims struct {
 	IssuedAt  int64  `json:"iat"`
 	NotBefore int64  `json:"nbf"`
 	Expires   int64  `json:"exp"`
+	// Version 平台用户的 token_version；改密码、停用或改角色后旧登录态失效。根管理员为 0。
+	Version int64 `json:"ver,omitempty"`
+}
+
+// rootSubject 是初始化管理员（admin_settings）的 JWT subject；平台用户为 "u:<id>"。
+const rootSubject = "1"
+
+func validSubject(sub string) bool {
+	if sub == rootSubject {
+		return true
+	}
+	id, ok := strings.CutPrefix(sub, "u:")
+	if !ok || id == "" {
+		return false
+	}
+	n, err := strconv.ParseInt(id, 10, 64)
+	return err == nil && n > 0 && strconv.FormatInt(n, 10) == id
 }
 
 func randomSecret() (string, error) {
@@ -90,7 +107,7 @@ func verifyJWT(token, secret string) (*claims, error) {
 		return nil, invalid
 	}
 	now := time.Now().Unix()
-	if c.Issuer != "web2api" || c.Audience != "web2api-admin" || c.Subject != "1" || c.ID == "" || c.Expires <= now || c.IssuedAt <= 0 || c.IssuedAt > now || c.NotBefore > now || c.Expires <= c.IssuedAt {
+	if c.Issuer != "web2api" || c.Audience != "web2api-admin" || !validSubject(c.Subject) || c.ID == "" || c.Expires <= now || c.IssuedAt <= 0 || c.IssuedAt > now || c.NotBefore > now || c.Expires <= c.IssuedAt {
 		return nil, invalid
 	}
 	return c, nil
@@ -218,6 +235,11 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 503, map[string]any{"error": "Redis 配置无效"})
 		return
 	}
+	if email := strings.ToLower(strings.TrimSpace(input.Email)); email != v.Email {
+		// 平台用户：按邮箱 + 来源 IP 计数，避免一个用户输错密码锁住所有人。
+		a.loginPlatformUser(w, r, v, redis, email, input.Password)
+		return
+	}
 	// A bounded account-wide counter also limits guesses with varying email addresses.
 	limitKey := redisPrefix(v) + "login-attempts"
 	n, err := redis.Command(r.Context(), "EVAL", loginAttemptScript, "1", limitKey)
@@ -257,10 +279,48 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = redis.Command(r.Context(), "DEL", limitKey)
-	writeJSON(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int64(sessionLifetime.Seconds()), "user": v})
+	writeJSON(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int64(sessionLifetime.Seconds()), "user": rootPrincipal(v).view()})
 }
 
+// authenticate 管理接口鉴权：根管理员或 role=admin 的平台用户。
 func (a *API) authenticate(r *http.Request) (*store.AdminSettings, *claims, int, error) {
+	v, c, p, code, err := a.authenticateAny(r)
+	if err != nil {
+		return nil, nil, code, err
+	}
+	if !p.IsAdmin() {
+		return nil, nil, 403, errors.New("需要管理员权限")
+	}
+	return v, c, 200, nil
+}
+
+// authenticateAny 校验 JWT + Redis 会话，返回登录主体（管理员或平台用户）。
+func (a *API) authenticateAny(r *http.Request) (*store.AdminSettings, *claims, *Principal, int, error) {
+	v, c, code, err := a.verifySession(r)
+	if err != nil {
+		return nil, nil, nil, code, err
+	}
+	if c.Subject == rootSubject {
+		return v, c, rootPrincipal(v), 200, nil
+	}
+	id, _ := strconv.ParseInt(strings.TrimPrefix(c.Subject, "u:"), 10, 64)
+	user, err := a.st.GetUser(id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil, nil, 401, errors.New("账号不存在，请重新登录")
+	}
+	if err != nil {
+		return nil, nil, nil, 500, errors.New("读取用户失败")
+	}
+	if !user.Enabled {
+		return nil, nil, nil, 403, errors.New("账号已停用，请联系管理员")
+	}
+	if user.TokenVersion != c.Version {
+		return nil, nil, nil, 401, errors.New("登录已失效，请重新登录")
+	}
+	return v, c, &Principal{User: &user}, 200, nil
+}
+
+func (a *API) verifySession(r *http.Request) (*store.AdminSettings, *claims, int, error) {
 	v, err := a.st.AdminSettings()
 	if err != nil {
 		return nil, nil, 500, errors.New("读取管理员失败")
@@ -287,16 +347,16 @@ func (a *API) authenticate(r *http.Request) (*store.AdminSettings, *claims, int,
 }
 
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
-	v, _, code, err := a.authenticate(r)
+	_, _, p, code, err := a.authenticateAny(r)
 	if err != nil {
 		writeJSON(w, code, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"user": v})
+	writeJSON(w, 200, map[string]any{"user": p.view()})
 }
 
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
-	v, c, code, err := a.authenticate(r)
+	v, c, code, err := a.verifySession(r)
 	if err != nil {
 		writeJSON(w, code, map[string]any{"error": err.Error()})
 		return

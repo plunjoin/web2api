@@ -74,6 +74,46 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/upgrade", a.auth(a.handleUpgradeStatus))
 	mux.HandleFunc("POST /admin/api/upgrade/check", a.auth(a.handleUpgradeCheck))
 	mux.HandleFunc("POST /admin/api/upgrade", a.auth(a.handleUpgradeStart))
+
+	// 平台：用户、余额、兑换码、账单流水、设置
+	mux.HandleFunc("GET /admin/api/users", a.adminAuth(a.handleAdminUsers))
+	mux.HandleFunc("POST /admin/api/users", a.adminAuth(a.handleAdminCreateUser))
+	mux.HandleFunc("GET /admin/api/users/{id}", a.adminAuth(a.handleAdminUser))
+	mux.HandleFunc("PATCH /admin/api/users/{id}", a.adminAuth(a.handleAdminPatchUser))
+	mux.HandleFunc("DELETE /admin/api/users/{id}", a.adminAuth(a.handleAdminDeleteUser))
+	mux.HandleFunc("POST /admin/api/users/{id}/password", a.adminAuth(a.handleAdminUserPassword))
+	mux.HandleFunc("POST /admin/api/users/{id}/balance", a.adminAuth(a.handleAdminAdjustBalance))
+	mux.HandleFunc("GET /admin/api/ledger", a.adminAuth(a.handleAdminLedger))
+	mux.HandleFunc("POST /admin/api/usage/records/{id}/refund", a.adminAuth(a.handleAdminRefund))
+	mux.HandleFunc("GET /admin/api/redeem-codes", a.adminAuth(a.handleAdminCodes))
+	mux.HandleFunc("POST /admin/api/redeem-codes", a.adminAuth(a.handleAdminCreateCodes))
+	mux.HandleFunc("GET /admin/api/redeem-codes/export.csv", a.adminAuth(a.handleAdminExportCodes))
+	mux.HandleFunc("PATCH /admin/api/redeem-codes/{id}", a.adminAuth(a.handleAdminPatchCode))
+	mux.HandleFunc("DELETE /admin/api/redeem-codes/{id}", a.adminAuth(a.handleAdminDeleteCode))
+	mux.HandleFunc("POST /admin/api/redeem-codes/batches/{batch}/disable", a.adminAuth(a.handleAdminDisableBatch))
+	mux.HandleFunc("GET /admin/api/settings", a.adminAuth(a.handleAdminSettings))
+	mux.HandleFunc("PUT /admin/api/settings", a.adminAuth(a.handleAdminPutSettings))
+
+	// 公开与平台用户接口（同一套 JWT + Redis 会话）
+	mux.HandleFunc("GET /api/public/config", a.handlePublicConfig)
+	mux.HandleFunc("POST /api/auth/register", a.handleRegister)
+	mux.HandleFunc("POST /api/auth/login", a.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", a.handleLogout)
+	mux.HandleFunc("GET /api/auth/me", a.handleMe)
+	mux.HandleFunc("GET /api/user/overview", a.userAuth(a.handleUserOverview))
+	mux.HandleFunc("GET /api/user/keys", a.userAuth(a.handleUserKeys))
+	mux.HandleFunc("POST /api/user/keys", a.userAuth(a.handleUserCreateKey))
+	mux.HandleFunc("PATCH /api/user/keys/{id}", a.userAuth(a.handleUserPatchKey))
+	mux.HandleFunc("DELETE /api/user/keys/{id}", a.userAuth(a.handleUserDeleteKey))
+	mux.HandleFunc("POST /api/user/keys/{id}/regenerate", a.userAuth(a.handleUserRegenerateKey))
+	mux.HandleFunc("GET /api/user/usage/records", a.userAuth(a.handleUserUsageRecords))
+	mux.HandleFunc("GET /api/user/usage/timeseries", a.userAuth(a.handleUserUsageTimeseries))
+	mux.HandleFunc("GET /api/user/ledger", a.userAuth(a.handleUserLedger))
+	mux.HandleFunc("GET /api/user/redeem", a.userAuth(a.handleUserRedeemHistory))
+	mux.HandleFunc("POST /api/user/redeem", a.userAuth(a.handleUserRedeem))
+	mux.HandleFunc("PATCH /api/user/profile", a.userAuth(a.handleUserProfile))
+	mux.HandleFunc("POST /api/user/password", a.userAuth(a.handleUserPassword))
+	mux.HandleFunc("GET /api/user/models", a.userAuth(a.handleUserModels))
 }
 
 // handleDocs 返回管理 API 的 OpenAPI 3.1 文档。
@@ -285,7 +325,9 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 			charged24h += row.ChargedTokens
 		}
 	}
+	platform, _ := a.st.GetPlatformTotals()
 	writeJSON(w, http.StatusOK, map[string]any{
+		"platform":           platform,
 		"accounts_total":     len(accounts),
 		"accounts_ready":     readyA + readyB,
 		"engine_a_ready":     readyA,
@@ -488,12 +530,14 @@ func (a *API) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	type keyView struct {
 		store.APIKey
-		Requests24h      int64 `json:"requests_24h"`
-		ChargedTokens24h int64 `json:"charged_tokens_24h"`
+		Requests24h      int64  `json:"requests_24h"`
+		ChargedTokens24h int64  `json:"charged_tokens_24h"`
+		OwnerEmail       string `json:"owner_email,omitempty"`
 	}
+	emails, _ := a.st.UserEmails()
 	out := make([]keyView, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key], ChargedTokens24h: charged24h[k.ID]})
+		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key], ChargedTokens24h: charged24h[k.ID], OwnerEmail: emails[k.UserID]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }

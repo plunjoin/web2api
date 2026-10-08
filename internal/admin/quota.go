@@ -77,6 +77,7 @@ func usageFilter(r *http.Request) (store.UsageFilter, int) {
 	q := r.URL.Query()
 	filter := store.UsageFilter{Since: since, Model: strings.TrimSpace(q.Get("model"))}
 	filter.KeyID, _ = strconv.ParseInt(q.Get("key_id"), 10, 64)
+	filter.UserID, _ = strconv.ParseInt(q.Get("user_id"), 10, 64)
 	filter.Limit, _ = strconv.Atoi(q.Get("limit"))
 	filter.Offset, _ = strconv.Atoi(q.Get("offset"))
 	return filter, days
@@ -122,7 +123,7 @@ func (a *API) handleListMultipliers(w http.ResponseWriter, r *http.Request) {
 		"multipliers":        items,
 		"default_multiplier": defaultMultiplier,
 		"models":             models,
-		"formula":            "charged_tokens = ceil(total_tokens × model_multiplier × key_multiplier)",
+		"formula":            "charged_tokens = ceil(total_tokens × model_multiplier × key_multiplier × user_multiplier)",
 	})
 }
 

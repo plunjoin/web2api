@@ -133,3 +133,19 @@ func modelsInPath(path string) []string {
 	}
 	return out
 }
+
+// userUnmeteredAllowed 用户 Key 调用不计 Token 的接口（Gemini 原生、多模态透传）需管理员显式开放。
+func (s *Server) withUserMeteringGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if info, ok := keyInfoFrom(r); ok && info.UserID > 0 {
+			settings, err := s.st.GetPlatformSettings()
+			if err != nil || !settings.UserUnmeteredRoutes {
+				writeError(w, http.StatusForbidden,
+					"This endpoint is not metered and is not enabled for user API keys (该接口不计费，未对用户 Key 开放). Use /v1/chat/completions.",
+					"permission_error", "endpoint_not_allowed")
+				return
+			}
+		}
+		next(w, r)
+	}
+}
