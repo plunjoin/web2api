@@ -225,17 +225,22 @@ func TestMigrationAddsQuotaColumnsToExistingDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
 	keys, err := s.ListKeys()
 	if err != nil || len(keys) != 1 {
+		_ = s.Close()
 		t.Fatalf("keys = %+v %v", keys, err)
 	}
 	if k := keys[0]; k.TokenLimit != 0 || k.TokensUsed != 0 || k.Multiplier != 1 || k.TokensRemaining != nil {
+		_ = s.Close()
 		t.Fatalf("旧 Key 默认值错误: %+v", k)
 	}
-	// 再次打开不重复加列
-	_ = s.Close()
-	if s, err = Open(path); err != nil {
+	// 再次打开不重复加列。Windows 上未关闭的连接会锁住临时库，测试清理因此失败。
+	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 }
