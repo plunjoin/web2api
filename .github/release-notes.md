@@ -1,16 +1,13 @@
-v0.2.5 为每个 API Key 增加 Token 额度与倍率，记录逐请求用量，并说明镜像升级拉取 403 的具体原因。管理台改为深色界面。
+v0.2.6 修复升级到 v0.2.5 后管理台没有样式、版本显示为 dev 的问题。
 
-- 每个 Key 可设置 Token 额度、Key 倍率、过期时间、模型白名单和每分钟请求上限。额度用尽返回 429 insufficient_quota（token_quota_exceeded），过期返回 401 key_expired，模型不在白名单返回 403 model_not_allowed，超过每分钟上限返回 429 rpm_limit_exceeded。
-- 计费 Token = ⌈总 Token × 模型倍率 × Key 倍率⌉。模型倍率按「精确模型 → * 默认 → 1」查找。聊天接口优先记录上游真实用量（AI Studio / upstream），拿不到时按文本长度估算并标记。
-- 管理 API 增加用量明细、时间序列、CSV 导出、模型目录、倍率管理和 Key 重新生成。只有 /v1/chat/completions 记 Token；视频、透传和 Gemini 原生路由仍受 Key 限制，但不产生 Token 明细。
-- 升级检查在拉取镜像返回 HTTP 403 时核对匿名访问和已配置凭据，并指出需要的设置：公开镜像 ghcr.io/plunjoin/web2api 匿名可拉取；失效凭据、错误或私有镜像名、以及宿主机 Docker 出站拦截会得到不同说明。v0.2.4 若仍报 403，需先手动 docker compose pull 一次，或清掉失效的仓库凭据。
-- 管理台改为深色界面（预编译 Tailwind，不访问 CDN）。页面含总览、号池、API Key、用量、模型、设置和接口文档。
-- 聊天与视频接口支持 4K：image_size 为 512/1K/2K/4K，Omni resolution 为 4k，Veo 使用 size 4k 且 seconds 为 8。
+- 原因：v0.2.5 改了管理台页面，样式表地址仍是 /admin/assets/admin.css，且静态资源没有任何缓存校验头。浏览器或反向代理/CDN 里缓存的 v0.2.4 样式表被拿来配新页面，新页面用到的样式类旧文件里都没有，于是整页失去布局。镜像本身返回的样式是正确的。
+- 管理台资源地址现在带内容哈希（例如 /admin/assets/admin.css?v=c5953797b0d7），每次发版自动换新地址，旧缓存不会再与新页面混用。带哈希的地址可长期缓存；不带哈希的地址要求每次校验（ETag，未变化返回 304）。页面本身仍为 no-store。
+- 版本号：容器构建未传 VERSION 时不再显示 dev，改为读取随源码发布的 internal/version/VERSION（本版为 v0.2.6）。发布包仍由构建参数注入版本号。
 
-升级后继续使用原 SQLite 数据库。旧库会自动补上额度、倍率和用量明细字段，已有 Key 默认不限额、倍率为 1。
+升级后无需改配置，数据库不变。若前面有 CDN（如 Cloudflare）且曾缓存过旧样式，新版本已绕开该缓存；如仍异常，清一次 CDN 缓存或强制刷新浏览器即可。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.2.5、ghcr.io/plunjoin/web2api:0.2.5、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.2.6、ghcr.io/plunjoin/web2api:0.2.6、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
 
-验证：Go 全量测试、额度与倍率单测、升级 403 诊断单测、官方字段快照一致性。4K 图片与视频已在本机用真实上游验证；官方协议仍通过本地模拟服务验证。
+验证：Go 全量测试；新增资源哈希、缓存头、304 校验和版本回退单测；按 .dockerignore 构建上下文（无 .git、VERSION=dev）编译的二进制返回 v0.2.6，/admin 链接的样式表返回 200 text/css；模拟浏览器持有旧样式缓存时页面仍为完整深色布局。
