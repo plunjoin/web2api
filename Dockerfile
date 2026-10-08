@@ -43,13 +43,19 @@ COPY internal ./internal
 RUN rm -rf ./internal/webui/dist
 COPY --from=web /src/internal/webui/dist ./internal/webui/dist
 
-# 交叉编译：纯 Go、无 CGO、Linux/amd64（可改 arm64 部署到 ARM 服务器）
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# 交叉编译：纯 Go、无 CGO。目标平台取自 BuildKit 按 --platform 自动注入的
+# TARGETOS / TARGETARCH / TARGETVARIANT（linux/arm/v7 → GOARCH=arm GOARM=7）。
+# 注意这几个 ARG 不能写默认值：写了默认值会覆盖自动注入的值，多架构构建时
+# arm64、arm/v7 镜像里会全部装进 amd64 的二进制。未使用 BuildKit 时回退到 linux/amd64。
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 ARG VERSION=dev
-ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
+ENV CGO_ENABLED=0
 
-RUN go build -ldflags="-s -w -X web2api/internal/version.Version=${VERSION}" -o /out/web2api .
+RUN GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-amd64}" GOARM="${TARGETVARIANT#v}" \
+    go build -ldflags="-s -w -X web2api/internal/version.Version=${VERSION}" -o /out/web2api . \
+ && go version -m /out/web2api | grep -E "GOARCH|GOARM|GOOS"
 
 # ---------- 运行阶段 ----------
 FROM alpine:3.20
