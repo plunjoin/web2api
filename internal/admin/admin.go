@@ -157,12 +157,12 @@ func openAPISpec() map[string]any {
 	body := func(schema string) map[string]any {
 		return map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/" + schema}}}}
 	}
-	return map[string]any{
+	return addPlatformSpec(map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title":       "web2api 管理 API",
 			"version":     "1.0.0",
-			"description": "号池、API Key、用量和引擎状态管理接口。管理接口使用 JWT 验证及 Redis 会话；初始化和登录接口无需登录。",
+			"description": "号池、API Key、用量、用户余额、兑换码和引擎状态管理接口，以及 /api/* 用户控制台接口。管理接口使用 JWT 验证及 Redis 会话；初始化和登录接口无需登录。",
 		},
 		"servers":  []any{map[string]any{"url": "/", "description": "当前 web2api 服务"}},
 		"security": []any{map[string]any{"AdminJWT": []any{}}},
@@ -218,7 +218,7 @@ func openAPISpec() map[string]any {
 			"/admin/api/models":               map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含生效倍率）", "responses": map[string]any{"200": response("models")}}},
 			"/admin/api/version":              map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
 			"/admin/api/multipliers": map[string]any{
-				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率)。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
+				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率 × 用户倍率)，用户倍率只对用户 Key 生效。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
 				"put": map[string]any{"tags": []string{"用量"}, "summary": "设置模型倍率", "requestBody": body("MultiplierInput"), "responses": map[string]any{"200": response("已保存"), "400": response("参数错误")}},
 			},
 			"/admin/api/multipliers/{model}": map[string]any{"delete": map[string]any{"tags": []string{"用量"}, "summary": "删除模型倍率（恢复默认）", "parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}, "responses": map[string]any{"200": response("已删除"), "404": response("未配置")}}},
@@ -240,7 +240,7 @@ func openAPISpec() map[string]any {
 				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine", "storage_state"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b"}, "description": "a=Gemini，b=AI Studio"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "引擎2协议的 storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 			},
 		},
-	}
+	})
 }
 
 // auth 管理鉴权中间件。
