@@ -254,7 +254,7 @@ function UserDetailSheet({ id, onOpenChange, actions }: { id: number | null; onO
                   <p className="rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">暂无流水</p>
                 ) : (
                   <div className="rounded-md border">
-                    <LedgerTable entries={d.ledger} />
+                    <LedgerTable entries={d.ledger} compact />
                   </div>
                 )}
               </div>

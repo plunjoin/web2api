@@ -54,8 +54,8 @@ export default function ConsoleBilling() {
           loading={q.isLoading}
           items={[
             { label: '当前余额', value: num(d?.balance), tone: d && d.balance <= 0 ? 'danger' : 'default' },
-            { label: '收入', value: `+${num(d?.sums.credit)}`, tone: 'success', hint: '所选范围内的充值、退款与赠送' },
-            { label: '支出', value: d?.sums.debit ? `-${num(d.sums.debit)}` : '0', hint: '所选范围内的扣费' },
+            { label: '收入', value: `+${num(d?.sums.credit)}`, tone: 'success', hint: '充值、退款、赠送与管理员加款' },
+            { label: '支出', value: d?.sums.debit ? `-${num(d.sums.debit)}` : '0', hint: '请求扣费与管理员扣款' },
           ]}
         />
         <Section title="余额流水" description={d ? `共 ${num(d.total)} 条` : undefined}>

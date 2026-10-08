@@ -318,28 +318,32 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 			keysExhausted++
 		}
 	}
-	var tokens24h, charged24h int64
+	// requests_24h 来自按分钟聚合的旧表（兼容字段）；旧版本只写这张表，升级后的头 24 小时
+	// 可能多于逐请求记录。metered_requests_24h 来自逐请求记录，与「用量」页口径一致。
+	var tokens24h, charged24h, metered24h int64
 	if breakdown, err := a.st.UsageBreakdown(store.UsageFilter{Since: since}); err == nil {
 		for _, row := range breakdown {
 			tokens24h += row.TotalTokens
 			charged24h += row.ChargedTokens
+			metered24h += row.Requests
 		}
 	}
 	platform, _ := a.st.GetPlatformTotals()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"platform":           platform,
-		"accounts_total":     len(accounts),
-		"accounts_ready":     readyA + readyB,
-		"engine_a_ready":     readyA,
-		"engine_b_ready":     readyB,
-		"keys_total":         len(keys),
-		"requests_24h":       totalReqs,
-		"keys_limited":       keysLimited,
-		"keys_exhausted":     keysExhausted,
-		"tokens_24h":         tokens24h,
-		"charged_tokens_24h": charged24h,
-		"version":            version.Get(),
-		"uptime_seconds":     int64(time.Since(startedAt).Seconds()),
+		"platform":             platform,
+		"accounts_total":       len(accounts),
+		"accounts_ready":       readyA + readyB,
+		"engine_a_ready":       readyA,
+		"engine_b_ready":       readyB,
+		"keys_total":           len(keys),
+		"requests_24h":         totalReqs,
+		"metered_requests_24h": metered24h,
+		"keys_limited":         keysLimited,
+		"keys_exhausted":       keysExhausted,
+		"tokens_24h":           tokens24h,
+		"charged_tokens_24h":   charged24h,
+		"version":              version.Get(),
+		"uptime_seconds":       int64(time.Since(startedAt).Seconds()),
 	})
 }
 

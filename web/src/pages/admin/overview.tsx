@@ -29,6 +29,7 @@ interface Overview {
   engine_b_ready: number
   keys_total: number
   requests_24h: number
+  metered_requests_24h?: number
   keys_limited: number
   keys_exhausted: number
   tokens_24h: number
@@ -99,7 +100,7 @@ export default function AdminOverview() {
             loading={ov.isLoading}
             items={[
               { label: '上游账号', icon: <Server />, value: `${accUp} / ${d?.accounts_total ?? 0}`, tone: d && d.accounts_total > 0 && accUp === 0 ? 'danger' : accDown ? 'warning' : 'default', hint: accDown ? `${accDown} 个异常，需要检查` : '可用 / 全部' },
-              { label: '24 小时请求', icon: <Activity />, value: num(d?.requests_24h), hint: `计费 ${compact(d?.charged_tokens_24h)} Token` },
+              { label: '24 小时请求', icon: <Activity />, value: num(d?.metered_requests_24h ?? d?.requests_24h), hint: `计费 ${compact(d?.charged_tokens_24h)} Token` },
               { label: 'API 密钥', icon: <KeyRound />, value: num(d?.keys_total), hint: d?.keys_exhausted ? `${d.keys_exhausted} 个额度用尽` : `${d?.keys_limited ?? 0} 个设置了额度`, tone: d?.keys_exhausted ? 'warning' : 'default' },
               { label: '用户', icon: <Users />, value: num(p?.users), hint: `7 天新增 ${p?.new_users_7d ?? 0} · 活跃 ${p?.active_users_7d ?? 0}` },
             ]}
