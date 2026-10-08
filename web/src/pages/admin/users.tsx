@@ -127,12 +127,12 @@ export default function AdminUsers() {
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead>用户</TableHead>
-                    <TableHead>状态</TableHead>
+                    <TableHead className="hidden sm:table-cell">状态</TableHead>
                     <TableHead className="text-right">余额</TableHead>
-                    <TableHead className="text-right">倍率</TableHead>
-                    <TableHead className="text-right">密钥</TableHead>
-                    <TableHead className="text-right">7 天消耗</TableHead>
-                    <TableHead>最近登录</TableHead>
+                    <TableHead className="hidden text-right md:table-cell">倍率</TableHead>
+                    <TableHead className="hidden text-right md:table-cell">密钥</TableHead>
+                    <TableHead className="hidden text-right lg:table-cell">7 天消耗</TableHead>
+                    <TableHead className="hidden lg:table-cell">最近登录</TableHead>
                     <TableHead className="w-10" />
                   </TableRow>
                 </TableHeader>
@@ -141,17 +141,17 @@ export default function AdminUsers() {
                     <TableRow key={u.id} className="cursor-pointer" onClick={() => setDetailId(u.id)}>
                       <TableCell>
                         <div className="flex items-center gap-1.5">
-                          <span className="font-medium">{u.email}</span>
+                          <span className="max-w-[200px] truncate font-medium sm:max-w-none">{u.email}</span>
                           {u.role === 'admin' && <Pill tone="primary">管理员</Pill>}
                         </div>
                         <div className="text-[11px] text-muted-foreground">{u.nickname || '—'}{u.note ? ` · ${u.note}` : ''}</div>
                       </TableCell>
-                      <TableCell>{u.enabled ? <StatusDot tone="success">正常</StatusDot> : <StatusDot tone="muted">已停用</StatusDot>}</TableCell>
+                      <TableCell className="hidden sm:table-cell">{u.enabled ? <StatusDot tone="success">正常</StatusDot> : <StatusDot tone="muted">已停用</StatusDot>}</TableCell>
                       <TableCell className={cn('text-right font-medium tabular-nums', u.balance <= 0 && 'text-destructive')}>{num(u.balance)}</TableCell>
-                      <TableCell className="text-right text-muted-foreground tabular-nums">{multiplier(u.multiplier)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{u.key_count ?? 0}</TableCell>
-                      <TableCell className="text-right tabular-nums">{compact(u.charged_7d)}</TableCell>
-                      <TableCell className="text-muted-foreground">{u.last_login_at ? relative(u.last_login_at) : '从未'}</TableCell>
+                      <TableCell className="hidden text-right text-muted-foreground tabular-nums md:table-cell">{multiplier(u.multiplier)}</TableCell>
+                      <TableCell className="hidden text-right tabular-nums md:table-cell">{u.key_count ?? 0}</TableCell>
+                      <TableCell className="hidden text-right tabular-nums lg:table-cell">{compact(u.charged_7d)}</TableCell>
+                      <TableCell className="hidden text-muted-foreground lg:table-cell">{u.last_login_at ? relative(u.last_login_at) : '从未'}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <RowMenu actions={actions(u)} />
                       </TableCell>
@@ -177,7 +177,7 @@ export default function AdminUsers() {
 function UserDetailSheet({ id, onOpenChange, actions }: { id: number | null; onOpenChange: (o: boolean) => void; actions: (u: User) => RowAction[] }) {
   const q = useQuery({
     queryKey: ['admin', 'user', id],
-    queryFn: () => api<{ user: User; keys: ApiKey[]; ledger: LedgerEntry[]; week: UsageTotals }>(`/admin/api/users/${id}`),
+    queryFn: () => api<{ user: User; keys: ApiKey[]; ledger: LedgerEntry[]; week: UsageTotals; total_credit: number }>(`/admin/api/users/${id}`),
     enabled: id !== null,
   })
   const d = q.data
@@ -200,7 +200,7 @@ function UserDetailSheet({ id, onOpenChange, actions }: { id: number | null; onO
               <div className="grid grid-cols-3 divide-x rounded-lg border">
                 <Metric label="余额" value={num(d.user.balance)} danger={d.user.balance <= 0} />
                 <Metric label="7 天消耗" value={compact(d.week.charged_tokens)} hint={`${num(d.week.requests)} 次请求`} />
-                <Metric label="累计充值" value={compact(d.user.total_recharge)} />
+                <Metric label="累计入账" value={compact(d.total_credit)} hint="充值、赠送、退款与正向调整" />
               </div>
               <div className="flex flex-wrap gap-2">
                 {actions(d.user).map((a) => (

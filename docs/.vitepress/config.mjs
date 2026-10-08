@@ -28,6 +28,7 @@ export default defineConfig({
             { text: '项目介绍', link: '/guide/introduction' },
             { text: '快速开始', link: '/guide/quickstart' },
             { text: '认证与 Key', link: '/guide/authentication' },
+            { text: '用户、余额与兑换码', link: '/guide/platform' },
             { text: '部署方式', link: '/guide/deployment' },
           ],
         },

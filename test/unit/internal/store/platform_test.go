@@ -444,3 +444,15 @@ func TestRedeemedCodeCannotBeDeleted(t *testing.T) {
 	}
 	assertIntegrity(t, s)
 }
+
+func TestNormalizeCode(t *testing.T) {
+	want := "W2A-ABCD-EFGH-JKMN-PQRS"
+	for _, in := range []string{want, " w2a-abcd-efgh-jkmn-pqrs ", "W2A ABCD EFGH JKMN PQRS", "w2aabcdefghjkmnpqrs", "W2A_ABCD_EFGH_JKMN_PQRS"} {
+		if got := NormalizeCode(in); got != want {
+			t.Errorf("NormalizeCode(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := NormalizeCode(" custom-code "); got != "CUSTOM-CODE" {
+		t.Errorf("non-standard codes keep their dashes, got %q", got)
+	}
+}

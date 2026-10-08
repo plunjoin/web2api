@@ -17,7 +17,8 @@ export function CommandPalette({ open, onOpenChange, groups, area }: { open: boo
           { label: '新建用户', to: '/admin/users?new=1' },
           { label: '生成兑换码', to: '/admin/codes?new=1' },
           { label: '创建 API Key', to: '/admin/keys?new=1' },
-          { label: '添加号池账号', to: '/admin/accounts?new=1' },
+          { label: '添加 Gemini 网页号', to: '/admin/accounts?new=a' },
+          { label: '添加 AI Studio 号', to: '/admin/accounts?new=b' },
         ]
       : [
           { label: '创建 API 密钥', to: '/console/keys?new=1' },

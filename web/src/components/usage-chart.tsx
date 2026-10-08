@@ -59,13 +59,12 @@ export function UsageChart({ points, bucket = 'day', metric = 'charged_tokens', 
     )
   }
 
-  const interval = data.length > 16 ? Math.ceil(data.length / 8) - 1 : 0
   return (
     <div className={className}>
       <ChartContainer config={config} className="aspect-auto w-full" style={{ height }}>
         <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="18%">
           <CartesianGrid vertical={false} stroke="rgb(255 255 255 / 0.05)" />
-          <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} interval={interval} fontSize={11} />
+          <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} interval="preserveStartEnd" minTickGap={10} fontSize={11} />
           <YAxis tickLine={false} axisLine={false} width={44} tickFormatter={axis} fontSize={11} allowDecimals={false} />
           <ChartTooltip
             cursor={{ fill: 'rgb(255 255 255 / 0.04)' }}
@@ -85,7 +84,7 @@ export function UsageChart({ points, bucket = 'day', metric = 'charged_tokens', 
               )
             }}
           />
-          <Bar dataKey="value" fill="var(--color-value)" radius={[3, 3, 0, 0]} maxBarSize={28} background={{ fill: 'rgb(255 255 255 / 0.025)', radius: 3 }} />
+          <Bar dataKey="value" fill="var(--color-value)" radius={[3, 3, 0, 0]} maxBarSize={28} background={{ fill: 'rgb(255 255 255 / 0.025)', radius: 3 }} isAnimationActive={false} />
         </BarChart>
       </ChartContainer>
       {nonZero <= 2 && data.length > 4 && <p className="px-1 pt-1 text-[11px] text-muted-foreground">数据较少：只有 {nonZero} 个时间段有调用。</p>}

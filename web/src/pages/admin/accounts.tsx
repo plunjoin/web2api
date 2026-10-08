@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Ban, CheckCircle2, ChevronDown, KeyRound, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
@@ -14,19 +15,27 @@ import { StatStrip } from '@/components/stat'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { RowMenu, type RowAction } from '@/components/row-menu'
 import { Pill, StatusDot } from '@/components/status'
+import { AccountStatus, accountHealth } from '@/components/account-status'
 import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { relative } from '@/lib/format'
 import type { Account } from '@/lib/types'
 
-const statusLabel: Record<string, string> = { ok: '正常', ready: '就绪', error: '异常', initializing: '初始化中', unknown: '未知', disabled: '已停用' }
-
 export default function AdminAccounts() {
   const qc = useQueryClient()
   const confirm = useConfirm()
   const q = useQuery({ queryKey: ['admin', 'accounts'], queryFn: () => api<{ accounts: Account[] }>('/admin/api/accounts'), refetchInterval: 15_000 })
-  const [adding, setAdding] = useState<'a' | 'b' | null>(null)
+  // ?new=a / ?new=b 来自命令面板：直接打开对应的添加弹窗
+  const [params, setParams] = useSearchParams()
+  const newParam = params.get('new')
+  const adding = newParam === 'a' || newParam === 'b' ? newParam : null
+  const setAdding = (v: 'a' | 'b' | null) => {
+    const next = new URLSearchParams(params)
+    if (v) next.set('new', v)
+    else next.delete('new')
+    setParams(next, { replace: true })
+  }
   const [creds, setCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin'] })
@@ -92,8 +101,8 @@ export default function AdminAccounts() {
   ]
 
   const accounts = q.data?.accounts || []
-  const ready = accounts.filter((a) => a.enabled && a.live?.ready).length
-  const broken = accounts.filter((a) => a.enabled && !a.live?.ready).length
+  const ready = accounts.filter((a) => accountHealth(a) === 'up').length
+  const broken = accounts.filter((a) => accountHealth(a) === 'down').length
   const addMenu = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -123,8 +132,8 @@ export default function AdminAccounts() {
           loading={q.isLoading}
           items={[
             { label: '账号总数', value: accounts.length, hint: `网页 ${accounts.filter((a) => a.engine === 'a').length} · AI Studio ${accounts.filter((a) => a.engine === 'b').length}` },
-            { label: '就绪', value: ready, tone: 'success' },
-            { label: '异常', value: broken, tone: broken ? 'danger' : 'default', hint: broken ? '启用但未就绪，检查 Cookie 是否过期' : '全部正常' },
+            { label: '可用', value: ready, tone: 'success', hint: '就绪或正在处理请求' },
+            { label: '异常', value: broken, tone: broken ? 'danger' : 'default', hint: broken ? '检查 Cookie / storage_state 是否过期' : '没有异常账号' },
           ]}
         />
         <Section>
@@ -149,7 +158,6 @@ export default function AdminAccounts() {
                 </TableHeader>
                 <TableBody>
                   {accounts.map((a) => {
-                    const st = a.live?.status || a.status
                     const detail = a.live?.detail || a.detail
                     return (
                       <TableRow key={a.id} className="cursor-pointer" onClick={() => check(a)}>
@@ -163,21 +171,19 @@ export default function AdminAccounts() {
                         <TableCell className="max-w-[320px]">
                           {checking === a.id ? (
                             <StatusDot tone="warning">检查中…</StatusDot>
-                          ) : !a.enabled ? (
-                            <StatusDot tone="muted">已停用</StatusDot>
-                          ) : a.live?.ready ? (
-                            <StatusDot tone="success">就绪</StatusDot>
-                          ) : (
+                          ) : detail && accountHealth(a) !== 'up' ? (
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span>
-                                  <StatusDot tone="danger">{statusLabel[st] || st}</StatusDot>
+                                  <AccountStatus account={a} />
                                 </span>
                               </TooltipTrigger>
-                              {detail && <TooltipContent className="max-w-sm">{detail}</TooltipContent>}
+                              <TooltipContent className="max-w-sm">{detail}</TooltipContent>
                             </Tooltip>
+                          ) : (
+                            <AccountStatus account={a} />
                           )}
-                          {detail && a.enabled && !a.live?.ready && <div className="truncate text-[11px] text-muted-foreground">{detail}</div>}
+                          {detail && accountHealth(a) === 'down' && <div className="truncate text-[11px] text-muted-foreground">{detail}</div>}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">{a.live?.models ?? 0}</TableCell>
                         <TableCell className="text-muted-foreground">{relative(a.updated_at)}</TableCell>

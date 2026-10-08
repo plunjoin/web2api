@@ -1,0 +1,4 @@
+import{y as e}from"./api-CceJCpaO.js";import{t}from"./copy-6-FP8XO0.js";var n=e();function r({apiKey:e,model:r=`gemini-3.5-flash-lite`}){let i=typeof window<`u`?window.location.origin:``,a=`curl ${i}/v1/chat/completions \\
+  -H "Authorization: Bearer ${e||`sk-你的密钥`}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"${r}","messages":[{"role":"user","content":"你好"}]}'`;return(0,n.jsxs)(`div`,{className:`relative rounded-md border bg-[#0a0a0c]`,children:[(0,n.jsxs)(`div`,{className:`flex items-center justify-between border-b px-3 py-1.5`,children:[(0,n.jsxs)(`span`,{className:`text-[11px] text-muted-foreground`,children:[`OpenAI 兼容 · Base URL `,i,`/v1`]}),(0,n.jsx)(t,{value:a,label:`示例已复制`})]}),(0,n.jsx)(`pre`,{className:`overflow-x-auto p-3 font-mono text-[11.5px] leading-relaxed text-[#c9cbe0]`,children:a})]})}export{r as t};

@@ -5,8 +5,8 @@ import { adminNav, consoleNav } from '@/components/nav'
 import { ErrorState } from '@/components/states'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuth, hasConsole, isAdmin } from '@/lib/auth'
-import LoginPage from '@/pages/auth/login'
-import RegisterPage from '@/pages/auth/register'
+import LoginPage from '@/pages/access/login'
+import RegisterPage from '@/pages/access/register'
 
 const ConsoleOverview = lazy(() => import('@/pages/console/overview'))
 const ConsoleKeys = lazy(() => import('@/pages/console/keys'))

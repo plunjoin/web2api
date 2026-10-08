@@ -6,7 +6,7 @@ import { PageHeader, Section } from '@/components/page'
 import { StatStrip } from '@/components/stat'
 import { BlockSkeleton, ErrorState, EmptyState } from '@/components/states'
 import { RankBars, UsageChart } from '@/components/usage-chart'
-import { StatusDot } from '@/components/status'
+import { AccountStatus, accountHealth } from '@/components/account-status'
 import { api } from '@/lib/api'
 import { compact, duration, num } from '@/lib/format'
 import type { Account, UsagePoint, VersionInfo } from '@/lib/types'
@@ -52,6 +52,9 @@ export default function AdminOverview() {
   const accounts = useQuery({ queryKey: ['admin', 'accounts'], queryFn: () => api<{ accounts: Account[] }>('/admin/api/accounts') })
   const d = ov.data
   const p = d?.platform
+  const accs = accounts.data?.accounts
+  const accUp = accs ? accs.filter((a) => accountHealth(a) === 'up').length : (d?.accounts_ready ?? 0)
+  const accDown = accs ? accs.filter((a) => accountHealth(a) === 'down').length : 0
 
   const byModel = new Map<string, number>()
   const byKey = new Map<string, number>()
@@ -95,7 +98,7 @@ export default function AdminOverview() {
           <StatStrip
             loading={ov.isLoading}
             items={[
-              { label: '上游账号', icon: <Server />, value: `${d?.accounts_ready ?? 0} / ${d?.accounts_total ?? 0}`, tone: d && d.accounts_total > 0 && d.accounts_ready === 0 ? 'danger' : 'default', hint: `网页 ${d?.engine_a_ready ?? 0} · AI Studio ${d?.engine_b_ready ?? 0} 就绪` },
+              { label: '上游账号', icon: <Server />, value: `${accUp} / ${d?.accounts_total ?? 0}`, tone: d && d.accounts_total > 0 && accUp === 0 ? 'danger' : accDown ? 'warning' : 'default', hint: accDown ? `${accDown} 个异常，需要检查` : '可用 / 全部' },
               { label: '24 小时请求', icon: <Activity />, value: num(d?.requests_24h), hint: `计费 ${compact(d?.charged_tokens_24h)} Token` },
               { label: 'API 密钥', icon: <KeyRound />, value: num(d?.keys_total), hint: d?.keys_exhausted ? `${d.keys_exhausted} 个额度用尽` : `${d?.keys_limited ?? 0} 个设置了额度`, tone: d?.keys_exhausted ? 'warning' : 'default' },
               { label: '用户', icon: <Users />, value: num(p?.users), hint: `7 天新增 ${p?.new_users_7d ?? 0} · 活跃 ${p?.active_users_7d ?? 0}` },
@@ -145,7 +148,7 @@ export default function AdminOverview() {
                         <div className="truncate">{a.label}</div>
                         <div className="text-[11px] text-muted-foreground">{a.engine === 'a' ? 'Gemini 网页' : 'AI Studio'} · {a.live?.models ?? 0} 个模型</div>
                       </div>
-                      {!a.enabled ? <StatusDot tone="muted">停用</StatusDot> : a.live?.ready ? <StatusDot tone="success">就绪</StatusDot> : <StatusDot tone="danger">{a.live?.status || a.status}</StatusDot>}
+                      <AccountStatus account={a} />
                     </li>
                   ))}
                 </ul>

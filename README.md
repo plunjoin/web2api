@@ -27,6 +27,7 @@ Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API
               ┌─────── 号池管理平台 ───────┐
               │  号池：加号/删号/启停/检测    │  ← SQLite 持久化
               │  Key：创建/启停/删除         │
+              │  用户：注册/余额/兑换码/流水  │
               │  用量：按 Key/引擎/模型 统计  │
               └────────────┬──────────────┘
                            │ 调度（轮询/粘性/冷却/双额度通道）
@@ -52,21 +53,37 @@ go build -o web2api.exe .
 #    已有 web2api.exe 时也可以双击 start.bat
 # 3. 打开管理台
 #    http://localhost:8800/admin   （首次设置邮箱、密码、昵称及 Redis 连接，之后邮箱密码登录）
+#    用户控制台在 http://localhost:8800/console（登录页 /login，开放注册后可用 /register）
 ```
 
-## 管理台功能
+## 管理台与用户控制台
 
-| 页面 | 能力 |
+前端是 React + shadcn/ui 单页应用（深色、紧凑的 Linear 风格，中文界面），与网关打包在同一个二进制里：
+`/admin` 管理台、`/console` 用户控制台、`/login` 与 `/register` 共用一个页面入口。
+
+| 管理台页面 | 能力 |
 |---|---|
-| 总览 | 账号总数/就绪数、双引擎就绪、24h 请求量与原始/计费 Token、近 24 小时趋势图、额度使用最高的 Key、版本与运行时长 |
-| 号池 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 `__Secure-1PSID`/`__Secure-1PSIDTS`；AI Studio 号粘贴 `storage-state.json`；状态徽章（就绪/初始化/异常/冷却）、换 Cookie、健康检测、搜索与筛选 |
-| API Key | 创建 `sk-` Key（即时生效）、启停、删除、脱敏显示/复制、**Token 额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、重置已用额度、重新生成密钥 |
-| 用量 | 逐请求明细（输入/输出/总 Token、上游真实或估算、倍率、计费 Token、延迟、错误）、按 Key × 模型汇总与成功率、按小时/天趋势图、按时间/Key/模型筛选、CSV 导出 |
-| 模型 | 模型目录、引擎、能力标签（文本/图片/视频/音频/4K）、生效倍率、本机已验证的 4K 请求示例 |
-| 设置 | 模型倍率（含默认 `*`）、系统升级（含 403 等拉取错误的具体原因）、版本信息 |
-| 接口文档 | 管理 API（OpenAPI 3.1）浏览/搜索/下载、网关错误码表 |
+| 概览 | 上游账号可用数、24h 请求与计费 Token、用户数与活跃度、用户余额合计、30 天充值/消耗、未使用兑换码、14 天趋势、模型与 Key 消耗排行 |
+| 用户 | 搜索/筛选、点击查看详情（Key、最近流水、7 天用量）、新建用户、调整余额（必填备注）、修改角色与用户倍率、重置密码、停用、删除 |
+| 兑换码 | 批量生成（面值/数量/批次/有效期/备注）、生成后一键复制或下载 CSV、按状态/批次筛选与导出、停用/整批停用/删除未使用的码、查看兑换人 |
+| 余额流水 | 全部用户的余额变动（变动前后余额），按用户/类型/时间/关键词筛选，入账与出账合计 |
+| 号池账号 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 `__Secure-1PSID`/`__Secure-1PSIDTS`；AI Studio 号粘贴 `storage-state.json`；实时状态、换 Cookie、健康检测 |
+| API 密钥 | 管理员 Key 与用户 Key，**Token 额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、清零已用额度、重新生成 |
+| 用量 | 按 Key × 模型汇总、趋势图（计费 Token/总 Token/请求）、逐请求明细与扣费计算过程、对用户请求退款、CSV 导出 |
+| 模型与定价 | 模型目录、默认倍率 `*`、逐模型倍率行内编辑与恢复默认 |
+| 设置 | 开放注册、注册赠送、新用户默认倍率、每人 Key 上限、视频计费、不计量接口开关、站点名与公告、版本与一键升级 |
+| 接口文档 | 网关 API 与管理 API 的 OpenAPI 3.1 浏览、搜索与导出 |
 
-管理台为深色主题，支持快捷键：<kbd>1</kbd>–<kbd>7</kbd> 切换页面、<kbd>R</kbd> 刷新、<kbd>/</kbd> 聚焦搜索、<kbd>Esc</kbd> 关闭弹窗。
+| 用户控制台页面 | 能力 |
+|---|---|
+| 概览 | 余额、今日/7 天消耗、14 天趋势、模型分布、最近请求、接入示例、公告 |
+| API 密钥 | 创建（可设额度上限）、复制、改名、停用、重新生成、删除 |
+| 用量明细 / 账单 | 每次请求的 Token 与扣费过程；余额流水（充值、扣费、退款、调整） |
+| 兑换充值 | 输入兑换码即时到账，查看兑换记录 |
+| 模型与价格 / 账号设置 | 可用模型与对自己生效的倍率；昵称与密码 |
+
+全局 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> 打开命令面板（跳转页面、新建用户/Key/兑换码），表格行可点击查看详情，行尾菜单收纳所有操作，危险操作有确认弹窗。
+用户、余额、兑换码的完整说明见 [docs/guide/platform.md](docs/guide/platform.md)。
 
 **账号状态实时回报**：引擎A Cookie 校验/失效/配额；引擎B 登录态、冷却、模型资格、
 额度 Tier 均由上游协议实时同步到管理台。
@@ -116,15 +133,30 @@ GET    /admin/api/models                           模型目录（含生效倍�
 GET    /admin/api/version                          版本、提交号、Go 版本
 GET    /admin/api/status                           引擎详细状态
 GET    /admin/api/docs                             OpenAPI 3.1 JSON（可导入 Postman/Insomnia）
+# 用户与余额（需要 admin 角色，完整说明见 docs/guide/platform.md）
+GET/POST            /admin/api/users                     用户列表 / 新建
+GET/PATCH/DELETE    /admin/api/users/{id}                详情 / 修改角色、启停、倍率 / 删除
+POST                /admin/api/users/{id}/balance        {amount, note} 调整余额（写流水）
+POST                /admin/api/users/{id}/password       重置密码
+GET                 /admin/api/ledger                    余额流水
+POST                /admin/api/usage/records/{id}/refund 对一次请求退款
+GET/POST            /admin/api/redeem-codes              兑换码列表 / 批量生成
+PATCH/DELETE        /admin/api/redeem-codes/{id}         启停 / 删除（仅未兑换）
+GET                 /admin/api/redeem-codes/export.csv   导出
+GET/PUT             /admin/api/settings                  平台设置（开放注册、赠送、默认倍率等）
 ```
+
+`/admin/api/auth/login` 与 `/api/auth/login` 是同一个登录接口：root 管理员和平台用户都用邮箱密码登录。
 
 ### Token 额度与倍率
 
 - 每次 `/v1/chat/completions` 请求记录一条明细：`prompt_tokens`、`completion_tokens`、`total_tokens`。
   引擎B（AI Studio）和 upstream 引擎返回的真实用量直接采用；拿不到时（引擎A、流式响应等）按文本长度估算，
   明细中 `estimated: true`，管理台显示「估算」。
-- 计费：`charged_tokens = ⌈total_tokens × 模型倍率 × Key 倍率⌉`。模型倍率按「精确模型 → `*` 默认 → 1」查找；
-  Key 倍率即分组默认倍率（默认 1）。失败请求不计费。
+- 计费：`charged_tokens = ⌈total_tokens × 模型倍率 × Key 倍率 × 用户倍率⌉`。模型倍率按「精确模型 → `*` 默认 → 1」查找；
+  Key 倍率即分组默认倍率（默认 1）；用户倍率只对用户自己创建的 Key 生效（管理员 Key 恒为 1）。失败请求不计费。
+- 用户 Key 的扣费在写用量记录的同一个事务里从用户余额扣除，并写一条余额流水；余额 ≤ 0 后返回
+  `402 {"error":{"type":"insufficient_quota","code":"insufficient_balance"}}`。管理员 Key 不涉及余额，行为不变。
 - Key 的 `token_limit > 0` 时，`tokens_used ≥ token_limit` 的新请求返回
   `429 {"error":{"type":"insufficient_quota","code":"token_quota_exceeded",...}}`，并附带
   `X-Web2api-Token-Limit` / `X-Web2api-Tokens-Used` 响应头。扣减发生在请求完成后，所以越线的那次请求（以及并发请求）可能略超额度。
@@ -132,19 +164,22 @@ GET    /admin/api/docs                             OpenAPI 3.1 JSON（可导入 
   超过每分钟上限 `429 rpm_limit_exceeded`（含 `Retry-After`）。
 - 只有 `/v1/chat/completions` 计量 Token；`/v1/videos`、多模态透传与 Gemini 原生路由受 Key 的启停、过期、额度、白名单与 RPM 约束，但不产生 Token 明细。
 
-### 管理台前端构建
+### 前端构建
 
-管理台是单个 `internal/webui/dist/index.html`（Vue 3 全局构建，模板在页面内编译）加预编译的 Tailwind CSS，
-全部通过 `//go:embed` 内嵌进二进制，不访问任何 CDN。`dist/` 中的构建产物已提交到仓库，**只运行 `go build` 即可，无需 Node**。
-修改 `dist/index.html` 或 `styles.css` 后重新生成 CSS：
+前端源码在 `web/`（Vite + React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui），`npm run build` 输出到
+`internal/webui/dist/`，由 `//go:embed` 内嵌进二进制，不访问任何 CDN。**构建产物已提交到仓库，只运行 `go build` 即可，无需 Node。**
+修改前端后：
 
 ```bash
-cd internal/webui
-npm ci          # Tailwind 3.4.10 + Vue 3.4.38（版本锁定在 package-lock.json）
-npm run build   # = node build.cjs：生成 dist/assets/admin.css（压缩）并复制 vue.global.prod.js
+cd web
+npm ci
+npm run dev        # 本地开发：http://localhost:5173/login，接口代理到 127.0.0.1:8800
+npm run typecheck
+npm run build      # 输出到 ../internal/webui/dist，然后提交 dist 的变化
 ```
 
-然后提交更新后的 `dist/assets/admin.css`。Tailwind 只扫描 `dist/index.html`，动态拼接的类名需要以完整字符串出现在该文件中。
+Docker 镜像构建时会在 Node 阶段重新执行 `npm ci && npm run build`，再由 Go 阶段内嵌，所以镜像总是使用与源码一致的前端。
+构建产物文件名带内容哈希（如 `index-DTrA9p-0.js`），网关对其返回 `immutable` 长缓存；入口页面 `no-store`，升级后不会混用旧资源。
 
 管理台的「接口文档」页会读取同一份 OpenAPI 文档，也可以直接下载
 `/admin/api/docs` 的 JSON 文件。管理接口统一返回 JSON，失败响应示例：
@@ -272,10 +307,9 @@ chmod +x build.sh
 
 ## 测试与构建
 
-管理台 Vue 和 CSS 已内嵌在程序中，运行时不需要访问 CDN。修改 Go 或页面源码后，
-先停止正在运行的旧程序，再执行下面的构建命令并重新启动；已有 EXE 不会自动读取新 HTML。
-静态资源已随源码提供，普通 Go 构建不需要 Node.js。修改页面的样式类或升级前端依赖时，
-在根目录执行 `npm ci --prefix internal/webui` 和 `npm run build --prefix internal/webui` 更新资源。
+前端已构建并内嵌在程序中，运行时不需要访问 CDN，普通 Go 构建不需要 Node.js。修改 Go 或前端源码后，
+先停止正在运行的旧程序，再执行下面的构建命令并重新启动。修改 `web/` 下的前端时，先执行
+`npm ci --prefix web && npm run typecheck --prefix web && npm run build --prefix web` 更新 `internal/webui/dist`。
 
 ```powershell
 go test ./...     # 存储层 + 协议解析 + 网关/管理台集成 + 动态号池装配
@@ -289,7 +323,7 @@ go build -o web2api.exe .
 main.go                     入口（go run . / go build .）
 test/                       全部测试与测试服务（go test ./...）
 internal/geminiapi/          官方 Gemini 后端（全参数 / SSE / 上传）
-internal/store/              SQLite：账号 / Key / 用量
+internal/store/              SQLite：账号 / Key / 用量 / 用户 / 余额流水 / 兑换码
 internal/config/             YAML 配置 + 环境变量
 internal/model/              OpenAI 协议数据结构
 internal/engine/             引擎接口定义
@@ -298,8 +332,9 @@ internal/engine/upstream/    OpenAI 兼容上游（upstream 模式引擎B）
 internal/provider/           双引擎装配 + 动态号池 + 调度路由（manager.go）
 internal/gateway/            OpenAI 网关（动态 Key 鉴权 + 用量埋点）
 internal/session/            Redis 会话通信（支持 ACL、数据库和 TLS）
-internal/admin/              JWT 登录与管理 REST API（/admin/api/*）
-internal/webui/              内嵌管理台单页（/admin）
+internal/admin/              JWT 登录、管理 REST API（/admin/api/*）与用户 API（/api/*）
+internal/webui/              内嵌前端（/admin、/console、/login、/register）
+web/                         前端源码（React + shadcn/ui，构建到 internal/webui/dist）
 internal/limiter/           令牌桶限流
 internal/aistudio2api/      引擎B 协议内核（已合并进主模块，MIT）
 ```

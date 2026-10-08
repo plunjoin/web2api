@@ -646,9 +646,21 @@ func generateCode() (string, error) {
 	return b.String(), nil
 }
 
-// NormalizeCode 用户输入的兑换码：去空白、转大写。
+// NormalizeCode 用户输入的兑换码：去空白、转大写；分隔符写错（空格、下划线、漏写短横线）时
+// 按 W2A-XXXX-XXXX-XXXX-XXXX 的标准格式重新分组。其他格式只去空白、转大写。
 func NormalizeCode(code string) string {
-	return strings.ToUpper(strings.Join(strings.Fields(code), ""))
+	plain := strings.ToUpper(strings.Join(strings.Fields(code), ""))
+	var compact strings.Builder
+	for _, r := range plain {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			compact.WriteRune(r)
+		}
+	}
+	c := compact.String()
+	if len(c) == 3+16 && strings.HasPrefix(c, "W2A") {
+		return "W2A-" + c[3:7] + "-" + c[7:11] + "-" + c[11:15] + "-" + c[15:19]
+	}
+	return plain
 }
 
 // NewCodes 批量生成兑换码参数。

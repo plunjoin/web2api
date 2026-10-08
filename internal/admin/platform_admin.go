@@ -97,9 +97,10 @@ func (a *API) handleAdminUser(w http.ResponseWriter, r *http.Request, p *Princip
 		return
 	}
 	keys, _ := a.st.ListUserKeys(u.ID)
-	ledger, _, _, _ := a.st.ListLedger(store.LedgerFilter{UserID: u.ID, Limit: 20})
+	ledger, _, sums, _ := a.st.ListLedger(store.LedgerFilter{UserID: u.ID, Limit: 20})
 	week, _ := a.st.UsageBreakdown(store.UsageFilter{Since: time.Now().AddDate(0, 0, -7).Unix(), UserID: u.ID})
-	writeJSON(w, 200, map[string]any{"user": u, "keys": keys, "ledger": ledger, "week": sumBreakdown(week)})
+	writeJSON(w, 200, map[string]any{"user": u, "keys": keys, "ledger": ledger, "week": sumBreakdown(week),
+		"total_credit": sums["credit"], "total_debit": sums["debit"]})
 }
 
 // handleAdminPatchUser PATCH /admin/api/users/{id} {nickname, role, enabled, multiplier, note}
