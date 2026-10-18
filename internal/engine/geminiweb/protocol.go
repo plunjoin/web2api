@@ -33,6 +33,7 @@ const (
 	HeaderExtra1         = "x-goog-ext-73010989-jspb"
 	HeaderExtra2         = "x-goog-ext-73010990-jspb"
 	ContentTypeForm      = "application/x-www-form-urlencoded;charset=utf-8"
+	browserUserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 )
 
 // 错误码。
@@ -98,7 +99,7 @@ var defaultMetadata = []any{"", "", "", nil, nil, nil, nil, nil, nil, ""}
 // inner[0]=[prompt,0,nil,fileData,nil,nil,0]，其余字段遵循 gemini-common 的 JSPB 布局：
 // [1]=语言 [6]=[1] [7]=1(流式) [10]=1 [11]=0 [17]=[[0]] [18]=0 [27]=1 [30]=[4]
 // [41]=[1] [53]=0 [59]=请求UUID [61]=[] [68]=1 [79]=模型号 [80]=思考级别。
-func buildGenerateForm(prompt, lang, accessToken string, modelNumber int, extendedThinking, temporary bool) url.Values {
+func buildGenerateForm(prompt, lang, accessToken string, modelNumber int, extendedThinking, temporary bool, requestID string) url.Values {
 	inner := make([]any, 81)
 	inner[0] = []any{prompt, 0, nil, nil, nil, nil, 0}
 	inner[1] = []any{lang}
@@ -116,7 +117,10 @@ func buildGenerateForm(prompt, lang, accessToken string, modelNumber int, extend
 		inner[45] = 1
 	}
 	inner[53] = 0
-	inner[59] = strings.ToUpper(randID())
+	if requestID == "" {
+		requestID = newUUID()
+	}
+	inner[59] = requestID
 	inner[61] = []any{}
 	inner[68] = 1
 	if modelNumber > 0 {
@@ -151,10 +155,48 @@ func buildModelHeaders(modelID string, capacity, modelNumber int) map[string]str
 	return h
 }
 
+// extendGenerateModelHeader 在模型选择头末尾追加思考级别和客户端会话 ID。
+// 返回追加前的模型号，调用方要把它写进 f.req[79]。会话 ID 缺失时 Google 会直接拒绝请求。
+func extendGenerateModelHeader(raw string, extendedThinking bool, sessionID string) (string, int) {
+	var header []any
+	if err := json.Unmarshal([]byte(raw), &header); err != nil || len(header) == 0 {
+		return raw, 0
+	}
+	modelNumber, _ := toInt(header[len(header)-1])
+	thinking := 1
+	if extendedThinking {
+		thinking = 2
+	}
+	header = append(header, thinking, sessionID)
+	out, err := json.Marshal(header)
+	if err != nil {
+		return raw, modelNumber
+	}
+	return string(out), modelNumber
+}
+
+// extendBatchModelHeader 给 batchexecute 的模型头追加客户端会话 ID。
+func extendBatchModelHeader(raw, sessionID string) string {
+	if sessionID == "" {
+		return raw
+	}
+	var header []any
+	if err := json.Unmarshal([]byte(raw), &header); err != nil {
+		return raw
+	}
+	header = append(header, sessionID)
+	out, err := json.Marshal(header)
+	if err != nil {
+		return raw
+	}
+	return string(out)
+}
+
 // buildBatchExecHeaders 构造 batchexecute 的公共请求头。
 func buildBatchExecHeaders(sessionID string) map[string]string {
+	raw := `[1,null,null,null,null,null,null,null,[4,5,6,8],null,null,null,null,null,null,null]`
 	return map[string]string{
-		HeaderModelKey: `[1,null,null,null,null,null,null,null,[4,5,6,8],null,null,null,null,null,null,null]`,
+		HeaderModelKey: extendBatchModelHeader(raw, sessionID),
 		HeaderExtra1:   "[0]",
 	}
 }

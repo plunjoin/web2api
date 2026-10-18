@@ -314,6 +314,35 @@ func (runtime *goWAARuntime) do(ctx context.Context, method string, target strin
 	return runtime.doWithClient(ctx, runtime.client, method, target, body, headers)
 }
 
+// downloadPublic 用独立的 IPv4 客户端拉取公开资源，不附带账号 Cookie。
+// 共享的 WAA 客户端走浏览器指纹或默认拨号时，www.google.com/js/bg 会 EOF 或 TLS 握手超时。
+func (runtime *goWAARuntime) downloadPublic(ctx context.Context, target string, headers http.Header) (*http.Response, error) {
+	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", addr)
+	}
+	transport.TLSHandshakeTimeout = 15 * time.Second
+	client := &http.Client{Transport: transport}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header = headers.Clone()
+	if request.Header.Get("User-Agent") == "" {
+		userAgent := runtime.userAgent
+		if userAgent == "" {
+			userAgent = publicDiscoveryUserAgent
+		}
+		request.Header.Set("User-Agent", userAgent)
+	}
+	if request.Header.Get("Accept-Language") == "" && runtime.acceptLanguage != "" {
+		request.Header.Set("Accept-Language", runtime.acceptLanguage)
+	}
+	return client.Do(request)
+}
+
 func (runtime *goWAARuntime) doWithClient(ctx context.Context, client *http.Client, method string, target string, body []byte, headers http.Header) (*http.Response, error) {
 	if client == nil {
 		return nil, errors.New("AI Studio HTTP 客户端未初始化")
@@ -530,10 +559,9 @@ func (runtime *goWAARuntime) loadInterpreter(ctx context.Context, challenge waa.
 	headers := http.Header{}
 	headers.Set("Accept", "*/*")
 	headers.Set("Referer", aiStudioOrigin+"/")
-	headers.Set("Sec-Fetch-Dest", "script")
-	headers.Set("Sec-Fetch-Mode", "no-cors")
-	headers.Set("Sec-Fetch-Site", "cross-site")
-	response, err := runtime.do(ctx, http.MethodGet, challenge.InterpreterURL, nil, headers)
+	// 解释器是按 hash 公开的静态脚本。浏览器指纹通道会带上整包 Google Cookie，
+	// www.google.com/js/bg 会直接把连接掐掉（EOF），随后每一次生成都失败。
+	response, err := runtime.downloadPublic(ctx, challenge.InterpreterURL, headers)
 	if err != nil {
 		return "", fmt.Errorf("下载 WAA 解释器: %w", err)
 	}

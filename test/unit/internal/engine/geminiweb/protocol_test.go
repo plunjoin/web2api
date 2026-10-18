@@ -56,7 +56,7 @@ func TestParseInitParamsEmpty(t *testing.T) {
 }
 
 func TestBuildGenerateForm(t *testing.T) {
-	form := buildGenerateForm("你好", "en", "token123", 1, false, true)
+	form := buildGenerateForm("你好", "en", "token123", 1, false, true, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")
 	if form.Get("at") != "token123" {
 		t.Fatalf("at 参数错误: %q", form.Get("at"))
 	}
@@ -93,6 +93,35 @@ func TestBuildGenerateForm(t *testing.T) {
 	// [45] 临时会话标志
 	if inner[45] != float64(1) {
 		t.Fatalf("inner[45] 应为 1: %v", inner[45])
+	}
+	if inner[59] != "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE" {
+		t.Fatalf("inner[59] 应与请求 UUID 相同: %v", inner[59])
+	}
+}
+
+func TestExtendGenerateModelHeader(t *testing.T) {
+	raw := buildModelHeaders("fbb127bbb056c959", 1, 3)[HeaderModelKey]
+	got, modelNumber := extendGenerateModelHeader(raw, false, "SESSION-ID")
+	if modelNumber != 3 {
+		t.Fatalf("模型号应为 3: %d", modelNumber)
+	}
+	var header []any
+	if err := jsonUnmarshal([]byte(got), &header); err != nil {
+		t.Fatal(err)
+	}
+	if header[len(header)-2] != float64(1) || header[len(header)-1] != "SESSION-ID" {
+		t.Fatalf("模型头末尾应为思考级别和会话 ID: %v", header[len(header)-2:])
+	}
+}
+
+func TestExtendBatchModelHeader(t *testing.T) {
+	got := buildBatchExecHeaders("SESSION-ID")[HeaderModelKey]
+	var header []any
+	if err := jsonUnmarshal([]byte(got), &header); err != nil {
+		t.Fatal(err)
+	}
+	if header[len(header)-1] != "SESSION-ID" {
+		t.Fatalf("batchexecute 模型头缺少会话 ID: %v", header[len(header)-1])
 	}
 }
 

@@ -86,6 +86,7 @@ func NewClient(name, psid, psidts, proxy string, timeout time.Duration) *Client 
 		http:          &http.Client{Transport: transport, Timeout: 0},
 		reqID:         time.Now().Nanosecond()%90000 + 10000,
 		accountStatus: StatusAvailable,
+		sessionUUID:   newUUID(),
 		lastActivity:  time.Now(),
 	}
 }
@@ -183,9 +184,7 @@ func (c *Client) Init(ctx context.Context) error {
 		return err
 	}
 
-	// 3. RPC 初始化（账号状态 + 模型发现，锁外网络）
-	models, status, rpcErr := c.initRPC(ctx)
-
+	// 会话参数必须先于 batchexecute。缺 at / bl / f.sid 时，初始化 RPC 会直接 400。
 	c.mu.Lock()
 	c.accessToken = params.AccessToken
 	c.buildLabel = params.BuildLabel
@@ -193,8 +192,14 @@ func (c *Client) Init(ctx context.Context) error {
 	c.language = params.Language
 	c.pushID = params.PushID
 	if c.sessionUUID == "" {
-		c.sessionUUID = strings.ToUpper(randID())
+		c.sessionUUID = newUUID()
 	}
+	c.mu.Unlock()
+
+	// 3. RPC 初始化（账号状态 + 模型发现，锁外网络）
+	models, status, rpcErr := c.initRPC(ctx)
+
+	c.mu.Lock()
 	c.ready = true
 	c.lastActivity = time.Now()
 	if rpcErr == nil {
@@ -223,6 +228,7 @@ func (c *Client) fetchInitParams(ctx context.Context) (*initParams, error) {
 	}
 	c.jar.ApplyToRequest(req)
 	req.Header.Set("Content-Type", ContentTypeForm)
+	applyBrowserHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("访问 %s 失败: %w", EndpointInit, err)
@@ -285,31 +291,46 @@ func (c *Client) initRPC(ctx context.Context) ([]*AvailableModel, int, error) {
 
 // batchExecute 发送 batchexecute RPC，返回解析后的帧。
 func (c *Client) batchExecute(ctx context.Context, payloads []rpcPayload) ([]any, error) {
-	params := url.Values{}
-	params.Set("rpcids", stringsJoinID(payloads))
-	params.Set("hl", c.language)
-	params.Set("_reqid", strconv.Itoa(c.nextReqID()))
-	params.Set("rt", "c")
-	params.Set("source-path", "/app")
-	if c.buildLabel != "" {
-		params.Set("bl", c.buildLabel)
-	}
-	if c.sessionID != "" {
-		params.Set("f.sid", c.sessionID)
+	c.mu.Lock()
+	language := c.language
+	accessToken := c.accessToken
+	buildLabel := c.buildLabel
+	sessionID := c.sessionID
+	sessionUUID := c.sessionUUID
+	reqID := c.nextReqID()
+	jar := c.jar
+	c.mu.Unlock()
+	if language == "" {
+		language = DefaultLanguage
 	}
 
-	form := buildBatchForm(c.accessToken, payloads)
+	params := url.Values{}
+	params.Set("rpcids", stringsJoinID(payloads))
+	params.Set("hl", language)
+	params.Set("_reqid", strconv.Itoa(reqID))
+	params.Set("rt", "c")
+	params.Set("source-path", "/app")
+	if buildLabel != "" {
+		params.Set("bl", buildLabel)
+	}
+	if sessionID != "" {
+		params.Set("f.sid", sessionID)
+	}
+
+	form := buildBatchForm(accessToken, payloads)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, EndpointBatchExec+"?"+params.Encode(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	c.jar.ApplyToRequest(req)
+	jar.ApplyToRequest(req)
 	req.Header.Set("Content-Type", ContentTypeForm)
 	req.Header.Set("Origin", "https://gemini.google.com")
 	req.Header.Set("Referer", "https://gemini.google.com/")
 	req.Header.Set("X-Same-Domain", "1")
-	req.Header.Set(HeaderModelKey, `[1,null,null,null,null,null,null,null,[4,5,6,8],null,null,null,null,null,null,null]`)
-	req.Header.Set(HeaderExtra1, "[0]")
+	applyBrowserHeaders(req)
+	for key, value := range buildBatchExecHeaders(sessionUUID) {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -402,17 +423,24 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string, modelName st
 	language := c.language
 	accessToken := c.accessToken
 	jar := c.jar
-	modelNumber := 0
+	sessionUUID := c.sessionUUID
+	modelNumber := 1
 	modelHeaders := map[string]string{}
 	if model != nil {
-		modelNumber = model.ModelNumber
 		modelHeaders = model.Header()
+		extended, number := extendGenerateModelHeader(modelHeaders[HeaderModelKey], false, sessionUUID)
+		modelHeaders[HeaderModelKey] = extended
+		if number > 0 {
+			modelNumber = number
+		} else if model.ModelNumber > 0 {
+			modelNumber = model.ModelNumber
+		}
 	}
-	uuidVal := strings.ToUpper(randID())
+	requestID := newUUID()
 	c.lastActivity = time.Now()
 	c.mu.Unlock()
 
-	form := buildGenerateForm(prompt, language, accessToken, modelNumber, false, true)
+	form := buildGenerateForm(prompt, language, accessToken, modelNumber, false, true, requestID)
 	u := c.generateURL(reqID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -423,7 +451,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string, modelName st
 	req.Header.Set("Origin", "https://gemini.google.com")
 	req.Header.Set("Referer", "https://gemini.google.com/")
 	req.Header.Set("X-Same-Domain", "1")
-	req.Header.Set(HeaderModelStreamKey, fmt.Sprintf(`["%s",1]`, uuidVal))
+	applyBrowserHeaders(req)
+	req.Header.Set(HeaderModelStreamKey, fmt.Sprintf(`["%s",1]`, requestID))
 	for k, v := range modelHeaders {
 		req.Header.Set(k, v)
 	}
@@ -554,6 +583,7 @@ func (c *Client) Rotate(ctx context.Context) error {
 	jar.ApplyToRequest(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "https://accounts.google.com")
+	applyBrowserHeaders(req)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -608,6 +638,13 @@ func (c *Client) StopAutoRefresh() {
 		c.refreshStop = nil
 	}
 	c.mu.Unlock()
+}
+
+func applyBrowserHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", browserUserAgent)
+	if req.Header.Get("Accept-Language") == "" {
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	}
 }
 
 func (c *Client) setStatus(status int) {
