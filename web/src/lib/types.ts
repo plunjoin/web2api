@@ -162,6 +162,12 @@ export interface VersionInfo {
   go_version: string
 }
 
+export interface AccountCooldown {
+  scope: string
+  until: number
+  reason?: string
+}
+
 export interface AccountLive {
   id: string
   label: string
@@ -170,6 +176,8 @@ export interface AccountLive {
   status: string
   detail?: string
   models: number
+  tier?: string
+  cooldowns?: AccountCooldown[]
 }
 
 export interface Account {

@@ -15,7 +15,7 @@ import { StatStrip } from '@/components/stat'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { RowMenu, type RowAction } from '@/components/row-menu'
 import { Pill, StatusDot } from '@/components/status'
-import { AccountStatus, accountHealth } from '@/components/account-status'
+import { AccountStatus, CooldownLines, TierPill, accountHealth } from '@/components/account-status'
 import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
@@ -138,7 +138,7 @@ export default function AdminAccounts() {
         />
         <Section>
           {q.isLoading ? (
-            <TableSkeleton rows={4} cols={5} />
+            <TableSkeleton rows={4} cols={6} />
           ) : q.isError ? (
             <ErrorState error={q.error} onRetry={() => q.refetch()} />
           ) : accounts.length === 0 ? (
@@ -151,6 +151,7 @@ export default function AdminAccounts() {
                     <TableHead>账号</TableHead>
                     <TableHead>引擎</TableHead>
                     <TableHead>状态</TableHead>
+                    <TableHead>权益</TableHead>
                     <TableHead className="text-right">模型数</TableHead>
                     <TableHead>更新时间</TableHead>
                     <TableHead className="w-10" />
@@ -184,6 +185,10 @@ export default function AdminAccounts() {
                             <AccountStatus account={a} />
                           )}
                           {detail && accountHealth(a) === 'down' && <div className="truncate text-[11px] text-muted-foreground">{detail}</div>}
+                          <CooldownLines cooldowns={a.live?.cooldowns} />
+                        </TableCell>
+                        <TableCell>
+                          <TierPill tier={a.live?.tier} />
                         </TableCell>
                         <TableCell className="text-right tabular-nums">{a.live?.models ?? 0}</TableCell>
                         <TableCell className="text-muted-foreground">{relative(a.updated_at)}</TableCell>

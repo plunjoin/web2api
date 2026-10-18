@@ -6,7 +6,7 @@ import { PageHeader, Section } from '@/components/page'
 import { StatStrip } from '@/components/stat'
 import { BlockSkeleton, ErrorState, EmptyState } from '@/components/states'
 import { RankBars, UsageChart } from '@/components/usage-chart'
-import { AccountStatus, accountHealth } from '@/components/account-status'
+import { AccountStatus, accountHealth, tierLabel } from '@/components/account-status'
 import { api } from '@/lib/api'
 import { compact, duration, num } from '@/lib/format'
 import type { Account, UsagePoint, VersionInfo } from '@/lib/types'
@@ -147,7 +147,7 @@ export default function AdminOverview() {
                     <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-2 text-[13px]">
                       <div className="min-w-0">
                         <div className="truncate">{a.label}</div>
-                        <div className="text-[11px] text-muted-foreground">{a.engine === 'a' ? 'Gemini 网页' : 'AI Studio'} · {a.live?.models ?? 0} 个模型</div>
+                        <div className="text-[11px] text-muted-foreground">{[a.engine === 'a' ? 'Gemini 网页' : 'AI Studio', a.live?.tier ? tierLabel(a.live.tier) : '', `${a.live?.models ?? 0} 个模型`].filter(Boolean).join(' · ')}</div>
                       </div>
                       <AccountStatus account={a} />
                     </li>

@@ -176,15 +176,24 @@ func (e *GeminiWebEngine) ReplaceCredentials(id, psid, psidts string) error {
 	return e.AddAccount(id, label, psid, psidts)
 }
 
+// AccountCooldown 账号仍在生效的额度冷却。Until 为 Unix 秒。
+type AccountCooldown struct {
+	Scope  string `json:"scope"`
+	Until  int64  `json:"until"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // AccountState 账号实时状态（供管理台）。
 type AccountState struct {
-	ID      string `json:"id"`
-	Label   string `json:"label"`
-	Enabled bool   `json:"enabled"`
-	Ready   bool   `json:"ready"`
-	Status  string `json:"status"`
-	Detail  string `json:"detail,omitempty"`
-	Models  int    `json:"models"`
+	ID        string            `json:"id"`
+	Label     string            `json:"label"`
+	Enabled   bool              `json:"enabled"`
+	Ready     bool              `json:"ready"`
+	Status    string            `json:"status"`
+	Detail    string            `json:"detail,omitempty"`
+	Models    int               `json:"models"`
+	Tier      string            `json:"tier,omitempty"`
+	Cooldowns []AccountCooldown `json:"cooldowns,omitempty"`
 }
 
 // AccountStates 全部账号状态。

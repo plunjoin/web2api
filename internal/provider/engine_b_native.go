@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -716,10 +717,12 @@ func (e *NativeAIStudioEngine) AccountStates() []AccountState {
 	var out []AccountState
 	for _, status := range e.pool.Status() {
 		state := AccountState{
-			ID:      status.ID,
-			Label:   status.Label,
-			Enabled: status.Enabled,
-			Models:  len(status.Models),
+			ID:        status.ID,
+			Label:     status.Label,
+			Enabled:   status.Enabled,
+			Models:    len(status.Models),
+			Tier:      status.BenefitTier,
+			Cooldowns: activeCooldowns(status.Cooldowns),
 		}
 		switch {
 		case !status.Enabled || status.State == aistudio.AccountDisabled:
@@ -745,6 +748,32 @@ func (e *NativeAIStudioEngine) AccountStates() []AccountState {
 		}
 		out = append(out, state)
 	}
+	return out
+}
+
+// activeCooldowns 只保留尚未到期的冷却，并按恢复时间排序。
+func activeCooldowns(cooldowns map[string]aistudio.CooldownState) []AccountCooldown {
+	if len(cooldowns) == 0 {
+		return nil
+	}
+	now := time.Now()
+	out := make([]AccountCooldown, 0, len(cooldowns))
+	for scope, cooldown := range cooldowns {
+		if !cooldown.Active(now) {
+			continue
+		}
+		out = append(out, AccountCooldown{
+			Scope:  scope,
+			Until:  cooldown.Until.Unix(),
+			Reason: cooldown.Reason,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Until == out[j].Until {
+			return out[i].Scope < out[j].Scope
+		}
+		return out[i].Until < out[j].Until
+	})
 	return out
 }
 

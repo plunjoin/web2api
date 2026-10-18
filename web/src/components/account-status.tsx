@@ -1,5 +1,6 @@
-import { StatusDot } from '@/components/status'
-import type { Account } from '@/lib/types'
+import { StatusDot, Pill } from '@/components/status'
+import { relative } from '@/lib/format'
+import type { Account, AccountCooldown } from '@/lib/types'
 
 /** 号池账号状态：busy（正在处理请求）、cooldown（限流冷却）不是故障。 */
 export const accountStatusMeta: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'muted' }> = {
@@ -27,4 +28,36 @@ export function AccountStatus({ account }: { account: Account }) {
   const s = account.live?.status || account.status
   const meta = accountStatusMeta[s] || { label: s, tone: account.live?.ready ? 'success' : 'danger' }
   return <StatusDot tone={meta.tone}>{meta.label}</StatusDot>
+}
+
+const tierNames: Record<string, string> = { Free: '免费', Plus: 'Plus', Pro: 'Pro', Ultra: 'Ultra' }
+
+export function tierLabel(tier?: string) {
+  if (!tier) return ''
+  return tierNames[tier] || tier
+}
+
+export function TierPill({ tier }: { tier?: string }) {
+  if (!tier) return <span className="text-xs text-muted-foreground">—</span>
+  const tone = tier === 'Ultra' || tier === 'Pro' ? 'primary' : tier === 'Plus' ? 'success' : 'muted'
+  return <Pill tone={tone}>{tierLabel(tier)}</Pill>
+}
+
+function cooldownScope(scope: string) {
+  if (!scope || scope === '*') return '全部模型'
+  if (scope.startsWith('build:')) return `Build · ${scope.slice(6)}`
+  return scope
+}
+
+export function CooldownLines({ cooldowns }: { cooldowns?: AccountCooldown[] }) {
+  if (!cooldowns?.length) return null
+  return (
+    <div className="mt-1 space-y-0.5">
+      {cooldowns.map((item) => (
+        <div key={`${item.scope}-${item.until}`} className="truncate text-[11px] text-muted-foreground" title={item.reason || undefined}>
+          {cooldownScope(item.scope)} · {relative(item.until)}恢复
+        </div>
+      ))}
+    </div>
+  )
 }
