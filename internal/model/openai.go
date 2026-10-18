@@ -181,6 +181,8 @@ type ModelInfo struct {
 	DisplayName string `json:"display_name,omitempty"`
 	Available   bool   `json:"available"`
 	Engine      string `json:"engine,omitempty"`
+	// Kind 用途分类：chat、image、video、music、speech、embedding。
+	Kind string `json:"kind,omitempty"`
 }
 
 // NewCompletion 构造标准非流式响应。

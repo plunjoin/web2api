@@ -696,7 +696,7 @@ func (m *Manager) ListModels() []model.ModelInfo {
 		for _, mi := range m.engineA.ListModels() {
 			if !seen[mi.ID] {
 				seen[mi.ID] = true
-				out = append(out, mi)
+				out = append(out, withModelKind(mi))
 			}
 		}
 	}
@@ -705,11 +705,18 @@ func (m *Manager) ListModels() []model.ModelInfo {
 			key := mi.ID + "@b"
 			if !seen[key] {
 				seen[key] = true
-				out = append(out, mi)
+				out = append(out, withModelKind(mi))
 			}
 		}
 	}
 	return out
+}
+
+func withModelKind(mi model.ModelInfo) model.ModelInfo {
+	if mi.Kind == "" {
+		mi.Kind = model.ClassifyKind(mi.ID, mi.DisplayName, nil)
+	}
+	return mi
 }
 
 // Status 全部引擎状态。

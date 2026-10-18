@@ -86,7 +86,7 @@ func addPlatformSpec(spec map[string]any) map[string]any {
 		},
 		"/api/user/profile":  map[string]any{"patch": map[string]any{"tags": user, "summary": "修改昵称", "requestBody": body("ProfileInput"), "responses": map[string]any{"200": response("user")}}},
 		"/api/user/password": map[string]any{"post": map[string]any{"tags": user, "summary": "修改密码", "description": "成功后其他会话失效，并返回新的 access_token。", "requestBody": body("ChangePasswordInput"), "responses": map[string]any{"200": response("access_token"), "400": response("原密码错误或新密码不符合要求")}}},
-		"/api/user/models":   map[string]any{"get": map[string]any{"tags": user, "summary": "可用模型与对我生效的倍率", "responses": map[string]any{"200": response("models、user_multiplier")}}},
+		"/api/user/models":   map[string]any{"get": map[string]any{"tags": user, "summary": "可用模型、用途分类与对我生效的倍率", "description": "kind 为 chat、image、video、music、speech、embedding。", "responses": map[string]any{"200": response("models、user_multiplier")}}},
 	}
 	schemas := map[string]any{
 		"UserCreateInput":       map[string]any{"type": "object", "required": []string{"email", "password"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "minLength": 8, "writeOnly": true}, "nickname": str, "role": role, "balance": integer, "multiplier": multiplier, "note": str}},

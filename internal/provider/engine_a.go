@@ -293,6 +293,7 @@ func (e *GeminiWebEngine) ListModels() []model.ModelInfo {
 				DisplayName: m.DisplayName,
 				Available:   m.Available,
 				Engine:      "a",
+				Kind:        model.ClassifyKind(m.Name, m.DisplayName, nil),
 			})
 		}
 	}

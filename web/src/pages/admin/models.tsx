@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { PageHeader, Section, Toolbar } from '@/components/page'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { Pill, StatusDot } from '@/components/status'
+import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/model-kind'
 import { CopyButton } from '@/components/copy'
 import { api } from '@/lib/api'
 import { multiplier, relative } from '@/lib/format'
@@ -24,25 +25,31 @@ export default function AdminModels() {
   const models = useQuery({ queryKey: ['admin', 'models'], queryFn: () => api<{ models: ModelInfo[] }>('/admin/api/models') })
   const mults = useQuery({ queryKey: ['admin', 'multipliers'], queryFn: () => api<{ multipliers: MultItem[]; default_multiplier: number; formula: string }>('/admin/api/multipliers') })
   const [search, setSearch] = useState('')
+  const [kind, setKind] = useState('all')
   const [editing, setEditing] = useState<string | null>(null)
   const [value, setValue] = useState('')
 
   const explicit = useMemo(() => new Map((mults.data?.multipliers || []).map((m) => [m.model, m])), [mults.data])
   const rows = useMemo(() => {
     // 合并：在线模型目录 + 已设置倍率但当前不在目录中的模型。
-    const map = new Map<string, { id: string; display?: string; engines: Set<string>; available: boolean }>()
+    const map = new Map<string, { id: string; display?: string; engines: Set<string>; available: boolean; kind?: string }>()
     for (const m of models.data?.models || []) {
-      const row = map.get(m.id) || { id: m.id, display: m.display_name, engines: new Set<string>(), available: false }
+      const row = map.get(m.id) || { id: m.id, display: m.display_name, engines: new Set<string>(), available: false, kind: m.kind }
       if (m.engine) row.engines.add(m.engine)
       row.available ||= m.available
+      if (m.kind && m.kind !== 'chat') row.kind = m.kind
+      else if (!row.kind) row.kind = m.kind
       map.set(m.id, row)
     }
     for (const m of mults.data?.multipliers || []) {
       if (m.model !== '*' && !map.has(m.model)) map.set(m.model, { id: m.model, engines: new Set(), available: false })
     }
     const s = search.trim().toLowerCase()
-    return [...map.values()].filter((r) => !s || r.id.toLowerCase().includes(s)).sort((a, b) => a.id.localeCompare(b.id))
-  }, [models.data, mults.data, search])
+    return [...map.values()]
+      .filter((r) => kind === 'all' || r.kind === kind)
+      .filter((r) => !s || r.id.toLowerCase().includes(s) || (r.display || '').toLowerCase().includes(s) || modelKindLabel(r.kind).includes(s))
+      .sort((a, b) => a.id.localeCompare(b.id))
+  }, [models.data, mults.data, search, kind])
 
   const save = async (model: string) => {
     const v = Number(value)
@@ -107,21 +114,23 @@ export default function AdminModels() {
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索模型" className="h-7 w-56 pl-8 text-xs" />
         </div>
+        <ModelKindFilter value={kind} onChange={setKind} />
         <span className="text-xs text-muted-foreground">点击倍率即可编辑，回车保存，Esc 取消</span>
       </Toolbar>
       <Section title={`${rows.length} 个模型`}>
         {models.isLoading || mults.isLoading ? (
-          <TableSkeleton rows={8} cols={4} />
+          <TableSkeleton rows={8} cols={5} />
         ) : models.isError ? (
           <ErrorState error={models.error} onRetry={() => models.refetch()} />
         ) : !rows.length ? (
-          <EmptyState icon={<Boxes />} title={search ? '没有匹配的模型' : '模型目录为空'} description={search ? undefined : '添加上游账号并就绪后，模型会自动出现在这里。'} />
+          <EmptyState icon={<Boxes />} title={search || kind !== 'all' ? '没有匹配的模型' : '模型目录为空'} description={search || kind !== 'all' ? undefined : '添加上游账号并就绪后，模型会自动出现在这里。'} />
         ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead>模型 ID</TableHead>
+                  <TableHead>用途</TableHead>
                   <TableHead>引擎</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead className="w-48 text-right">倍率</TableHead>
@@ -139,6 +148,9 @@ export default function AdminModels() {
                           <CopyButton value={r.id} label="模型 ID 已复制" className="opacity-50 hover:opacity-100" />
                         </div>
                         {r.display && r.display !== r.id && <div className="text-[11px] text-muted-foreground">{r.display}</div>}
+                      </TableCell>
+                      <TableCell>
+                        <ModelKindPill kind={r.kind} />
                       </TableCell>
                       <TableCell className="space-x-1">
                         {[...r.engines].map((e) => (

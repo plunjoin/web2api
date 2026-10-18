@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { PageHeader, Section, Toolbar } from '@/components/page'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { StatusDot } from '@/components/status'
+import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/model-kind'
 import { CopyButton } from '@/components/copy'
 import { api } from '@/lib/api'
 import { multiplier, num } from '@/lib/format'
@@ -14,13 +15,18 @@ interface M {
   id: string
   display_name?: string
   available: boolean
+  kind?: string
   multiplier: number
 }
 
 export default function ConsoleModels() {
   const q = useQuery({ queryKey: ['user', 'models'], queryFn: () => api<{ models: M[]; user_multiplier: number; formula: string }>('/api/user/models') })
   const [search, setSearch] = useState('')
-  const list = useMemo(() => (q.data?.models || []).filter((m) => !search || m.id.toLowerCase().includes(search.toLowerCase())), [q.data, search])
+  const [kind, setKind] = useState('all')
+  const list = useMemo(() => {
+    const s = search.trim().toLowerCase()
+    return (q.data?.models || []).filter((m) => (kind === 'all' || m.kind === kind) && (!s || m.id.toLowerCase().includes(s) || (m.display_name || '').toLowerCase().includes(s) || modelKindLabel(m.kind).includes(s)))
+  }, [q.data, search, kind])
   return (
     <>
       <PageHeader title="模型与价格" description={q.data?.formula || '扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉'} />
@@ -29,21 +35,23 @@ export default function ConsoleModels() {
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索模型" className="h-7 w-56 pl-8 text-xs" />
         </div>
+        <ModelKindFilter value={kind} onChange={setKind} />
         {q.data && <span className="text-xs text-muted-foreground">你的用户倍率 {multiplier(q.data.user_multiplier)}，已计入下表</span>}
       </Toolbar>
       <Section>
         {q.isLoading ? (
-          <TableSkeleton rows={8} cols={4} />
+          <TableSkeleton rows={8} cols={5} />
         ) : q.isError ? (
           <ErrorState error={q.error} onRetry={() => q.refetch()} />
         ) : !list.length ? (
-          <EmptyState icon={<Boxes />} title={search ? '没有匹配的模型' : '暂无可用模型'} description={search ? '换个关键词试试。' : '管理员还没有接入上游账号。'} />
+          <EmptyState icon={<Boxes />} title={search || kind !== 'all' ? '没有匹配的模型' : '暂无可用模型'} description={search || kind !== 'all' ? '换个筛选条件试试。' : '管理员还没有接入上游账号。'} />
         ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead>模型 ID</TableHead>
+                  <TableHead>用途</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead className="text-right">你的倍率</TableHead>
                   <TableHead className="text-right">1,000 Token 约扣</TableHead>
@@ -58,6 +66,9 @@ export default function ConsoleModels() {
                         <CopyButton value={m.id} label="模型 ID 已复制" className="opacity-60 hover:opacity-100" />
                       </div>
                       {m.display_name && m.display_name !== m.id && <div className="text-[11px] text-muted-foreground">{m.display_name}</div>}
+                    </TableCell>
+                    <TableCell>
+                      <ModelKindPill kind={m.kind} />
                     </TableCell>
                     <TableCell>{m.available ? <StatusDot tone="success">可用</StatusDot> : <StatusDot tone="muted">暂不可用</StatusDot>}</TableCell>
                     <TableCell className="text-right tabular-nums">{multiplier(m.multiplier)}</TableCell>

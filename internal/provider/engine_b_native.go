@@ -252,6 +252,7 @@ func (e *NativeAIStudioEngine) ListModels() []model.ModelInfo {
 			DisplayName: m.Name,
 			Available:   true,
 			Engine:      "b",
+			Kind:        model.ClassifyKind(m.ID, m.Name, m.Capabilities),
 		})
 	}
 	return out

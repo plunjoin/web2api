@@ -189,6 +189,7 @@ export interface ModelInfo {
   display_name?: string
   engine?: string
   available: boolean
+  kind?: string
   multiplier: number
 }
 

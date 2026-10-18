@@ -241,13 +241,14 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 		DisplayName string  `json:"display_name,omitempty"`
 		Engine      string  `json:"engine,omitempty"`
 		Available   bool    `json:"available"`
+		Kind        string  `json:"kind,omitempty"`
 		Multiplier  float64 `json:"multiplier"`
 	}
 	out := []modelView{}
 	if a.mgr != nil {
 		for _, m := range a.mgr.ListModels() {
 			multiplier, _ := a.st.ModelMultiplierFor(m.ID)
-			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Engine: m.Engine, Available: m.Available, Multiplier: multiplier})
+			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Engine: m.Engine, Available: m.Available, Kind: m.Kind, Multiplier: multiplier})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

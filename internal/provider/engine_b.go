@@ -53,6 +53,9 @@ func (b *AIStudioEngine) ListModels() []model.ModelInfo {
 	out := make([]model.ModelInfo, 0, len(models))
 	for _, m := range models {
 		m.Engine = "b"
+		if m.Kind == "" {
+			m.Kind = model.ClassifyKind(m.ID, m.DisplayName, nil)
+		}
 		out = append(out, m)
 	}
 	return out

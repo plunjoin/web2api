@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"web2api/internal/model"
 	"web2api/internal/session"
 	"web2api/internal/store"
 )
@@ -421,18 +422,24 @@ func (a *API) handleUserModels(w http.ResponseWriter, r *http.Request, p *Princi
 		ID          string  `json:"id"`
 		DisplayName string  `json:"display_name,omitempty"`
 		Available   bool    `json:"available"`
+		Kind        string  `json:"kind,omitempty"`
 		Multiplier  float64 `json:"multiplier"`
 	}
 	out := []modelView{}
 	if a.mgr != nil {
-		seen := map[string]bool{}
+		seen := map[string]int{}
 		for _, m := range a.mgr.ListModels() {
-			if seen[m.ID] {
+			if index, ok := seen[m.ID]; ok {
+				out[index].Kind = model.PreferKind(out[index].Kind, m.Kind)
+				out[index].Available = out[index].Available || m.Available
+				if out[index].DisplayName == "" {
+					out[index].DisplayName = m.DisplayName
+				}
 				continue
 			}
-			seen[m.ID] = true
+			seen[m.ID] = len(out)
 			mm, _ := a.st.ModelMultiplierFor(m.ID)
-			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Available: m.Available, Multiplier: mm * p.User.Multiplier})
+			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Available: m.Available, Kind: m.Kind, Multiplier: mm * p.User.Multiplier})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
