@@ -12,9 +12,14 @@ server:
   log_level: "info"
 
 routing:
-  default_engine: "auto"           # auto | a | b；auto 默认优先使用引擎B
+  default_engine: "auto"           # auto | a | b | codex | antigravity | kiro | workbuddy
   engine_a_models: []              # 显式强制走引擎A 的模型（支持前缀与 * 通配）
   engine_b_models: []              # 显式强制走引擎B 的模型
+  engine_models:                    # 订阅引擎的强制路由模型
+    codex: []                      # 例：["gpt-*"]
+    antigravity: []                # 例：["claude-sonnet-*", "gemini-3-*"]
+    kiro: []                       # 例：["claude-sonnet-4"]
+    workbuddy: []                  # 例：["auto-chat"]
 
 # ------------------------------------------------------------
 # 引擎A：gemini.google.com 网页版（Go 原生逆向，Cookie 会话）
@@ -65,3 +70,39 @@ gemini_api:
   access_token: ""                 # GCS files:register 等需要 OAuth 的功能
   proxy: ""
   timeout_seconds: 0               # 0 不限制总时长，允许长后台 SSE
+
+# ------------------------------------------------------------
+# 订阅引擎：codex / antigravity / kiro / workbuddy
+# 每个引擎独立账号池，账号建议在管理台添加（OAuth 授权或粘贴凭据）；
+# 启用后即可在 /v1/chat/completions 使用对应模型（模型名见管理台）
+#
+# 模型路由：默认 auto 模式下按模型名自动命中；也可用上面的
+# routing.engine_models 或 routing.default_engine 显式指定。
+# ------------------------------------------------------------
+engines:
+  # OpenAI Codex（ChatGPT 订阅号，模型 gpt-5.x / gpt-6 系列）
+  codex:
+    enabled: false
+    proxy: ""                      # 访问 chatgpt.com 需代理，如 http://127.0.0.1:7890
+    accounts: []                   # 种子：- name: ""  refresh_token: ""  email: ""
+
+  # Google Antigravity（Cloud AI Companion，Claude + Gemini 双模型通道）
+  antigravity:
+    enabled: false
+    proxy: ""                      # 访问 googleapis.com 需代理
+    accounts: []                   # 种子：- name: ""  refresh_token: ""  project_id: ""
+
+  # AWS Kiro（CodeWhisperer，Claude 模型；refresh_token 从
+  # Kiro IDE 的 ~/.aws/sso/cache/kiro-auth-token.json 提取）
+  # 注意：Kiro 上游风控较严，建议少量账号自用
+  kiro:
+    enabled: false
+    proxy: ""
+    accounts: []
+
+  # 腾讯 CodeBuddy / WorkBuddy（SaaS 订阅；管理台扫码授权或粘贴 accessToken）
+  workbuddy:
+    enabled: false
+    base_url: "https://www.codebuddy.ai"
+    proxy: ""
+    accounts: []

@@ -5,9 +5,11 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,10 +20,11 @@ type Store struct {
 	db *sql.DB
 }
 
-// Account 账号记录（engine=a：Gemini 网页号；engine=b：AI Studio 号）。
+// Account 账号记录（engine=a：Gemini 网页号；engine=b：AI Studio 号；
+// 其余为订阅引擎：codex / antigravity / kiro / workbuddy）。
 type Account struct {
 	ID          int64  `json:"id"`
-	Engine      string `json:"engine"` // a | b
+	Engine      string `json:"engine"` // a | b | codex | antigravity | kiro | workbuddy
 	Label       string `json:"label"`
 	Credentials string `json:"-"` // JSON 字符串（凭据，不对外输出）
 	Enabled     bool   `json:"enabled"`
@@ -115,6 +118,11 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate() error {
+	// 历史版本的 accounts 表带 CHECK(engine IN ('a','b')) 约束，
+	// 阻止 codex/antigravity 等新引擎写入；检测到时重建为无约束版本。
+	if err := s.migrateAccountsEngineCheck(); err != nil {
+		return fmt.Errorf("迁移 accounts 表失败: %w", err)
+	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS admin_settings (
 			id INTEGER PRIMARY KEY CHECK(id=1),
@@ -228,6 +236,66 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("迁移失败: %w", err)
 		}
 	}
+	return nil
+}
+
+// migrateAccountsEngineCheck 在旧库的 accounts 表仍带
+// CHECK(engine IN ('a','b')) 约束时重建为无引擎约束版本（保留全部数据）。
+func (s *Store) migrateAccountsEngineCheck() error {
+	var ddl string
+	err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'`).Scan(&ddl)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // 表尚未创建（首次启动），交给后续 CREATE TABLE
+		}
+		return err
+	}
+	if !strings.Contains(strings.ToUpper(ddl), "CHECK") || !strings.Contains(strings.ToUpper(ddl), "ENGINE IN") {
+		return nil // 已是无约束版本
+	}
+	// cookie_sessions 的外键引用 accounts；重建期间先关闭外键约束。
+	if _, err := s.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		_, _ = s.db.Exec(`PRAGMA foreign_keys = ON`)
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+		_, _ = s.db.Exec(`PRAGMA foreign_keys = ON`)
+	}()
+	for _, stmt := range []string{
+		`DROP TRIGGER IF EXISTS invalidate_cookie_session`,
+		// 不采用 RENAME 旧表的方式：SQLite 会把 cookie_sessions 的外键与
+		// 触发器引用一并重写为临时表名，DROP 后即悬空。改为直接建新表、
+		// 复制、删旧表、再改名，使外键引用名（accounts）保持不变。
+		`CREATE TABLE accounts_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			engine TEXT NOT NULL,
+			label TEXT NOT NULL,
+			credentials TEXT NOT NULL DEFAULT '{}',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'unknown',
+			detail TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO accounts_new (id, engine, label, credentials, enabled, status, detail, created_at, updated_at)
+			SELECT id, engine, label, credentials, enabled, status, detail, created_at, updated_at FROM accounts`,
+		`DROP TABLE accounts`,
+		`ALTER TABLE accounts_new RENAME TO accounts`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_engine_label ON accounts(engine, label)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("重建 accounts 表失败: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`PRAGMA foreign_keys = ON`)
 	return nil
 }
 

@@ -15,7 +15,75 @@ type Config struct {
 	Routing   RoutingConfig   `yaml:"routing"`
 	EngineA   EngineAConfig   `yaml:"engine_a"`
 	EngineB   EngineBConfig   `yaml:"engine_b"`
+	Engines   EnginesConfig   `yaml:"engines"`
 	GeminiAPI GeminiAPIConfig `yaml:"gemini_api"`
+}
+
+// EnginesConfig 订阅引擎配置（codex/antigravity/kiro/workbuddy）。
+// 每个引擎独立账号池，账号在管理台运行时增删，也可用静态种子导入。
+type EnginesConfig struct {
+	Codex       CodexConfig       `yaml:"codex"`
+	Antigravity AntigravityConfig `yaml:"antigravity"`
+	Kiro        KiroConfig        `yaml:"kiro"`
+	WorkBuddy   WorkBuddyConfig    `yaml:"workbuddy"`
+}
+
+// CodexConfig OpenAI Codex 引擎：ChatGPT 订阅号（OAuth refresh_token）。
+type CodexConfig struct {
+	Enabled  bool              `yaml:"enabled"`
+	Proxy    string            `yaml:"proxy"`
+	Accounts []CodexAccountConf `yaml:"accounts"` // 静态种子（运行时账号请走管理台）
+}
+
+// CodexAccountConf Codex 种子账号（refresh_token 可从 Codex CLI ~/.codex/auth.json 导入）。
+type CodexAccountConf struct {
+	Name         string `yaml:"name"`
+	RefreshToken string `yaml:"refresh_token"`
+	Email        string `yaml:"email"`
+}
+
+// AntigravityConfig Google Antigravity 引擎：Cloud AI Companion 订阅号。
+type AntigravityConfig struct {
+	Enabled  bool                    `yaml:"enabled"`
+	Proxy    string                  `yaml:"proxy"`
+	Accounts []AntigravityAccountConf `yaml:"accounts"`
+}
+
+// AntigravityAccountConf Antigravity 种子账号。
+type AntigravityAccountConf struct {
+	Name         string `yaml:"name"`
+	RefreshToken string `yaml:"refresh_token"`
+	Email        string `yaml:"email"`
+	ProjectID    string `yaml:"project_id"` // cloudaicompanion 项目，留空则自动 onboard
+}
+
+// KiroConfig AWS Kiro 引擎：CodeWhisperer 订阅号。
+type KiroConfig struct {
+	Enabled  bool             `yaml:"enabled"`
+	Proxy    string           `yaml:"proxy"`
+	Accounts []KiroAccountConf `yaml:"accounts"`
+}
+
+// KiroAccountConf Kiro 种子账号（refresh_token 从 Kiro IDE 登录态提取）。
+type KiroAccountConf struct {
+	Name         string `yaml:"name"`
+	RefreshToken string `yaml:"refresh_token"`
+	Email        string `yaml:"email"`
+}
+
+// WorkBuddyConfig 腾讯 CodeBuddy/WorkBuddy 引擎。
+type WorkBuddyConfig struct {
+	Enabled  bool                 `yaml:"enabled"`
+	Proxy    string               `yaml:"proxy"`
+	BaseURL  string               `yaml:"base_url"`
+	Accounts []WorkBuddyAccountConf `yaml:"accounts"`
+}
+
+// WorkBuddyAccountConf WorkBuddy 种子账号。
+type WorkBuddyAccountConf struct {
+	Name   string `yaml:"name"`
+	Token  string `yaml:"token"`
+	Email  string `yaml:"email"`
 }
 
 // GeminiAPIConfig configures the official backend independently of web accounts.
@@ -39,9 +107,12 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine string   `yaml:"default_engine"`  // auto | a | b
-	EngineAModels []string `yaml:"engine_a_models"` // 强制走引擎A 的模型名（前缀匹配）
-	EngineBModels []string `yaml:"engine_b_models"` // 强制走引擎B 的模型名（前缀匹配）
+	DefaultEngine string              `yaml:"default_engine"`  // auto | a | b | codex | antigravity | kiro | workbuddy
+	EngineAModels []string            `yaml:"engine_a_models"` // 强制走引擎A 的模型名（前缀匹配）
+	EngineBModels []string            `yaml:"engine_b_models"` // 强制走引擎B 的模型名（前缀匹配）
+	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），
+	// 优先级高于 engine_a/b_models。
+	EngineModels map[string][]string `yaml:"engine_models"`
 }
 
 // EngineAConfig 引擎A：gemini.google.com 网页版（原生 Go 逆向）。

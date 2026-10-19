@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -15,31 +16,84 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
+	"web2api/internal/upstream/workbuddy"
 )
 
 // Manager 引擎注册表、模型路由与号池动态管理。
 type Manager struct {
 	mu sync.RWMutex
 
-	st      *store.Store
-	cfg     *config.Config
+	st  *store.Store
+	cfg *config.Config
+
+	// 引擎A/B 为历史双引擎，保留专用字段以兼容 Veo 等能力接口。
 	engineA *GeminiWebEngine
 	engineB initializableEngine
+
+	// 全部引擎（含 a/b）的注册表与顺序。
+	engineOrder []string
+	engines     map[string]engine.Engine
+	// 有账号池的引擎（号池动态管理统一分发）。
+	pools map[string]accountPool
 
 	defaultEngine string
 	engineAModels []string
 	engineBModels []string
+	// 新引擎（codex/antigravity/kiro/workbuddy）的模型路由配置。
+	engineModels map[string][]string
+}
+
+// accountPool 有账号池的引擎统一接口（引擎A/B 与订阅引擎都实现）。
+type accountPool interface {
+	RemoveAccount(engineID string) error
+	SetEnabled(engineID string, enabled bool) error
+	AccountStates() []AccountState
 }
 
 func (m *Manager) GeminiAPIConfig() config.GeminiAPIConfig { return m.cfg.GeminiAPI }
 
 func (m *Manager) Close() {
-	if m.engineA != nil {
-		m.engineA.Close()
+	for _, name := range m.engineOrder {
+		if eng, ok := m.engines[name]; ok {
+			if closer, ok := eng.(interface{ Close() }); ok {
+				closer.Close()
+			}
+		}
 	}
-	if closer, ok := m.engineB.(interface{ Close() }); ok {
-		closer.Close()
+}
+
+// register 登记引擎与其账号池能力。
+func (m *Manager) register(name string, eng engine.Engine, pool accountPool) {
+	if eng == nil {
+		return
 	}
+	if m.engines[name] != nil {
+		return
+	}
+	m.engines[name] = eng
+	m.engineOrder = append(m.engineOrder, name)
+	if pool != nil {
+		m.pools[name] = pool
+	}
+}
+
+// Engines 全部引擎。
+func (m *Manager) Engines() map[string]engine.Engine {
+	out := make(map[string]engine.Engine, len(m.engines))
+	for k, v := range m.engines {
+		out[k] = v
+	}
+	return out
+}
+
+// EngineMeta 管理台引擎元数据。
+type EngineMeta struct {
+	Name        string `json:"name"`
+	Describe    string `json:"describe"`
+	Enabled     bool   `json:"enabled"`
+	AccountPool bool   `json:"account_pool"`
+	OAuth       string `json:"oauth,omitempty"`       // codex/antigravity=authorize+code；workbuddy=start+poll
+	Credential  string `json:"credential,omitempty"`   // 凭据字段说明
 }
 
 // initializableEngine 需要异步初始化的引擎。
@@ -68,16 +122,17 @@ type AIStudioCredentials struct {
 	Proxy        string          `json:"proxy,omitempty"`
 }
 
-// AccountInput 是统一账号添加协议。账号凭据统一使用引擎B的
-// Playwright storage-state JSON；引擎A会从同一份状态中提取 Google Cookie。
+// AccountInput 是统一账号添加协议。引擎A/B 沿用 storage-state JSON；
+// 订阅引擎（codex/antigravity/kiro/workbuddy）使用 credentials JSON 对象。
 type AccountInput struct {
-	Engine       string `json:"engine"`
-	Label        string `json:"label"`
-	Email        string `json:"email"`
-	StorageState string `json:"storage_state"`
-	Locale       string `json:"locale,omitempty"`
-	Timezone     string `json:"timezone,omitempty"`
-	Proxy        string `json:"proxy,omitempty"`
+	Engine       string          `json:"engine"`
+	Label        string          `json:"label"`
+	Email        string          `json:"email"`
+	StorageState string          `json:"storage_state"`
+	Locale       string          `json:"locale,omitempty"`
+	Timezone     string          `json:"timezone,omitempty"`
+	Proxy        string          `json:"proxy,omitempty"`
+	Credentials  json.RawMessage `json:"credentials,omitempty"` // 订阅引擎凭据对象
 }
 
 // NewManager 构建引擎管理器。
@@ -88,6 +143,9 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		defaultEngine: strings.ToLower(cfg.Routing.DefaultEngine),
 		engineAModels: cfg.Routing.EngineAModels,
 		engineBModels: cfg.Routing.EngineBModels,
+		engineModels:  cfg.Routing.EngineModels,
+		engines:       map[string]engine.Engine{},
+		pools:         map[string]accountPool{},
 	}
 	if m.defaultEngine == "" {
 		m.defaultEngine = "auto"
@@ -100,6 +158,7 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		}
 		m.engineA = ea
 		ea.SetStore(st)
+		m.register("a", ea, ea)
 	}
 	if cfg.EngineB.Enabled {
 		mode := strings.ToLower(strings.TrimSpace(cfg.EngineB.Mode))
@@ -122,10 +181,32 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		}
 		if eb != nil {
 			m.engineB = eb
+			m.register("b", eb, nil)
+			// native 模式的账号池能力在具体实例上
+			if native, ok := eb.(*NativeAIStudioEngine); ok && native != nil {
+				m.pools["b"] = native
+			}
 		}
 	}
-	if m.engineA == nil && m.engineB == nil && !cfg.GeminiAPI.Enabled {
-		return nil, errors.New("至少启用一个后端（engine_a、engine_b 或 gemini_api）")
+	// 订阅引擎：codex / antigravity / kiro / workbuddy
+	if cfg.Engines.Codex.Enabled {
+		ec := NewCodex(cfg.Engines.Codex, st)
+		m.register(ec.Name(), ec, ec)
+	}
+	if cfg.Engines.Antigravity.Enabled {
+		ea := NewAntigravity(cfg.Engines.Antigravity, st)
+		m.register(ea.Name(), ea, ea)
+	}
+	if cfg.Engines.Kiro.Enabled {
+		ek := NewKiro(cfg.Engines.Kiro, st)
+		m.register(ek.Name(), ek, ek)
+	}
+	if cfg.Engines.WorkBuddy.Enabled {
+		eb := NewWorkBuddy(cfg.Engines.WorkBuddy, st)
+		m.register(eb.Name(), eb, eb)
+	}
+	if m.engineA == nil && m.engineB == nil && !cfg.GeminiAPI.Enabled && len(m.engines) == 0 {
+		return nil, errors.New("至少启用一个后端（engine_a、engine_b、engines 或 gemini_api）")
 	}
 	return m, nil
 }
@@ -165,6 +246,35 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 			if _, err := m.st.CreateAccount("a", seedLabel("a", acc.Name), string(creds), true); err != nil {
 				continue
 			}
+		}
+		// 订阅引擎种子（codex / antigravity / kiro / workbuddy）
+		for _, acc := range m.cfg.Engines.Codex.Accounts {
+			if strings.TrimSpace(acc.RefreshToken) == "" {
+				continue
+			}
+			creds := marshalCompact(CodexCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email})
+			_, _ = m.st.CreateAccount("codex", seedLabel("codex", firstNonEmpty(acc.Name, acc.Email)), creds, true)
+		}
+		for _, acc := range m.cfg.Engines.Antigravity.Accounts {
+			if strings.TrimSpace(acc.RefreshToken) == "" {
+				continue
+			}
+			creds := marshalCompact(AntigravityCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email, ProjectID: acc.ProjectID})
+			_, _ = m.st.CreateAccount("antigravity", seedLabel("antigravity", firstNonEmpty(acc.Name, acc.Email)), creds, true)
+		}
+		for _, acc := range m.cfg.Engines.Kiro.Accounts {
+			if strings.TrimSpace(acc.RefreshToken) == "" {
+				continue
+			}
+			creds := marshalCompact(KiroCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email})
+			_, _ = m.st.CreateAccount("kiro", seedLabel("kiro", firstNonEmpty(acc.Name, acc.Email)), creds, true)
+		}
+		for _, acc := range m.cfg.Engines.WorkBuddy.Accounts {
+			if strings.TrimSpace(acc.Token) == "" {
+				continue
+			}
+			creds := marshalCompact(WorkBuddyCredentials{Token: acc.Token, Email: acc.Email})
+			_, _ = m.st.CreateAccount("workbuddy", seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		accounts, err = m.st.ListAccounts()
 		if err != nil {
@@ -220,6 +330,89 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 			}
 		}
 	}
+
+	// 订阅引擎账号装配（codex / antigravity / kiro / workbuddy）
+	for _, acc := range accounts {
+		switch acc.Engine {
+		case "codex":
+			if eng := m.codexEngine(); eng != nil {
+				var creds CodexCredentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.RefreshToken != "" {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
+		case "antigravity":
+			if eng := m.antigravityEngine(); eng != nil {
+				var creds AntigravityCredentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.RefreshToken != "" {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
+		case "kiro":
+			if eng := m.kiroEngine(); eng != nil {
+				var creds KiroCredentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.RefreshToken != "" {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
+		case "workbuddy":
+			if eng := m.mWorkBuddyEngine(); eng != nil {
+				var creds WorkBuddyCredentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.Token != "" {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// codexEngine / antigravityEngine / kiroEngine / mWorkBuddyEngine 返回订阅引擎实例。
+func (m *Manager) codexEngine() *CodexEngine {
+	if eng, ok := m.engines["codex"]; ok {
+		if c, ok := eng.(*CodexEngine); ok {
+			return c
+		}
+	}
+	return nil
+}
+
+func (m *Manager) antigravityEngine() *AntigravityEngine {
+	if eng, ok := m.engines["antigravity"]; ok {
+		if a, ok := eng.(*AntigravityEngine); ok {
+			return a
+		}
+	}
+	return nil
+}
+
+func (m *Manager) kiroEngine() *KiroEngine {
+	if eng, ok := m.engines["kiro"]; ok {
+		if k, ok := eng.(*KiroEngine); ok {
+			return k
+		}
+	}
+	return nil
+}
+
+func (m *Manager) mWorkBuddyEngine() *WorkBuddyEngine {
+	if eng, ok := m.engines["workbuddy"]; ok {
+		if w, ok := eng.(*WorkBuddyEngine); ok {
+			return w
+		}
+	}
 	return nil
 }
 
@@ -248,6 +441,15 @@ func seedLabel(engine, name string) string {
 	return name
 }
 
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // EngineA / EngineB 返回引擎（未启用时返回 nil 接口）。
 func (m *Manager) EngineA() engine.Engine {
 	if m.engineA == nil {
@@ -263,17 +465,115 @@ func (m *Manager) EngineB() engine.Engine {
 	return m.engineB
 }
 
+// EngineReady 指定引擎是否就绪（未注册返回 false）。
+func (m *Manager) EngineReady(name string) bool {
+	eng, ok := m.engines[name]
+	if !ok {
+		return false
+	}
+	return eng.Ready()
+}
+
+// EngineReadyMap 全部引擎的就绪状态（engine_a/engine_b 含在其中）。
+func (m *Manager) EngineReadyMap() map[string]bool {
+	out := make(map[string]bool, len(m.engines))
+	for name, eng := range m.engines {
+		out[name] = eng.Ready()
+	}
+	return out
+}
+
+// EngineProxy 返回引擎的全局代理配置（账号级代理优先级在引擎内部处理）。
+func (m *Manager) EngineProxy(name string) string {
+	switch name {
+	case "a":
+		return m.cfg.EngineA.Proxy
+	case "b":
+		return m.cfg.EngineB.Proxy
+	case "codex":
+		return m.cfg.Engines.Codex.Proxy
+	case "antigravity":
+		return m.cfg.Engines.Antigravity.Proxy
+	case "kiro":
+		return m.cfg.Engines.Kiro.Proxy
+	case "workbuddy":
+		return m.cfg.Engines.WorkBuddy.Proxy
+	}
+	return ""
+}
+
+// WorkBuddyBaseURL workbuddy 引擎的上游地址。
+func (m *Manager) WorkBuddyBaseURL() string {
+	if u := strings.TrimSpace(m.cfg.Engines.WorkBuddy.BaseURL); u != "" {
+		return u
+	}
+	return workbuddy.DefaultBaseURL
+}
+
+// ==================== OAuth 授权会话 ====================
+
+// OAuthPendingSession 管理台发起的 OAuth 授权会话（authorize → exchange）。
+type OAuthPendingSession struct {
+	Engine      string    `json:"engine"`
+	SessionID   string    `json:"session_id"`
+	State       string    `json:"-"`
+	CodeVerifier string   `json:"-"`
+	AuthURL     string    `json:"auth_url"`
+	Proxy       string    `json:"-"`
+	CreatedAt   time.Time `json:"-"`
+}
+
+// oauthSessions OAuth 会话注册表（内存，30 分钟过期）。
+var (
+	oauthSessionsMu sync.Mutex
+	oauthSessions   = map[string]*OAuthPendingSession{}
+)
+
+// SaveOAuthSession 登记授权会话。
+func SaveOAuthSession(sess *OAuthPendingSession) {
+	oauthSessionsMu.Lock()
+	defer oauthSessionsMu.Unlock()
+	// 清理过期
+	for k, v := range oauthSessions {
+		if time.Since(v.CreatedAt) > 30*time.Minute {
+			delete(oauthSessions, k)
+		}
+	}
+	oauthSessions[sess.SessionID] = sess
+}
+
+// TakeOAuthSession 取出并删除授权会话（一次性）。
+func TakeOAuthSession(engine, sessionID string) (*OAuthPendingSession, error) {
+	oauthSessionsMu.Lock()
+	defer oauthSessionsMu.Unlock()
+	sess, ok := oauthSessions[sessionID]
+	if !ok {
+		return nil, errors.New("授权会话不存在或已过期（30 分钟内有效）")
+	}
+	delete(oauthSessions, sessionID)
+	if engine != "" && sess.Engine != engine {
+		return nil, fmt.Errorf("授权会话属于引擎 %s", sess.Engine)
+	}
+	if time.Since(sess.CreatedAt) > 30*time.Minute {
+		return nil, errors.New("授权会话已过期，请重新发起")
+	}
+	return sess, nil
+}
+
 // ==================== 号池动态管理 ====================
 
-// AddAccountFromStorageState 是统一账号添加入口。所有账号都使用引擎B协议
-// 提供的 storage-state；engine=a 时仅把其中的 Google Cookie 转成引擎A凭据。
+// AddAccountFromStorageState 是统一账号添加入口。引擎A/B 提交 storage_state；
+// 订阅引擎（codex/antigravity/kiro/workbuddy）提交 credentials 凭据对象。
 func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, error) {
 	engineName := strings.ToLower(strings.TrimSpace(req.Engine))
 	if engineName == "" {
 		engineName = "b"
 	}
-	if strings.TrimSpace(req.StorageState) == "" {
-		return store.Account{}, errors.New("storage_state 不能为空")
+	switch engineName {
+	case "a", "gemini", "b", "aistudio":
+		if strings.TrimSpace(req.StorageState) == "" {
+			return store.Account{}, errors.New("storage_state 不能为空")
+		}
 	}
 	switch engineName {
 	case "a", "gemini":
@@ -294,9 +594,223 @@ func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, e
 			return store.Account{}, errors.New("email 不能为空")
 		}
 		return m.addAIStudioAccount(req.Email, req.StorageState, req.Locale, req.Timezone, req.Proxy)
+	case "codex":
+		var creds CodexCredentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if creds.RefreshToken == "" {
+			return store.Account{}, errors.New("refresh_token 不能为空")
+		}
+		if creds.Email == "" {
+			creds.Email = strings.TrimSpace(req.Email)
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(creds.Email)
+		}
+		return m.addCodexAccount(label, creds)
+	case "antigravity":
+		var creds AntigravityCredentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if creds.RefreshToken == "" {
+			return store.Account{}, errors.New("refresh_token 不能为空")
+		}
+		if creds.Email == "" {
+			creds.Email = strings.TrimSpace(req.Email)
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(creds.Email)
+		}
+		return m.addAntigravityAccount(label, creds)
+	case "kiro":
+		var creds KiroCredentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if creds.RefreshToken == "" {
+			return store.Account{}, errors.New("refresh_token 不能为空")
+		}
+		if creds.Email == "" {
+			creds.Email = strings.TrimSpace(req.Email)
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(creds.Email)
+		}
+		return m.addKiroAccount(label, creds)
+	case "workbuddy":
+		var creds WorkBuddyCredentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if creds.Token == "" {
+			return store.Account{}, errors.New("token 不能为空")
+		}
+		if creds.Email == "" {
+			creds.Email = strings.TrimSpace(req.Email)
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(creds.Email)
+		}
+		return m.addWorkBuddyAccount(label, creds)
 	default:
-		return store.Account{}, fmt.Errorf("未知引擎: %s（仅支持 a 或 b）", req.Engine)
+		return store.Account{}, fmt.Errorf("未知引擎: %s（支持 a、b、codex、antigravity、kiro、workbuddy）", req.Engine)
 	}
+}
+
+// decodeEngineCredentials 解析订阅引擎凭据对象（credentials JSON）。
+func decodeEngineCredentials(req AccountInput, out any) error {
+	if len(req.Credentials) == 0 {
+		return errors.New("credentials 不能为空")
+	}
+	if err := json.Unmarshal(req.Credentials, out); err != nil {
+		return fmt.Errorf("credentials 不是合法 JSON: %w", err)
+	}
+	return nil
+}
+
+// addCodexAccount 添加 codex 账号（存储 + 入池）。
+func (m *Manager) addCodexAccount(label string, creds CodexCredentials) (store.Account, error) {
+	eng := m.codexEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("codex 引擎未启用")
+	}
+	if label == "" {
+		return store.Account{}, errors.New("label 或 email 至少填写一个")
+	}
+	acc, err := m.st.CreateAccount("codex", label, marshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
+// addAntigravityAccount 添加 antigravity 账号（存储 + 入池）。
+func (m *Manager) addAntigravityAccount(label string, creds AntigravityCredentials) (store.Account, error) {
+	eng := m.antigravityEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("antigravity 引擎未启用")
+	}
+	if label == "" {
+		return store.Account{}, errors.New("label 或 email 至少填写一个")
+	}
+	acc, err := m.st.CreateAccount("antigravity", label, marshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
+// addKiroAccount 添加 kiro 账号（存储 + 入池）。
+func (m *Manager) addKiroAccount(label string, creds KiroCredentials) (store.Account, error) {
+	eng := m.kiroEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("kiro 引擎未启用")
+	}
+	if label == "" {
+		return store.Account{}, errors.New("label 或 email 至少填写一个")
+	}
+	acc, err := m.st.CreateAccount("kiro", label, marshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
+// addWorkBuddyAccount 添加 workbuddy 账号（存储 + 入池）。
+func (m *Manager) addWorkBuddyAccount(label string, creds WorkBuddyCredentials) (store.Account, error) {
+	eng := m.mWorkBuddyEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("workbuddy 引擎未启用")
+	}
+	if label == "" {
+		return store.Account{}, errors.New("label 或 email 至少填写一个")
+	}
+	acc, err := m.st.CreateAccount("workbuddy", label, marshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
+// UpdateSubscriptionCredentials 更新订阅引擎账号凭据（codex/antigravity/kiro/workbuddy）。
+func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMessage) error {
+	acc, err := m.st.GetAccount(id)
+	if err != nil {
+		return err
+	}
+	switch acc.Engine {
+	case "codex":
+		var creds CodexCredentials
+		if err := json.Unmarshal(credentials, &creds); err != nil || creds.RefreshToken == "" {
+			return errors.New("credentials.refresh_token 不能为空")
+		}
+		if err := m.st.UpdateAccountCredentials(id, string(credentials)); err != nil {
+			return err
+		}
+		return m.codexEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	case "antigravity":
+		var creds AntigravityCredentials
+		if err := json.Unmarshal(credentials, &creds); err != nil || creds.RefreshToken == "" {
+			return errors.New("credentials.refresh_token 不能为空")
+		}
+		if err := m.st.UpdateAccountCredentials(id, string(credentials)); err != nil {
+			return err
+		}
+		return m.antigravityEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	case "kiro":
+		var creds KiroCredentials
+		if err := json.Unmarshal(credentials, &creds); err != nil || creds.RefreshToken == "" {
+			return errors.New("credentials.refresh_token 不能为空")
+		}
+		if err := m.st.UpdateAccountCredentials(id, string(credentials)); err != nil {
+			return err
+		}
+		return m.kiroEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	case "workbuddy":
+		var creds WorkBuddyCredentials
+		if err := json.Unmarshal(credentials, &creds); err != nil || creds.Token == "" {
+			return errors.New("credentials.token 不能为空")
+		}
+		if err := m.st.UpdateAccountCredentials(id, string(credentials)); err != nil {
+			return err
+		}
+		return m.mWorkBuddyEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	}
+	return fmt.Errorf("引擎 %s 不支持凭据更新", acc.Engine)
 }
 
 // geminiCredentialsFromStorageState 从引擎B协议的标准 Cookie 数组中提取
@@ -401,16 +915,10 @@ func (m *Manager) RemoveAccount(id int64) error {
 		return err
 	}
 	engineID := fmt.Sprintf("%d", id)
-	switch acc.Engine {
-	case "a":
-		if m.engineA != nil {
-			if err := m.engineA.RemoveAccount(engineID); err != nil {
-				return err
-			}
-		}
-	case "b":
-		if native, ok := m.engineB.(*NativeAIStudioEngine); ok && native != nil {
-			if err := native.RemoveAccount(engineID); err != nil {
+	if pool, ok := m.pools[acc.Engine]; ok {
+		if err := pool.RemoveAccount(engineID); err != nil {
+			// 账号不在池中（引擎未启用/已出池）时跳过，仅删除存储记录
+			if !strings.Contains(err.Error(), "不在池中") {
 				return err
 			}
 		}
@@ -425,16 +933,10 @@ func (m *Manager) SetAccountEnabled(id int64, enabled bool) error {
 		return err
 	}
 	engineID := fmt.Sprintf("%d", id)
-	switch acc.Engine {
-	case "a":
-		if m.engineA != nil {
-			if err := m.engineA.SetEnabled(engineID, enabled); err != nil {
-				return err
-			}
-		}
-	case "b":
-		if native, ok := m.engineB.(*NativeAIStudioEngine); ok && native != nil {
-			if err := native.SetEnabled(engineID, enabled); err != nil {
+	if pool, ok := m.pools[acc.Engine]; ok {
+		if err := pool.SetEnabled(engineID, enabled); err != nil {
+			// 账号不在池中（引擎未启用）时仅更新存储记录
+			if !strings.Contains(err.Error(), "不在池中") {
 				return err
 			}
 		}
@@ -473,6 +975,13 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 		}
 		_ = m.st.UpdateAccountStatus(id, "ok", "")
 		return nil
+	case "codex", "antigravity", "kiro", "workbuddy":
+		// 订阅引擎：重建账号（重新初始化 token / project）
+		if err := m.UpdateSubscriptionCredentials(id, json.RawMessage(acc.Credentials)); err != nil {
+			return err
+		}
+		_ = m.st.UpdateAccountStatus(id, "initializing", "重新初始化中")
+		return nil
 	}
 	return fmt.Errorf("未知引擎: %s", acc.Engine)
 }
@@ -483,35 +992,28 @@ func (m *Manager) AccountOverview() []AccountOverview {
 	if err != nil {
 		return nil
 	}
-	liveA := map[string]AccountState{}
-	if m.engineA != nil {
-		for _, st := range m.engineA.AccountStates() {
-			liveA[st.ID] = st
+	// 收集每个引擎的实时账号状态
+	live := map[string]map[string]AccountState{}
+	for name, pool := range m.pools {
+		states := map[string]AccountState{}
+		for _, st := range pool.AccountStates() {
+			states[st.ID] = st
 		}
-	}
-	liveB := map[string]AccountState{}
-	if native, ok := m.engineB.(*NativeAIStudioEngine); ok && native != nil {
-		for _, st := range native.AccountStates() {
-			liveB[st.ID] = st
-		}
+		live[name] = states
 	}
 	out := make([]AccountOverview, 0, len(accounts))
 	for _, acc := range accounts {
 		ov := AccountOverview{Account: acc}
 		engineID := fmt.Sprintf("%d", acc.ID)
-		switch acc.Engine {
-		case "a":
-			if st, ok := liveA[engineID]; ok {
+		if states, ok := live[acc.Engine]; ok {
+			if st, ok := states[engineID]; ok {
 				ov.Live = st
 			} else {
 				ov.Live = AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded"}
 			}
-		case "b":
-			if st, ok := liveB[engineID]; ok {
-				ov.Live = st
-			} else {
-				ov.Live = AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded"}
-			}
+		} else {
+			// 引擎未启用（无池）
+			ov.Live = AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded", Detail: "引擎未启用"}
 		}
 		out = append(out, ov)
 	}
@@ -520,38 +1022,82 @@ func (m *Manager) AccountOverview() []AccountOverview {
 
 // ==================== 路由与对话 ====================
 
-// pickEngine 按模型名路由引擎。
-func (m *Manager) pickEngine(modelName string) engine.Engine {
+// pickEngine 按模型名路由引擎。第二个返回值表示模型是否为该引擎专属
+//（订阅引擎目录命中或订阅引擎显式路由）：专属模型引擎不可用时不做
+// 跨引擎切换——其他引擎不认识该模型，切换只会产生误导性错误。
+func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	name := strings.ToLower(strings.TrimSpace(modelName))
 
-	if len(m.engineAModels) > 0 && matchAny(name, m.engineAModels) && m.engineA != nil {
-		return m.engineA
-	}
-	if len(m.engineBModels) > 0 && matchAny(name, m.engineBModels) && m.engineB != nil {
-		return m.engineB
-	}
-
-	if m.engineB != nil && isMultimodalModel(name) {
-		return m.engineB
-	}
-
-	switch m.defaultEngine {
-	case "a":
-		if m.engineA != nil {
-			return m.engineA
-		}
-	case "b":
-		if m.engineB != nil {
-			return m.engineB
+	// 1) 显式模型路由：engine_a/b_models + routing.engine_models.<engine>
+	if len(m.engineAModels) > 0 && matchAny(name, m.engineAModels) {
+		if eng, ok := m.engines["a"]; ok {
+			return eng, false
 		}
 	}
-
-	// 引擎B协议是主协议：auto 模式下普通文本也优先使用 AI Studio
-	// 身份，只有引擎B不可用时才回退到引擎A。
-	if m.engineB != nil {
-		return m.engineB
+	if len(m.engineBModels) > 0 && matchAny(name, m.engineBModels) {
+		if eng, ok := m.engines["b"]; ok {
+			return eng, false
+		}
 	}
-	return m.engineA
+	for engName, patterns := range m.engineModels {
+		if len(patterns) == 0 {
+			continue
+		}
+		if matchAny(name, patterns) {
+			if eng, ok := m.engines[strings.ToLower(engName)]; ok {
+				return eng, isSubscriptionEngine(strings.ToLower(engName))
+			}
+		}
+	}
+
+	// 2) 多模态模型走引擎B（保持历史行为）
+	if eng, ok := m.engines["b"]; ok && isMultimodalModel(name) {
+		return eng, false
+	}
+
+	// 3) default_engine 显式指定（支持任意注册引擎）
+	if m.defaultEngine != "auto" && m.defaultEngine != "" {
+		if eng, ok := m.engines[m.defaultEngine]; ok {
+			return eng, isSubscriptionEngine(m.defaultEngine)
+		}
+	}
+
+	// 4) auto：模型名精确命中某订阅引擎目录 → 该引擎（模型专属）
+	for _, engName := range m.engineOrder {
+		if engName == "a" || engName == "b" {
+			continue
+		}
+		if eng, ok := m.engines[engName]; ok {
+			for _, mi := range eng.ListModels() {
+				if strings.EqualFold(mi.ID, name) {
+					return eng, true
+				}
+			}
+		}
+	}
+
+	// 5) auto 回退：引擎B协议是主协议，其次引擎A，最后任意 Ready 引擎
+	if eng, ok := m.engines["b"]; ok {
+		return eng, false
+	}
+	if eng, ok := m.engines["a"]; ok {
+		return eng, false
+	}
+	for _, engName := range m.engineOrder {
+		if eng, ok := m.engines[engName]; ok && eng.Ready() {
+			return eng, false
+		}
+	}
+	return nil, false
+}
+
+// isSubscriptionEngine 是否为订阅引擎（codex/antigravity/kiro/workbuddy）。
+func isSubscriptionEngine(name string) bool {
+	switch name {
+	case "codex", "antigravity", "kiro", "workbuddy":
+		return true
+	}
+	return false
 }
 
 // matchAny 前缀/子串匹配。
@@ -584,11 +1130,15 @@ func isMultimodalModel(name string) bool {
 
 // Chat 非流式对话。
 func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
-	eng := m.pickEngine(req.Model)
+	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
 		return nil, errors.New("没有可用的引擎")
 	}
 	if !eng.Ready() {
+		if owned {
+			// 模型为该订阅引擎专属：不跨引擎切换，直接返回该引擎的具体错误
+			return nil, engineUnavailableError(eng)
+		}
 		alt := m.alternate(eng)
 		if alt != nil {
 			eng = alt
@@ -601,11 +1151,14 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 
 // ChatStream 流式对话。
 func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	eng := m.pickEngine(req.Model)
+	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
 		return nil, errors.New("没有可用的引擎")
 	}
 	if !eng.Ready() {
+		if owned {
+			return nil, engineUnavailableError(eng)
+		}
 		alt := m.alternate(eng)
 		if alt != nil {
 			eng = alt
@@ -661,9 +1214,39 @@ func engineUnavailableError(eng engine.Engine) error {
 			msg += ": " + strings.TrimSpace(detail)
 		} else if accounts, ok := status["accounts"]; ok && emptyStatusList(accounts) {
 			msg += ": 没有可用账号（请在管理台添加账号，或检查 auth_states 配置）"
+		} else if detail := firstAccountError(status["accounts"]); detail != "" {
+			// 账号级错误（凭据失效 / 冷却中等）
+			msg += ": " + detail
 		}
 	}
 	return errors.New(msg)
+}
+
+// firstAccountError 从账号状态列表中提取第一条错误描述。
+func firstAccountError(v any) string {
+	switch list := v.(type) {
+	case []AccountState:
+		for _, st := range list {
+			if st.Status == "error" && strings.TrimSpace(st.Detail) != "" {
+				return st.Label + ": " + strings.TrimSpace(st.Detail)
+			}
+		}
+	case []any:
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				status, _ := m["status"].(string)
+				detail, _ := m["detail"].(string)
+				label, _ := m["label"].(string)
+				if status == "error" && strings.TrimSpace(detail) != "" {
+					if label != "" {
+						return label + ": " + strings.TrimSpace(detail)
+					}
+					return strings.TrimSpace(detail)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func emptyStatusList(v any) bool {
@@ -673,40 +1256,48 @@ func emptyStatusList(v any) bool {
 	case []any:
 		return len(list) == 0
 	default:
+		// 订阅引擎的 []AccountState 等具体切片类型
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice {
+			return rv.Len() == 0
+		}
 		return false
 	}
 }
 
-// alternate 返回另一个引擎（优先就绪的）。
+// alternate 返回另一个引擎（按注册顺序优先就绪的）。
 func (m *Manager) alternate(cur engine.Engine) engine.Engine {
-	if m.engineA != nil && m.engineA.Ready() {
-		return m.engineA
-	}
-	if m.engineB != nil && m.engineB.Ready() && m.engineB != cur {
-		return m.engineB
+	for _, name := range m.engineOrder {
+		eng, ok := m.engines[name]
+		if !ok || eng == cur {
+			continue
+		}
+		if eng.Ready() {
+			return eng
+		}
 	}
 	return nil
 }
 
-// ListModels 聚合模型列表。
+// ListModels 聚合模型列表（引擎A 保持历史裸 ID 行为，其余引擎以 ID@engine 去重）。
 func (m *Manager) ListModels() []model.ModelInfo {
 	var out []model.ModelInfo
 	seen := map[string]bool{}
-	if m.engineA != nil {
-		for _, mi := range m.engineA.ListModels() {
-			if !seen[mi.ID] {
-				seen[mi.ID] = true
-				out = append(out, withModelKind(mi))
-			}
+	for _, name := range m.engineOrder {
+		eng, ok := m.engines[name]
+		if !ok {
+			continue
 		}
-	}
-	if m.engineB != nil {
-		for _, mi := range m.engineB.ListModels() {
-			key := mi.ID + "@b"
-			if !seen[key] {
-				seen[key] = true
-				out = append(out, withModelKind(mi))
+		for _, mi := range eng.ListModels() {
+			key := mi.ID + "@" + name
+			if name == "a" {
+				key = mi.ID
 			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, withModelKind(mi))
 		}
 	}
 	return out
@@ -719,16 +1310,30 @@ func withModelKind(mi model.ModelInfo) model.ModelInfo {
 	return mi
 }
 
-// Status 全部引擎状态。
+// Status 全部引擎状态（engine_a/engine_b 历史键 + engine_<name> 动态键）。
 func (m *Manager) Status() map[string]any {
 	out := map[string]any{}
-	if m.engineA != nil {
-		out["engine_a"] = m.engineA.Status()
-	}
-	if m.engineB != nil {
-		out["engine_b"] = m.engineB.Status()
+	for name, eng := range m.engines {
+		key := "engine_" + name
+		if name == "a" || name == "b" {
+			key = "engine_" + name
+		}
+		out[key] = eng.Status()
 	}
 	return out
+}
+
+// EngineMetaList 管理台引擎元数据列表。
+func (m *Manager) EngineMetaList() []EngineMeta {
+	metas := []EngineMeta{
+		{Name: "a", Describe: "gemini.google.com 网页版（Cookie 会话）", Enabled: m.engines["a"] != nil, AccountPool: true, Credential: "psid/psidts Cookie"},
+		{Name: "b", Describe: "AI Studio（原生逆向 / OpenAI 兼容上游）", Enabled: m.engines["b"] != nil, AccountPool: true, Credential: "storage-state.json"},
+		{Name: "codex", Describe: "OpenAI Codex（ChatGPT 订阅号）", Enabled: m.engines["codex"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（OAuth 授权或 Codex CLI auth.json 导入）"},
+		{Name: "antigravity", Describe: "Google Antigravity（Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
+		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},
+		{Name: "workbuddy", Describe: "腾讯 CodeBuddy/WorkBuddy（SaaS 订阅）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token（OAuth 扫码授权）"},
+	}
+	return metas
 }
 
 // PassthroughEngine 返回支持透传的引擎（当前只有引擎B upstream 模式）。

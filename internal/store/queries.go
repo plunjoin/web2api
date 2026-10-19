@@ -16,10 +16,12 @@ import (
 var ErrNotFound = errors.New("记录不存在")
 
 // CreateAccount 新增账号。
+// 引擎合法性由 provider.Manager 统一校验（历史仅允许 a/b，
+// 现还包括 codex/antigravity/kiro/workbuddy 等订阅引擎）。
 func (s *Store) CreateAccount(engine, label, credentials string, enabled bool) (Account, error) {
 	engine = strings.ToLower(strings.TrimSpace(engine))
-	if engine != "a" && engine != "b" {
-		return Account{}, fmt.Errorf("无效引擎: %q", engine)
+	if engine == "" {
+		return Account{}, errors.New("引擎不能为空")
 	}
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -84,6 +86,13 @@ func (s *Store) UpdateAccountStatus(id int64, status, detail string) error {
 // UpdateAccountCredentials 更新凭据。
 func (s *Store) UpdateAccountCredentials(id int64, credentials string) error {
 	_, err := s.db.Exec(`UPDATE accounts SET credentials = ?, status = 'initializing', detail = '', updated_at = ? WHERE id = ?`,
+		credentials, now(), id)
+	return err
+}
+
+// UpdateAccountRawCredentials 仅回写凭据（token 轮换），不改账号状态。
+func (s *Store) UpdateAccountRawCredentials(id int64, credentials string) error {
+	_, err := s.db.Exec(`UPDATE accounts SET credentials = ?, updated_at = ? WHERE id = ?`,
 		credentials, now(), id)
 	return err
 }
