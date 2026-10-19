@@ -10,15 +10,24 @@ npm ci
 npm run dev
 ```
 
-把 Google 两个免费入口做成一个**号池管理平台**（架构参考 sub2api：账号池 →
+**号池管理平台**（账号池 →
 Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API：
 
 - **引擎A（Gemini 网页号）**：`gemini.google.com` 网页版纯 Go 原生逆向
   （Cookie 会话 + `__Secure-1PSIDTS` 自动轮换续命）
 - **引擎B（AI Studio 号）**：`aistudio.google.com` 纯 Go 原生逆向
   ——私有协议 + **WAA（BotGuard）纯 Go VM**（内嵌 goja JS 引擎执行官方解释器
-  生成 proof，零浏览器依赖），协议内核已合并自
-  [Mag1cFall/AIStudio2API](https://github.com/Mag1cFall/AIStudio2API)（MIT）
+  生成 proof，零浏览器依赖）
+- **订阅引擎（codex / antigravity / kiro / workbuddy）**：把订阅制 AI 编程工具的
+  账号接入同一号池，每个引擎独立账号池与凭据管理：
+  - **Codex**：OpenAI ChatGPT 订阅号（OAuth 授权或 `~/.codex/auth.json` 导入，
+    Responses 协议，gpt-5.x / gpt-6 系列）
+  - **Antigravity**：Google Cloud AI Companion 订阅号（Google OAuth 授权，
+    v1internal 协议，Claude + Gemini 双模型通道，project_id 自动 onboard）
+  - **Kiro**：AWS CodeWhisperer 订阅号（`~/.aws/sso/cache/kiro-auth-token.json`
+    的 refresh_token，Claude 模型，refresh_token 旋转自动回写；上游风控较严建议少量自用）
+  - **WorkBuddy**：腾讯 CodeBuddy/WorkBuddy SaaS 号（管理台扫码授权或粘贴
+    accessToken，OpenAI 协议透传）
 
 ```
                   浏览器打开 http://localhost:8800/admin
@@ -34,7 +43,8 @@ Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API
 客户端 ── /v1 ──────────────▼
 (Base URL + sk-xxx)   web2api.exe 单二进制
                           ├── 引擎A：gemini.google.com（Cookie 号池）
-                          └── 引擎B：aistudio.google.com（WAA 号池）
+                          ├── 引擎B：aistudio.google.com（WAA 号池）
+                          └── 订阅引擎：codex / antigravity / kiro / workbuddy
 ```
 
 ## 启动
@@ -275,7 +285,7 @@ Docker 部署可启用 `docker-compose.upgrade.yml`，之后在管理台「系�
 会自动转换后走统一流程。
 
 **AI Studio 号（引擎B）**：三选一——
-1. 管理台粘贴 `storage-state.json` 内容（浏览器插件导出或 AIStudio2API 生成）；
+1. 管理台粘贴 `storage-state.json` 内容（浏览器插件导出）；
 2. 跑一次 AIStudio2API 的 `start.bat setup` 导入 Chrome 登录态，把生成的
    `auth/` 目录整个放到 web2api 目录（自动扫描入池并登记）；
 3. 已部署 AIStudio2API 的，配置 `auth_states` 指向其 auth 目录，或改用
@@ -338,3 +348,5 @@ web/                         前端源码（React + shadcn/ui，构建到 intern
 internal/limiter/           令牌桶限流
 internal/aistudio2api/      引擎B 协议内核（已合并进主模块，MIT）
 ```
+
+> AI生成
