@@ -1,0 +1,1 @@
+var e={a:`Gemini 网页`,b:`AI Studio`,codex:`Codex`,antigravity:`Antigravity`,kiro:`Kiro`,workbuddy:`WorkBuddy`,custom:`第三方 Key`};function t(t){return e[t]||t}export{t};
