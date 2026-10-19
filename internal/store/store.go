@@ -179,6 +179,15 @@ func (s *Store) migrate() error {
 			multiplier REAL NOT NULL DEFAULT 1,
 			updated_at INTEGER NOT NULL
 		)`,
+		// 模型上下架与检查记录：无记录视为启用；enabled=0 时下游 /v1/models 不可见。
+		`CREATE TABLE IF NOT EXISTS model_settings (
+			model TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			updated_at INTEGER NOT NULL,
+			last_check_at INTEGER NOT NULL DEFAULT 0,
+			last_check_ok INTEGER NOT NULL DEFAULT 0,
+			last_check_detail TEXT NOT NULL DEFAULT ''
+		)`,
 		// 逐请求用量明细（ts 为 Unix 秒）。estimated=1 表示 Token 数含本地估算。
 		`CREATE TABLE IF NOT EXISTS usage_records (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
