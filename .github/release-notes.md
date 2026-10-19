@@ -1,13 +1,21 @@
-v0.2.6 修复升级到 v0.2.5 后管理台没有样式、版本显示为 dev 的问题。
+v0.3.2 新增订阅引擎：把 Codex、Antigravity、Kiro、WorkBuddy 四类订阅制 AI 编程工具账号接入同一号池，对外输出统一 OpenAI 兼容 API。每个引擎独立账号池与凭据管理，历史引擎A（Gemini 网页）/引擎B（AI Studio）行为不变。
 
-- 原因：v0.2.5 改了管理台页面，样式表地址仍是 /admin/assets/admin.css，且静态资源没有任何缓存校验头。浏览器或反向代理/CDN 里缓存的 v0.2.4 样式表被拿来配新页面，新页面用到的样式类旧文件里都没有，于是整页失去布局。镜像本身返回的样式是正确的。
-- 管理台资源地址现在带内容哈希（例如 /admin/assets/admin.css?v=c5953797b0d7），每次发版自动换新地址，旧缓存不会再与新页面混用。带哈希的地址可长期缓存；不带哈希的地址要求每次校验（ETag，未变化返回 304）。页面本身仍为 no-store。
-- 版本号：容器构建未传 VERSION 时不再显示 dev，改为读取随源码发布的 internal/version/VERSION（本版为 v0.2.6）。发布包仍由构建参数注入版本号。
+- 新增四个订阅引擎，均在管理台添加账号：
+  - Codex（OpenAI ChatGPT 订阅号）：OAuth 授权或粘贴 `~/.codex/auth.json` 的 refresh_token；Responses 协议，gpt-5.x / gpt-6 系列模型；access_token 运行时自动刷新，401 自动重试。
+  - Antigravity（Google Cloud AI Companion 订阅号）：Google OAuth 授权或粘贴 refresh_token；Claude + Gemini 双模型通道；project_id 自动 onboard；账号状态对齐官方 IDE "View Usage"，展示权益档位与周窗口 / 5h 窗口用量。
+  - Kiro（AWS CodeWhisperer 订阅号）：粘贴 Kiro IDE 登录态（`~/.aws/sso/cache/kiro-auth-token.json`）的 refresh_token，旋转式 token 自动回写数据库；识别上游封禁（suspended）并进入长冷却。上游风控较严，建议少量账号自用。
+  - WorkBuddy（腾讯 CodeBuddy）：管理台扫码设备授权或粘贴 accessToken；OpenAI 协议透传。
+- 模型路由：auto 模式按模型名自动命中订阅引擎；`routing.engine_models` 可按引擎显式指定（如 `codex: ["gpt-*"]`）；`routing.default_engine` 支持 codex / antigravity / kiro / workbuddy。
+- 管理台：添加账号菜单扩展为六引擎；OAuth 授权链接生成、授权码回填换 token、扫码轮询三类加号流程；订阅引擎凭据支持在线更新（token 轮换）；账号状态展示用量/余额（quota）；概览与 /health 展示全部引擎就绪状态。
+- 管理端 API：新增 `GET /admin/api/engines`（引擎元数据）与 OAuth 三端点（authorize / exchange / poll），账号凭据更新接口按引擎分流；OpenAPI 规范同步。
+- 数据库：accounts 表自动迁移，解除 `CHECK(engine IN ('a','b'))` 约束（保留全部数据，启动时自动完成，无需手工干预）。
 
-升级后无需改配置，数据库不变。若前面有 CDN（如 Cloudflare）且曾缓存过旧样式，新版本已绕开该缓存；如仍异常，清一次 CDN 缓存或强制刷新浏览器即可。
+升级说明：无需改配置；新引擎默认关闭，在 config.yaml 的 `engines` 段启用，或直接在管理台添加账号即可使用。访问 chatgpt.com / googleapis.com 需要代理时，配置各引擎的 `proxy`。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.2.6、ghcr.io/plunjoin/web2api:0.2.6、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.3.2、ghcr.io/plunjoin/web2api:0.3.2、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
 
-验证：Go 全量测试；新增资源哈希、缓存头、304 校验和版本回退单测；按 .dockerignore 构建上下文（无 .git、VERSION=dev）编译的二进制返回 v0.2.6，/admin 链接的样式表返回 200 text/css；模拟浏览器持有旧样式缓存时页面仍为完整深色布局。
+验证：Go 全量测试通过；各批次提交可独立编译（upstream 客户端、provider 接入两批以干净 worktree 抽查编译通过）；antigravity 与 kiro 引擎已实测真实推理连通性（流式与非流式出字正常）。
+
+> AI生成
