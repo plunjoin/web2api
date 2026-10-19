@@ -16,6 +16,9 @@ import (
 	"web2api/internal/provider"
 	"web2api/internal/store"
 	"web2api/internal/upgrade"
+	"web2api/internal/upstream/antigravity"
+	"web2api/internal/upstream/codex"
+	"web2api/internal/upstream/workbuddy"
 	"web2api/internal/version"
 )
 
@@ -56,6 +59,11 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/api/accounts/{id}/credentials", a.auth(a.handleUpdateCredentials))
 	mux.HandleFunc("POST /admin/api/accounts/{id}/check", a.auth(a.handleCheckAccount))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", a.auth(a.handleDeleteAccount))
+	// 引擎元数据与订阅引擎 OAuth 授权
+	mux.HandleFunc("GET /admin/api/engines", a.auth(a.handleEngineMeta))
+	mux.HandleFunc("POST /admin/api/oauth/{engine}/authorize", a.auth(a.handleOAuthAuthorize))
+	mux.HandleFunc("POST /admin/api/oauth/{engine}/exchange", a.auth(a.handleOAuthExchange))
+	mux.HandleFunc("POST /admin/api/oauth/{engine}/poll", a.auth(a.handleOAuthPoll))
 	mux.HandleFunc("GET /admin/api/keys", a.auth(a.handleListKeys))
 	mux.HandleFunc("POST /admin/api/keys", a.auth(a.handleCreateKey))
 	mux.HandleFunc("PATCH /admin/api/keys/{id}", a.auth(a.handlePatchKey))
@@ -199,8 +207,12 @@ func openAPISpec() map[string]any {
 				"patch":      map[string]any{"tags": []string{"账号"}, "summary": "启用或停用账号", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}},
 				"delete":     map[string]any{"tags": []string{"账号"}, "summary": "删除账号", "responses": map[string]any{"200": response("删除成功"), "404": response("账号不存在")}},
 			},
-			"/admin/api/accounts/{id}/credentials": map[string]any{"put": map[string]any{"tags": []string{"账号"}, "summary": "更新 Gemini Cookie", "requestBody": body("GeminiCredentialsInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
+			"/admin/api/accounts/{id}/credentials": map[string]any{"put": map[string]any{"tags": []string{"账号"}, "summary": "更新账号凭据", "description": "引擎A：{psid, psidts}；订阅引擎：{credentials: {...}}。", "requestBody": body("GeminiCredentialsInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
 			"/admin/api/accounts/{id}/check":       map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "触发账号健康检测", "responses": map[string]any{"200": response("检测已触发")}}},
+			"/admin/api/engines":                   map[string]any{"get": map[string]any{"tags": []string{"账号"}, "summary": "引擎元数据列表（添加账号表单数据驱动）", "responses": map[string]any{"200": response("engines")}}},
+			"/admin/api/oauth/{engine}/authorize":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "生成订阅引擎 OAuth 授权链接", "description": "支持 codex（OpenAI）、antigravity（Google）、workbuddy（腾讯 CodeBuddy 设备授权）。返回 auth_url 供浏览器打开。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("session_id、auth_url"), "400": response("引擎不支持 OAuth")}}},
+			"/admin/api/oauth/{engine}/exchange":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "授权码换 token 并加号（codex/antigravity）", "description": "把浏览器回调 URL（含 code）或裸授权码回填，服务端交换 refresh_token 并入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "400": response("参数或授权错误")}}},
+			"/admin/api/oauth/{engine}/poll":      map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "轮询设备授权结果（workbuddy）", "description": "用户扫码/登录完成前返回 202 {pending: true}；完成后自动加号入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "202": response("pending"), "400": response("参数或授权错误")}}},
 			"/admin/api/keys": map[string]any{
 				"get":  map[string]any{"tags": []string{"API Key"}, "summary": "列出 API Key", "responses": map[string]any{"200": response("Key 列表")}},
 				"post": map[string]any{"tags": []string{"API Key"}, "summary": "创建 API Key", "requestBody": body("KeyInput"), "responses": map[string]any{"200": response("Key 已创建")}},
@@ -237,7 +249,8 @@ func openAPISpec() map[string]any {
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
 				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
-				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine", "storage_state"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b"}, "description": "a=Gemini，b=AI Studio"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "引擎2协议的 storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b", "codex", "antigravity", "kiro", "workbuddy"}, "description": "a=Gemini 网页，b=AI Studio；codex/antigravity/kiro/workbuddy 为订阅引擎（凭据走 credentials 对象）"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "引擎A/B 的 storage-state.json 原文"}, "credentials": map[string]any{"type": "object", "description": "订阅引擎凭据：codex/antigravity/kiro 传 {refresh_token, email?, proxy?}；workbuddy 传 {token, email?, expires_at?, proxy?}"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+			"OAuthExchangeInput":     map[string]any{"type": "object", "required": []string{"session_id", "code"}, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "code": map[string]any{"type": "string", "description": "授权码或完整回调 URL"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string"}}},
 			},
 		},
 	})
@@ -294,6 +307,7 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	usage, _ := a.st.UsageSummary(since)
 
 	var readyA, readyB, totalReqs int64
+	readyByEngine := map[string]int64{}
 	for _, acc := range accounts {
 		switch acc.Engine {
 		case "a":
@@ -303,6 +317,10 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		case "b":
 			if acc.Live.Ready {
 				readyB++
+			}
+		default:
+			if acc.Live.Ready {
+				readyByEngine[acc.Engine]++
 			}
 		}
 	}
@@ -329,7 +347,7 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	platform, _ := a.st.GetPlatformTotals()
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"platform":             platform,
 		"accounts_total":       len(accounts),
 		"accounts_ready":       readyA + readyB,
@@ -344,7 +362,13 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"charged_tokens_24h":   charged24h,
 		"version":              version.Get(),
 		"uptime_seconds":       int64(time.Since(startedAt).Seconds()),
-	})
+	}
+	// 订阅引擎就绪数（engine_codex_ready / engine_antigravity_ready / ...）
+	for name, n := range readyByEngine {
+		resp["engine_"+name+"_ready"] = n
+		resp["accounts_ready"] = resp["accounts_ready"].(int64) + n
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleStatus 引擎详细状态（/v1/accounts 的管理版）。
@@ -457,30 +481,239 @@ func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleUpdateCredentials 更新 Gemini 号 Cookie。
+// handleUpdateCredentials 更新账号凭据：引擎A 为 Gemini Cookie（psid/psidts），
+// 订阅引擎（codex/antigravity/kiro/workbuddy）为 credentials 凭据对象。
 func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
 		return
 	}
+	acc, err := a.st.GetAccount(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "账号不存在"})
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+	switch acc.Engine {
+	case "a":
+		var req struct {
+			PSID   string `json:"psid"`
+			PSIDTS string `json:"psidts"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if strings.TrimSpace(req.PSID) == "" || strings.TrimSpace(req.PSIDTS) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "psid、psidts 均不能为空"})
+			return
+		}
+		if err := a.mgr.UpdateGeminiCredentials(id, req.PSID, req.PSIDTS); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "codex", "antigravity", "kiro", "workbuddy":
+		var req struct {
+			Credentials json.RawMessage `json:"credentials"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if len(req.Credentials) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "credentials 不能为空"})
+			return
+		}
+		if err := a.mgr.UpdateSubscriptionCredentials(id, req.Credentials); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + acc.Engine + " 不支持凭据更新"})
+	}
+}
+
+// handleEngineMeta 引擎元数据列表（前端添加账号表单数据驱动）。
+func (a *API) handleEngineMeta(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"engines": a.mgr.EngineMetaList()})
+}
+
+// handleOAuthAuthorize 生成订阅引擎授权链接（codex / antigravity）。
+func (a *API) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
+	engineName := strings.ToLower(strings.TrimSpace(r.PathValue("engine")))
 	var req struct {
-		PSID   string `json:"psid"`
-		PSIDTS string `json:"psidts"`
+		Proxy string `json:"proxy"`
+	}
+	_ = readJSON(r, &req) // body 可为空
+	proxy := strings.TrimSpace(req.Proxy)
+	if proxy == "" {
+		proxy = a.mgr.EngineProxy(engineName)
+	}
+	var sess *provider.OAuthPendingSession
+	switch engineName {
+	case "codex":
+		s := codex.NewOAuthSession()
+		sess = &provider.OAuthPendingSession{
+			Engine: engineName, SessionID: s.SessionID, State: s.State,
+			CodeVerifier: s.CodeVerifier, AuthURL: s.AuthURL, Proxy: proxy, CreatedAt: time.Now(),
+		}
+	case "antigravity":
+		s := antigravity.NewOAuthSession()
+		sess = &provider.OAuthPendingSession{
+			Engine: engineName, SessionID: s.SessionID, State: s.State,
+			CodeVerifier: s.CodeVerifier, AuthURL: s.AuthURL, Proxy: proxy, CreatedAt: time.Now(),
+		}
+	case "workbuddy":
+		start, err := workbuddy.StartAuth(r.Context(), proxy, a.mgr.WorkBuddyBaseURL())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		sess = &provider.OAuthPendingSession{
+			Engine: engineName, SessionID: start.State, State: start.State,
+			AuthURL: start.AuthURL, Proxy: proxy, CreatedAt: time.Now(),
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持 OAuth 授权"})
+		return
+	}
+	provider.SaveOAuthSession(sess)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"engine":     sess.Engine,
+		"session_id": sess.SessionID,
+		"auth_url":   sess.AuthURL,
+		"expires_in": 1800,
+	})
+}
+
+// handleOAuthExchange 用授权码换 token 并直接加号入池（codex / antigravity）。
+func (a *API) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
+	engineName := strings.ToLower(strings.TrimSpace(r.PathValue("engine")))
+	var req struct {
+		SessionID string `json:"session_id"`
+		Code      string `json:"code"` // 授权码或完整回调 URL
+		Label      string `json:"label"`
+		Email      string `json:"email"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if strings.TrimSpace(req.PSID) == "" || strings.TrimSpace(req.PSIDTS) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "psid、psidts 均不能为空"})
+	if strings.TrimSpace(req.SessionID) == "" || strings.TrimSpace(req.Code) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id、code 均不能为空"})
 		return
 	}
-	if err := a.mgr.UpdateGeminiCredentials(id, req.PSID, req.PSIDTS); err != nil {
+	sess, err := provider.TakeOAuthSession(engineName, req.SessionID)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	code := strings.TrimSpace(req.Code)
+	switch engineName {
+	case "codex":
+		tok, err := codex.ExchangeCode(r.Context(), sess.Proxy, codex.ExtractCode(code), sess.CodeVerifier)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		email := req.Email
+		if email == "" {
+			email = tok.Email
+		}
+		acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
+			Engine: "codex", Label: req.Label, Email: email,
+			Credentials: json.RawMessage(mustJSON(provider.CodexCredentials{
+				RefreshToken: tok.RefreshToken, Email: email, ChatGPTAccountID: tok.ChatGPTAccount,
+			})),
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"account": acc, "email": email, "plan_type": tok.PlanType})
+	case "antigravity":
+		tok, err := antigravity.ExchangeCode(r.Context(), sess.Proxy, antigravity.ExtractCode(code), sess.CodeVerifier)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		email := req.Email
+		if email == "" {
+			email = tok.Email
+		}
+		acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
+			Engine: "antigravity", Label: req.Label, Email: email,
+			Credentials: json.RawMessage(mustJSON(provider.AntigravityCredentials{
+				RefreshToken: tok.RefreshToken, Email: email,
+			})),
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"account": acc, "email": email})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持 code 交换"})
+	}
+}
+
+// handleOAuthPoll 轮询设备授权结果（workbuddy 扫码）。
+func (a *API) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
+	engineName := strings.ToLower(strings.TrimSpace(r.PathValue("engine")))
+	if engineName != "workbuddy" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持轮询授权"})
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Label     string `json:"label"`
+		Email     string `json:"email"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id 不能为空"})
+		return
+	}
+	proxy := a.mgr.EngineProxy("workbuddy")
+	tok, err := workbuddy.PollToken(r.Context(), proxy, a.mgr.WorkBuddyBaseURL(), req.SessionID)
+	if err != nil {
+		if errors.Is(err, workbuddy.ErrPendingLogin) {
+			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "message": "等待用户在浏览器完成登录"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	email := req.Email
+	if email == "" {
+		email = workbuddy.JWTEmail(tok.AccessToken)
+	}
+	var expiresAt int64
+	if !tok.ExpiresAt.IsZero() {
+		expiresAt = tok.ExpiresAt.Unix()
+	}
+	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
+		Engine: "workbuddy", Label: req.Label, Email: email,
+		Credentials: json.RawMessage(mustJSON(provider.WorkBuddyCredentials{
+			Token: tok.AccessToken, RefreshToken: tok.RefreshToken, Email: email, ExpiresAt: expiresAt,
+		})),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": acc, "email": email})
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // handleCheckAccount 触发健康检查。
