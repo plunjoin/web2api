@@ -19,6 +19,10 @@ export function CommandPalette({ open, onOpenChange, groups, area }: { open: boo
           { label: '创建 API Key', to: '/admin/keys?new=1' },
           { label: '添加 Gemini 网页号', to: '/admin/accounts?new=a' },
           { label: '添加 AI Studio 号', to: '/admin/accounts?new=b' },
+          { label: '添加 Codex 账号', to: '/admin/accounts?new=codex' },
+          { label: '添加 Antigravity 账号', to: '/admin/accounts?new=antigravity' },
+          { label: '添加 Kiro 账号', to: '/admin/accounts?new=kiro' },
+          { label: '添加 WorkBuddy 账号', to: '/admin/accounts?new=workbuddy' },
         ]
       : [
           { label: '创建 API 密钥', to: '/console/keys?new=1' },

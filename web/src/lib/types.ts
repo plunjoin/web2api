@@ -177,12 +177,39 @@ export interface AccountLive {
   detail?: string
   models: number
   tier?: string
+  quota?: string
   cooldowns?: AccountCooldown[]
+}
+
+// 引擎标识：a=Gemini 网页、b=AI Studio；订阅引擎 codex/antigravity/kiro/workbuddy。
+export type EngineName = 'a' | 'b' | 'codex' | 'antigravity' | 'kiro' | 'workbuddy'
+
+export interface EngineMeta {
+  name: string
+  describe: string
+  enabled: boolean
+  account_pool: boolean
+  oauth?: string
+  credential?: string
+}
+
+// 引擎显示名映射（后端未启用该引擎时仍可展示存量账号）。
+export const ENGINE_LABELS: Record<string, string> = {
+  a: 'Gemini 网页',
+  b: 'AI Studio',
+  codex: 'Codex',
+  antigravity: 'Antigravity',
+  kiro: 'Kiro',
+  workbuddy: 'WorkBuddy',
+}
+
+export function engineLabel(engine: string): string {
+  return ENGINE_LABELS[engine] || engine
 }
 
 export interface Account {
   id: number
-  engine: 'a' | 'b'
+  engine: string
   label: string
   enabled: boolean
   status: string

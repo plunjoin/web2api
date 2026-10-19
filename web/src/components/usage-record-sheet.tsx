@@ -2,6 +2,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { KV } from '@/components/page'
 import { Pill } from '@/components/status'
 import { dateTime, latency, multiplier, num } from '@/lib/format'
+import { engineLabel } from '@/lib/types'
 import type { UsageRecord } from '@/lib/types'
 import type { ReactNode } from 'react'
 
@@ -27,7 +28,7 @@ export function UsageRecordSheet({ record, onOpenChange, admin, footer }: { reco
                   ['接口', <span className="font-mono text-xs">{record.endpoint}</span>],
                   ['密钥', record.key_name ? `${record.key_name} · ${record.key_masked}` : record.key_masked || '—'],
                   ...(admin ? ([['用户', record.user_email || (record.user_id ? `#${record.user_id}` : '无归属')]] as [ReactNode, ReactNode][]) : []),
-                  ['引擎', record.engine === 'a' ? 'Gemini 网页' : record.engine === 'b' ? 'AI Studio' : record.engine || '—'],
+                  ['引擎', record.engine ? engineLabel(record.engine) : '—'],
                   ['流式', record.stream ? '是' : '否'],
                   ['耗时', latency(record.latency_ms)],
                 ]}

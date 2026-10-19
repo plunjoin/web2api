@@ -9,7 +9,7 @@ import { RankBars, UsageChart } from '@/components/usage-chart'
 import { AccountStatus, accountHealth, tierLabel } from '@/components/account-status'
 import { api } from '@/lib/api'
 import { compact, duration, num } from '@/lib/format'
-import type { Account, UsagePoint, VersionInfo } from '@/lib/types'
+import { engineLabel, type Account, type UsagePoint, type VersionInfo } from '@/lib/types'
 
 interface Overview {
   platform: {
@@ -27,6 +27,7 @@ interface Overview {
   accounts_ready: number
   engine_a_ready: number
   engine_b_ready: number
+  [key: `engine_${string}_ready`]: number
   keys_total: number
   requests_24h: number
   metered_requests_24h?: number
@@ -134,7 +135,7 @@ export default function AdminOverview() {
                 <EmptyState
                   icon={<Server />}
                   title="还没有上游账号"
-                  description="添加 Gemini 网页号或 AI Studio 号后才能处理请求。"
+                  description="添加任意引擎账号后才能处理请求。"
                   action={
                     <Button size="sm" asChild>
                       <Link to="/admin/accounts">添加账号</Link>
@@ -147,7 +148,7 @@ export default function AdminOverview() {
                     <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-2 text-[13px]">
                       <div className="min-w-0">
                         <div className="truncate">{a.label}</div>
-                        <div className="text-[11px] text-muted-foreground">{[a.engine === 'a' ? 'Gemini 网页' : 'AI Studio', a.live?.tier ? tierLabel(a.live.tier) : '', `${a.live?.models ?? 0} 个模型`].filter(Boolean).join(' · ')}</div>
+                        <div className="text-[11px] text-muted-foreground">{[engineLabel(a.engine), a.live?.tier ? tierLabel(a.live.tier) : '', a.live?.quota || '', `${a.live?.models ?? 0} 个模型`].filter(Boolean).join(' · ')}</div>
                       </div>
                       <AccountStatus account={a} />
                     </li>

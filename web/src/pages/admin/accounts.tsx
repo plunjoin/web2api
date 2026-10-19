@@ -20,23 +20,26 @@ import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { relative } from '@/lib/format'
-import type { Account } from '@/lib/types'
+import { engineLabel, type Account, type EngineName } from '@/lib/types'
+import { AddAntigravityDialog, AddCodexDialog, AddKiroDialog, AddWorkBuddyDialog, SubCredsDialog } from './accounts-sub-engines'
 
 export default function AdminAccounts() {
   const qc = useQueryClient()
   const confirm = useConfirm()
   const q = useQuery({ queryKey: ['admin', 'accounts'], queryFn: () => api<{ accounts: Account[] }>('/admin/api/accounts'), refetchInterval: 15_000 })
-  // ?new=a / ?new=b 来自命令面板：直接打开对应的添加弹窗
+  // ?new=<engine> 来自命令面板或下拉菜单：直接打开对应的添加弹窗
   const [params, setParams] = useSearchParams()
   const newParam = params.get('new')
-  const adding = newParam === 'a' || newParam === 'b' ? newParam : null
-  const setAdding = (v: 'a' | 'b' | null) => {
+  const ENGINE_KEYS: EngineName[] = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy']
+  const adding = ENGINE_KEYS.includes(newParam as EngineName) ? (newParam as EngineName) : null
+  const setAdding = (v: EngineName | null) => {
     const next = new URLSearchParams(params)
     if (v) next.set('new', v)
     else next.delete('new')
     setParams(next, { replace: true })
   }
   const [creds, setCreds] = useState<Account | null>(null)
+  const [subCreds, setSubCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin'] })
 
@@ -54,7 +57,11 @@ export default function AdminAccounts() {
   }
   const actions = (a: Account): RowAction[] => [
     { label: '立即检查', icon: <RefreshCw />, onSelect: () => check(a), disabled: checking === a.id },
-    ...(a.engine === 'a' ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }] : []),
+    ...(a.engine === 'a'
+      ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }]
+      : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine)
+        ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setSubCreds(a) }]
+        : []),
     a.enabled
       ? {
           label: '停用',
@@ -103,6 +110,21 @@ export default function AdminAccounts() {
   const accounts = q.data?.accounts || []
   const ready = accounts.filter((a) => accountHealth(a) === 'up').length
   const broken = accounts.filter((a) => accountHealth(a) === 'down').length
+  const engineCounts = accounts.reduce<Record<string, number>>((m, a) => {
+    m[a.engine] = (m[a.engine] || 0) + 1
+    return m
+  }, {})
+  const engineHint = Object.entries(engineCounts)
+    .map(([k, n]) => `${engineLabel(k)} ${n}`)
+    .join(' · ')
+  const addMenuItems: { key: EngineName; title: string; hint: string }[] = [
+    { key: 'a', title: 'Gemini 网页号（引擎 A）', hint: '粘贴 __Secure-1PSID / 1PSIDTS Cookie' },
+    { key: 'b', title: 'AI Studio 号（引擎 B）', hint: '粘贴 Playwright storage_state JSON' },
+    { key: 'codex', title: 'Codex（OpenAI ChatGPT 订阅）', hint: 'OAuth 授权或粘贴 refresh_token' },
+    { key: 'antigravity', title: 'Antigravity（Google 订阅）', hint: 'Google OAuth 授权或粘贴 refresh_token' },
+    { key: 'kiro', title: 'Kiro（AWS CodeWhisperer）', hint: '粘贴 Kiro IDE 的 refresh_token' },
+    { key: 'workbuddy', title: 'WorkBuddy / CodeBuddy（腾讯）', hint: '扫码授权或粘贴 accessToken' },
+  ]
   const addMenu = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -110,30 +132,28 @@ export default function AdminAccounts() {
           <Plus /> 添加账号 <ChevronDown className="opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuItem onSelect={() => setAdding('a')} className="flex-col items-start gap-0.5">
-          <span className="text-[13px]">Gemini 网页号（引擎 A）</span>
-          <span className="text-[11px] text-muted-foreground">粘贴 __Secure-1PSID / 1PSIDTS Cookie</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => setAdding('b')} className="flex-col items-start gap-0.5">
-          <span className="text-[13px]">AI Studio 号（引擎 B）</span>
-          <span className="text-[11px] text-muted-foreground">粘贴 Playwright storage_state JSON</span>
-        </DropdownMenuItem>
+      <DropdownMenuContent align="end" className="w-72">
+        {addMenuItems.map((item) => (
+          <DropdownMenuItem key={item.key} onSelect={() => setAdding(item.key)} className="flex-col items-start gap-0.5">
+            <span className="text-[13px]">{item.title}</span>
+            <span className="text-[11px] text-muted-foreground">{item.hint}</span>
+          </DropdownMenuItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   )
 
   return (
     <>
-      <PageHeader title="上游账号" description="网关用来访问 Gemini 的账号池。请求在就绪的账号之间轮询，异常账号会自动跳过。" actions={addMenu} />
+      <PageHeader title="上游账号" description="网关用来访问上游模型的账号池。请求在就绪的账号之间轮询，异常账号会自动跳过。" actions={addMenu} />
       <div className="space-y-4">
         <StatStrip
           className="lg:grid-cols-3"
           loading={q.isLoading}
           items={[
-            { label: '账号总数', value: accounts.length, hint: `网页 ${accounts.filter((a) => a.engine === 'a').length} · AI Studio ${accounts.filter((a) => a.engine === 'b').length}` },
+            { label: '账号总数', value: accounts.length, hint: engineHint || '还没有账号' },
             { label: '可用', value: ready, tone: 'success', hint: '就绪或正在处理请求' },
-            { label: '异常', value: broken, tone: broken ? 'danger' : 'default', hint: broken ? '检查 Cookie / storage_state 是否过期' : '没有异常账号' },
+            { label: '异常', value: broken, tone: broken ? 'danger' : 'default', hint: broken ? '检查凭据是否过期' : '没有异常账号' },
           ]}
         />
         <Section>
@@ -167,7 +187,7 @@ export default function AdminAccounts() {
                           <div className="text-[11px] text-muted-foreground">#{a.id}</div>
                         </TableCell>
                         <TableCell>
-                          <Pill tone={a.engine === 'a' ? 'primary' : 'muted'}>{a.engine === 'a' ? 'Gemini 网页' : 'AI Studio'}</Pill>
+                          <Pill tone={a.engine === 'a' ? 'primary' : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine) ? 'success' : 'muted'}>{engineLabel(a.engine)}</Pill>
                         </TableCell>
                         <TableCell className="max-w-[320px]">
                           {checking === a.id ? (
@@ -188,7 +208,10 @@ export default function AdminAccounts() {
                           <CooldownLines cooldowns={a.live?.cooldowns} />
                         </TableCell>
                         <TableCell>
-                          <TierPill tier={a.live?.tier} />
+                          <div className="flex flex-col items-start gap-1">
+                            <TierPill tier={a.live?.tier} />
+                            {a.live?.quota && <span className="text-[11px] text-muted-foreground tabular-nums">{a.live.quota}</span>}
+                          </div>
                         </TableCell>
                         <TableCell className="text-right tabular-nums">{a.live?.models ?? 0}</TableCell>
                         <TableCell className="text-muted-foreground">{relative(a.updated_at)}</TableCell>
@@ -207,7 +230,12 @@ export default function AdminAccounts() {
       </div>
       <AddGeminiDialog open={adding === 'a'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
       <AddStudioDialog open={adding === 'b'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
+      <AddCodexDialog open={adding === 'codex'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddWorkBuddyDialog open={adding === 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />
+      <SubCredsDialog account={subCreds} onOpenChange={(o) => !o && setSubCreds(null)} onDone={invalidate} />
     </>
   )
 }
