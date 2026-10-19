@@ -28,6 +28,11 @@ Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API
     的 refresh_token，Claude 模型，refresh_token 旋转自动回写；上游风控较严建议少量自用）
   - **WorkBuddy**：腾讯 CodeBuddy/WorkBuddy SaaS 号（管理台扫码授权或粘贴
     accessToken，OpenAI 协议透传）
+- **第三方 Key（custom）**：管理台填 OpenAI 兼容的 Base URL + API Key
+  （可点「获取模型列表」），多 Key 轮询；客户端仍用网关 `sk-` Key 调 `/v1/chat/completions`。
+  余额查询对齐官方供应商 + OpenAI 兼容中转级联探测
+  （`/v1/usage` → `/user/balance` → NewAPI `/api/user/self`）；管理台展示剩余额度，
+  约每 10 分钟自动刷新，点「立即检查」也会刷新
 
 ```
                   浏览器打开 http://localhost:8800/admin
@@ -44,7 +49,8 @@ Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API
 (Base URL + sk-xxx)   web2api.exe 单二进制
                           ├── 引擎A：gemini.google.com（Cookie 号池）
                           ├── 引擎B：aistudio.google.com（WAA 号池）
-                          └── 订阅引擎：codex / antigravity / kiro / workbuddy
+                          ├── 订阅引擎：codex / antigravity / kiro / workbuddy
+                          └── 第三方 Key：custom（base_url + api_key）
 ```
 
 ## 启动
@@ -77,10 +83,10 @@ go build -o web2api.exe .
 | 用户 | 搜索/筛选、点击查看详情（Key、最近流水、7 天用量）、新建用户、调整余额（必填备注）、修改角色与用户倍率、重置密码、停用、删除 |
 | 兑换码 | 批量生成（面值/数量/批次/有效期/备注）、生成后一键复制或下载 CSV、按状态/批次筛选与导出、停用/整批停用/删除未使用的码、查看兑换人 |
 | 余额流水 | 全部用户的余额变动（变动前后余额），按用户/类型/时间/关键词筛选，入账与出账合计 |
-| 号池账号 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 `__Secure-1PSID`/`__Secure-1PSIDTS`；AI Studio 号粘贴 `storage-state.json`；实时状态、换 Cookie、健康检测 |
+| 号池账号 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 Cookie；AI Studio 粘贴 `storage-state.json`；订阅引擎 OAuth/粘贴 token；**第三方 Key** 填 Base URL + API Key；实时状态与健康检测 |
 | API 密钥 | 管理员 Key 与用户 Key，**Token 额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、清零已用额度、重新生成 |
 | 用量 | 按 Key × 模型汇总、趋势图（计费 Token/总 Token/请求）、逐请求明细与扣费计算过程、对用户请求退款、CSV 导出 |
-| 模型与定价 | 模型目录、默认倍率 `*`、逐模型倍率行内编辑与恢复默认 |
+| 模型与定价 | 模型目录、默认倍率 `*`、逐模型倍率行内编辑与恢复默认；**模型检查**与上下架（不可用时下游 `/v1/models` 不可见） |
 | 设置 | 开放注册、注册赠送、新用户默认倍率、每人 Key 上限、视频计费、不计量接口开关、站点名与公告、版本与一键升级 |
 | 接口文档 | 网关 API 与管理 API 的 OpenAPI 3.1 浏览、搜索与导出 |
 
@@ -103,8 +109,9 @@ go build -o web2api.exe .
 - **引擎A**：多号轮询 + 配额/认证异常自动切换下一个号
 - **引擎B**：轮询（`round-robin`）或会话粘性（`account-sticky`），单号并发槽位，
   Playground+Build 双额度通道自动降级，模型资格与冷却由池管理
-- **模型路由**：`routing.engine_a/b_models` 显式指定 > 多模态关键词（image/veo/lyria…）走
-  引擎B > `auto`（引擎B 优先，不可用自动降级引擎A）
+- **模型路由**：`routing.engine_a/b_models` 显式指定 > 订阅/custom 目录按模型 id 精确命中 >
+  多模态关键词（image/veo/lyria…）走引擎B > `auto`（引擎B 优先，不可用自动降级引擎A）。
+  若最终落到引擎B且请求模型不在其实时目录，则改用目录第一个可用模型，避免误报「目录中没有模型」
 
 ## REST 管理 API（供脚本/二次开发）
 

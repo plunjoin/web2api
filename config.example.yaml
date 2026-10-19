@@ -12,14 +12,15 @@ server:
   log_level: "info"
 
 routing:
-  default_engine: "auto"           # auto | a | b | codex | antigravity | kiro | workbuddy
+  default_engine: "auto"           # auto | a | b | codex | antigravity | kiro | workbuddy | custom
   engine_a_models: []              # 显式强制走引擎A 的模型（支持前缀与 * 通配）
   engine_b_models: []              # 显式强制走引擎B 的模型
-  engine_models:                    # 订阅引擎的强制路由模型
+  engine_models:                    # 订阅/第三方引擎的强制路由模型
     codex: []                      # 例：["gpt-*"]
     antigravity: []                # 例：["claude-sonnet-*", "gemini-3-*"]
     kiro: []                       # 例：["claude-sonnet-4"]
     workbuddy: []                  # 例：["auto-chat"]
+    custom: []                     # 例：["gpt-4o", "claude-*"]
 
 # ------------------------------------------------------------
 # 引擎A：gemini.google.com 网页版（Go 原生逆向，Cookie 会话）
@@ -72,12 +73,16 @@ gemini_api:
   timeout_seconds: 0               # 0 不限制总时长，允许长后台 SSE
 
 # ------------------------------------------------------------
-# 订阅引擎：codex / antigravity / kiro / workbuddy
-# 每个引擎独立账号池，账号建议在管理台添加（OAuth 授权或粘贴凭据）；
+# 订阅引擎 + 第三方 Key：codex / antigravity / kiro / workbuddy / custom
+# 每个引擎独立账号池，账号建议在管理台添加；
 # 启用后即可在 /v1/chat/completions 使用对应模型（模型名见管理台）
 #
-# 模型路由：默认 auto 模式下按模型名自动命中；也可用上面的
-# routing.engine_models 或 routing.default_engine 显式指定。
+# custom：管理台填 base_url + api_key（OpenAI 兼容）。
+# 默认启用；也可在下方用种子账号，或完全在管理台动态加号。
+#
+# 模型路由：显式配置 > 订阅/custom 目录精确命中 > 多模态关键词走引擎B >
+# auto 回退引擎B。落到引擎B且模型不在目录时，改用目录第一个可用模型。
+# 也可用上面的 routing.engine_models 或 routing.default_engine 显式指定。
 # ------------------------------------------------------------
 engines:
   # OpenAI Codex（ChatGPT 订阅号，模型 gpt-5.x / gpt-6 系列）
@@ -106,3 +111,12 @@ engines:
     base_url: "https://www.codebuddy.ai"
     proxy: ""
     accounts: []
+
+  # 第三方 OpenAI（Base URL + API Key）
+  custom:
+    enabled: true
+    proxy: ""
+    accounts: []                   # 种子：- name: "OpenRouter"
+                                   #         base_url: "https://openrouter.ai/api"
+                                   #         api_key: "sk-..."
+                                   #         models: ["openai/gpt-4o"]
