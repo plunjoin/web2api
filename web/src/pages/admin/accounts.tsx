@@ -21,7 +21,7 @@ import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { relative } from '@/lib/format'
 import { engineLabel, type Account, type EngineName } from '@/lib/types'
-import { AddAntigravityDialog, AddCodexDialog, AddKiroDialog, AddWorkBuddyDialog, SubCredsDialog } from './accounts-sub-engines'
+import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddKiroDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
 
 export default function AdminAccounts() {
   const qc = useQueryClient()
@@ -30,7 +30,7 @@ export default function AdminAccounts() {
   // ?new=<engine> 来自命令面板或下拉菜单：直接打开对应的添加弹窗
   const [params, setParams] = useSearchParams()
   const newParam = params.get('new')
-  const ENGINE_KEYS: EngineName[] = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy']
+  const ENGINE_KEYS: EngineName[] = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
   const adding = ENGINE_KEYS.includes(newParam as EngineName) ? (newParam as EngineName) : null
   const setAdding = (v: EngineName | null) => {
     const next = new URLSearchParams(params)
@@ -40,6 +40,7 @@ export default function AdminAccounts() {
   }
   const [creds, setCreds] = useState<Account | null>(null)
   const [subCreds, setSubCreds] = useState<Account | null>(null)
+  const [customCreds, setCustomCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin'] })
 
@@ -59,9 +60,11 @@ export default function AdminAccounts() {
     { label: '立即检查', icon: <RefreshCw />, onSelect: () => check(a), disabled: checking === a.id },
     ...(a.engine === 'a'
       ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }]
-      : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine)
-        ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setSubCreds(a) }]
-        : []),
+      : a.engine === 'custom'
+        ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setCustomCreds(a) }]
+        : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine)
+          ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setSubCreds(a) }]
+          : []),
     a.enabled
       ? {
           label: '停用',
@@ -124,6 +127,7 @@ export default function AdminAccounts() {
     { key: 'antigravity', title: 'Antigravity（Google 订阅）', hint: 'Google OAuth 授权或粘贴 refresh_token' },
     { key: 'kiro', title: 'Kiro（AWS CodeWhisperer）', hint: '粘贴 Kiro IDE 的 refresh_token' },
     { key: 'workbuddy', title: 'WorkBuddy / CodeBuddy（腾讯）', hint: '扫码授权或粘贴 accessToken' },
+    { key: 'custom', title: '第三方 Key（OpenAI 兼容）', hint: '填 Base URL + API Key' },
   ]
   const addMenu = (
     <DropdownMenu>
@@ -187,7 +191,7 @@ export default function AdminAccounts() {
                           <div className="text-[11px] text-muted-foreground">#{a.id}</div>
                         </TableCell>
                         <TableCell>
-                          <Pill tone={a.engine === 'a' ? 'primary' : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine) ? 'success' : 'muted'}>{engineLabel(a.engine)}</Pill>
+                          <Pill tone={a.engine === 'a' ? 'primary' : a.engine === 'custom' ? 'warning' : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine) ? 'success' : 'muted'}>{engineLabel(a.engine)}</Pill>
                         </TableCell>
                         <TableCell className="max-w-[320px]">
                           {checking === a.id ? (
@@ -234,8 +238,10 @@ export default function AdminAccounts() {
       <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddWorkBuddyDialog open={adding === 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddCustomKeyDialog open={adding === 'custom'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />
       <SubCredsDialog account={subCreds} onOpenChange={(o) => !o && setSubCreds(null)} onDone={invalidate} />
+      <CustomCredsDialog account={customCreds} onOpenChange={(o) => !o && setCustomCreds(null)} onDone={invalidate} />
     </>
   )
 }

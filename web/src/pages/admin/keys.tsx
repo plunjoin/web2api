@@ -239,7 +239,8 @@ function KeyDialog({ open, onOpenChange, keyItem, onSaved }: { open: boolean; on
       multiplier: mult,
       expires_at,
       rpm_limit: Number(f.rpm) || 0,
-      allowed_models: f.models.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean),
+      // 白名单按裸模型 ID 去重；不支持指定引擎
+      allowed_models: [...new Set(f.models.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean))],
     }
     setBusy(true)
     try {

@@ -181,8 +181,8 @@ export interface AccountLive {
   cooldowns?: AccountCooldown[]
 }
 
-// 引擎标识：a=Gemini 网页、b=AI Studio；订阅引擎 codex/antigravity/kiro/workbuddy。
-export type EngineName = 'a' | 'b' | 'codex' | 'antigravity' | 'kiro' | 'workbuddy'
+// 引擎标识：a=Gemini 网页、b=AI Studio；订阅引擎 + custom 第三方 Key。
+export type EngineName = 'a' | 'b' | 'codex' | 'antigravity' | 'kiro' | 'workbuddy' | 'custom'
 
 export interface EngineMeta {
   name: string
@@ -201,6 +201,7 @@ export const ENGINE_LABELS: Record<string, string> = {
   antigravity: 'Antigravity',
   kiro: 'Kiro',
   workbuddy: 'WorkBuddy',
+  custom: '第三方 Key',
 }
 
 export function engineLabel(engine: string): string {
@@ -224,8 +225,13 @@ export interface ModelInfo {
   display_name?: string
   engine?: string
   available: boolean
+  /** 管理台上下架：false 时下游 /v1/models 不可见 */
+  enabled?: boolean
   kind?: string
   multiplier: number
+  last_check_at?: number
+  last_check_ok?: boolean
+  last_check_detail?: string
 }
 
 export interface UpgradeState {

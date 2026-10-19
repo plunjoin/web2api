@@ -23,6 +23,7 @@ export function CommandPalette({ open, onOpenChange, groups, area }: { open: boo
           { label: '添加 Antigravity 账号', to: '/admin/accounts?new=antigravity' },
           { label: '添加 Kiro 账号', to: '/admin/accounts?new=kiro' },
           { label: '添加 WorkBuddy 账号', to: '/admin/accounts?new=workbuddy' },
+          { label: '添加第三方 Key', to: '/admin/accounts?new=custom' },
         ]
       : [
           { label: '创建 API 密钥', to: '/console/keys?new=1' },

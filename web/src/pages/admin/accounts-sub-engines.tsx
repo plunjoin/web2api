@@ -471,3 +471,242 @@ export function SubCredsDialog({
     </Dialog>
   )
 }
+
+/** 第三方 Key：base_url + api_key。 */
+export function AddCustomKeyDialog({
+  open,
+  onOpenChange,
+  onDone,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  onDone: () => void
+}) {
+  const [label, setLabel] = useState('')
+  const [baseURL, setBaseURL] = useState('')
+  const [apiKey, setAPIKey] = useState('')
+  const [models, setModels] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [fetched, setFetched] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [probing, setProbing] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setLabel('')
+      setBaseURL('')
+      setAPIKey('')
+      setModels('')
+      setProxy('')
+      setFetched([])
+    }
+  }, [open])
+
+  const parseModels = () =>
+    models
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+
+  const probe = async () => {
+    if (!baseURL.trim() || !apiKey.trim()) return
+    setProbing(true)
+    try {
+      const resp = await api<{ models: string[] }>('/admin/api/custom/models', {
+        method: 'POST',
+        json: { base_url: baseURL.trim(), api_key: apiKey.trim(), proxy: proxy.trim() || undefined },
+      })
+      setFetched(resp.models || [])
+      if ((resp.models || []).length) {
+        setModels((resp.models || []).join('\n'))
+        toast.success(`已获取 ${resp.models.length} 个模型`)
+      } else {
+        toast.message('上游未返回模型，可手动填写模型 ID')
+      }
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!baseURL.trim() || !apiKey.trim()) return
+    setBusy(true)
+    try {
+      await api('/admin/api/accounts', {
+        method: 'POST',
+        json: {
+          engine: 'custom',
+          label: label.trim() || undefined,
+          credentials: {
+            base_url: baseURL.trim(),
+            api_key: apiKey.trim(),
+            models: parseModels(),
+            proxy: proxy.trim() || undefined,
+          },
+        },
+      })
+      toast.success('第三方 Key 已添加')
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]">
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-[15px]">添加第三方 Key</DialogTitle>
+            <DialogDescription className="text-[13px]">
+              填供应商 Base URL 和 API Key。协议为 OpenAI 兼容（/v1/chat/completions）。地址可带或不带 /v1。
+            </DialogDescription>
+          </DialogHeader>
+          <Field label="名称" htmlFor="custom-label">
+            <Input id="custom-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="例如 OpenRouter / 硅基流动" />
+          </Field>
+          <Field label="请求地址（Base URL）" htmlFor="custom-url">
+            <Input
+              id="custom-url"
+              required
+              spellCheck={false}
+              value={baseURL}
+              onChange={(e) => setBaseURL(e.target.value)}
+              placeholder="https://api.example.com 或 …/v1"
+              className="font-mono text-[12px]"
+            />
+          </Field>
+          <Field label="API Key" htmlFor="custom-key">
+            <Input
+              id="custom-key"
+              required
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={apiKey}
+              onChange={(e) => setAPIKey(e.target.value)}
+              placeholder="sk-…"
+              className="font-mono text-[12px]"
+            />
+          </Field>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-[12px] font-medium" htmlFor="custom-models">
+                模型列表（可选）
+              </label>
+              <Button type="button" variant="outline" size="sm" disabled={probing || !baseURL.trim() || !apiKey.trim()} onClick={probe}>
+                {probing ? <Loader2 className="animate-spin" /> : null} 获取模型列表
+              </Button>
+            </div>
+            <Textarea
+              id="custom-models"
+              rows={4}
+              spellCheck={false}
+              value={models}
+              onChange={(e) => setModels(e.target.value)}
+              placeholder={'每行一个模型 ID，或逗号分隔\n例如：gpt-4o\nclaude-sonnet-4'}
+              className="font-mono text-[11px]"
+            />
+            {fetched.length > 0 && <p className="text-[11px] text-muted-foreground">已探测到 {fetched.length} 个模型，可编辑后保存</p>}
+          </div>
+          <Field label="代理（可选）" htmlFor="custom-proxy">
+            <Input id="custom-proxy" spellCheck={false} value={proxy} onChange={(e) => setProxy(e.target.value)} placeholder="http://127.0.0.1:7890" className="font-mono text-[12px]" />
+          </Field>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              取消
+            </Button>
+            <Button type="submit" disabled={busy || !baseURL.trim() || !apiKey.trim()}>
+              {busy ? <Loader2 className="animate-spin" /> : null} 添加
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 更新第三方 Key 凭据。 */
+export function CustomCredsDialog({
+  account,
+  onOpenChange,
+  onDone,
+}: {
+  account: { id: number; label: string; engine: string } | null
+  onOpenChange: (o: boolean) => void
+  onDone: () => void
+}) {
+  const [baseURL, setBaseURL] = useState('')
+  const [apiKey, setAPIKey] = useState('')
+  const [models, setModels] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (account) {
+      setBaseURL('')
+      setAPIKey('')
+      setModels('')
+    }
+  }, [account])
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!account || !baseURL.trim() || !apiKey.trim()) return
+    setBusy(true)
+    try {
+      await api(`/admin/api/accounts/${account.id}/credentials`, {
+        method: 'PUT',
+        json: {
+          credentials: {
+            base_url: baseURL.trim(),
+            api_key: apiKey.trim(),
+            models: models
+              .split(/[\n,]/)
+              .map((s) => s.trim())
+              .filter(Boolean),
+          },
+        },
+      })
+      toast.success('凭据已更新')
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog open={!!account} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[480px]">
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-[15px]">更新第三方 Key</DialogTitle>
+            <DialogDescription className="text-[13px]">{account?.label} · 替换 Base URL 与 API Key。</DialogDescription>
+          </DialogHeader>
+          <Field label="请求地址" htmlFor="custom-cred-url">
+            <Input id="custom-cred-url" required spellCheck={false} value={baseURL} onChange={(e) => setBaseURL(e.target.value)} className="font-mono text-[12px]" />
+          </Field>
+          <Field label="API Key" htmlFor="custom-cred-key">
+            <Input id="custom-cred-key" required type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setAPIKey(e.target.value)} className="font-mono text-[12px]" />
+          </Field>
+          <Field label="模型列表（可选）" htmlFor="custom-cred-models">
+            <Textarea id="custom-cred-models" rows={3} spellCheck={false} value={models} onChange={(e) => setModels(e.target.value)} className="font-mono text-[11px]" />
+          </Field>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              取消
+            </Button>
+            <Button type="submit" disabled={busy}>
+              保存
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
