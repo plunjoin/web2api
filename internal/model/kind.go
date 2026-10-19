@@ -55,11 +55,11 @@ func kindRank(kind string) int {
 func kindFromName(name string) string {
 	n := strings.ToLower(name)
 	switch {
-	case strings.Contains(n, "veo") || strings.Contains(n, "video"):
+	case strings.Contains(n, "veo") || strings.Contains(n, "video") || strings.Contains(n, "omni"):
 		return KindVideo
 	case strings.Contains(n, "lyria") || strings.Contains(n, "music"):
 		return KindMusic
-	case strings.Contains(n, "imagen") || strings.Contains(n, "image") || strings.Contains(n, "nano-banana"):
+	case strings.Contains(n, "imagen") || strings.Contains(n, "image") || strings.Contains(n, "nano-banana") || strings.Contains(n, "dall-e") || strings.Contains(n, "dalle"):
 		return KindImage
 	case strings.Contains(n, "tts") || strings.Contains(n, "speech") || strings.Contains(n, "audio"):
 		return KindSpeech

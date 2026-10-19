@@ -19,19 +19,35 @@ type Config struct {
 	GeminiAPI GeminiAPIConfig `yaml:"gemini_api"`
 }
 
-// EnginesConfig 订阅引擎配置（codex/antigravity/kiro/workbuddy）。
+// EnginesConfig 订阅引擎 + 第三方 Key 引擎配置。
 // 每个引擎独立账号池，账号在管理台运行时增删，也可用静态种子导入。
 type EnginesConfig struct {
 	Codex       CodexConfig       `yaml:"codex"`
 	Antigravity AntigravityConfig `yaml:"antigravity"`
 	Kiro        KiroConfig        `yaml:"kiro"`
-	WorkBuddy   WorkBuddyConfig    `yaml:"workbuddy"`
+	WorkBuddy   WorkBuddyConfig   `yaml:"workbuddy"`
+	Custom      CustomConfig      `yaml:"custom"` // 第三方 OpenAI
+}
+
+// CustomConfig 第三方 OpenAI 兼容供应商（base_url + api_key）。
+type CustomConfig struct {
+	Enabled  bool                `yaml:"enabled"`
+	Proxy    string              `yaml:"proxy"`
+	Accounts []CustomAccountConf `yaml:"accounts"`
+}
+
+// CustomAccountConf 第三方 Key 种子账号。
+type CustomAccountConf struct {
+	Name    string   `yaml:"name"`
+	BaseURL string   `yaml:"base_url"`
+	APIKey  string   `yaml:"api_key"`
+	Models  []string `yaml:"models"` // 可选；上游无 /v1/models 时手填
 }
 
 // CodexConfig OpenAI Codex 引擎：ChatGPT 订阅号（OAuth refresh_token）。
 type CodexConfig struct {
-	Enabled  bool              `yaml:"enabled"`
-	Proxy    string            `yaml:"proxy"`
+	Enabled  bool               `yaml:"enabled"`
+	Proxy    string             `yaml:"proxy"`
 	Accounts []CodexAccountConf `yaml:"accounts"` // 静态种子（运行时账号请走管理台）
 }
 
@@ -44,8 +60,8 @@ type CodexAccountConf struct {
 
 // AntigravityConfig Google Antigravity 引擎：Cloud AI Companion 订阅号。
 type AntigravityConfig struct {
-	Enabled  bool                    `yaml:"enabled"`
-	Proxy    string                  `yaml:"proxy"`
+	Enabled  bool                     `yaml:"enabled"`
+	Proxy    string                   `yaml:"proxy"`
 	Accounts []AntigravityAccountConf `yaml:"accounts"`
 }
 
@@ -59,8 +75,8 @@ type AntigravityAccountConf struct {
 
 // KiroConfig AWS Kiro 引擎：CodeWhisperer 订阅号。
 type KiroConfig struct {
-	Enabled  bool             `yaml:"enabled"`
-	Proxy    string           `yaml:"proxy"`
+	Enabled  bool              `yaml:"enabled"`
+	Proxy    string            `yaml:"proxy"`
 	Accounts []KiroAccountConf `yaml:"accounts"`
 }
 
@@ -73,17 +89,17 @@ type KiroAccountConf struct {
 
 // WorkBuddyConfig 腾讯 CodeBuddy/WorkBuddy 引擎。
 type WorkBuddyConfig struct {
-	Enabled  bool                 `yaml:"enabled"`
-	Proxy    string               `yaml:"proxy"`
-	BaseURL  string               `yaml:"base_url"`
+	Enabled  bool                   `yaml:"enabled"`
+	Proxy    string                 `yaml:"proxy"`
+	BaseURL  string                 `yaml:"base_url"`
 	Accounts []WorkBuddyAccountConf `yaml:"accounts"`
 }
 
 // WorkBuddyAccountConf WorkBuddy 种子账号。
 type WorkBuddyAccountConf struct {
-	Name   string `yaml:"name"`
-	Token  string `yaml:"token"`
-	Email  string `yaml:"email"`
+	Name  string `yaml:"name"`
+	Token string `yaml:"token"`
+	Email string `yaml:"email"`
 }
 
 // GeminiAPIConfig configures the official backend independently of web accounts.
@@ -107,9 +123,9 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine string              `yaml:"default_engine"`  // auto | a | b | codex | antigravity | kiro | workbuddy
-	EngineAModels []string            `yaml:"engine_a_models"` // 强制走引擎A 的模型名（前缀匹配）
-	EngineBModels []string            `yaml:"engine_b_models"` // 强制走引擎B 的模型名（前缀匹配）
+	DefaultEngine string   `yaml:"default_engine"`  // auto | a | b | codex | antigravity | kiro | workbuddy | custom
+	EngineAModels []string `yaml:"engine_a_models"` // 强制走引擎A 的模型名（前缀匹配）
+	EngineBModels []string `yaml:"engine_b_models"` // 强制走引擎B 的模型名（前缀匹配）
 	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），
 	// 优先级高于 engine_a/b_models。
 	EngineModels map[string][]string `yaml:"engine_models"`
@@ -166,6 +182,10 @@ func Default() *Config {
 		},
 		Routing:   RoutingConfig{DefaultEngine: "auto"},
 		GeminiAPI: GeminiAPIConfig{BaseURL: "https://generativelanguage.googleapis.com"},
+		Engines: EnginesConfig{
+			// 第三方 Key 默认启用：管理台可直接添加 base_url + api_key，无需改配置重启。
+			Custom: CustomConfig{Enabled: true},
+		},
 		EngineA: EngineAConfig{
 			Enabled:        true,
 			RefreshSeconds: 600,

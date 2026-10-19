@@ -92,8 +92,8 @@ type EngineMeta struct {
 	Describe    string `json:"describe"`
 	Enabled     bool   `json:"enabled"`
 	AccountPool bool   `json:"account_pool"`
-	OAuth       string `json:"oauth,omitempty"`       // codex/antigravity=authorize+code；workbuddy=start+poll
-	Credential  string `json:"credential,omitempty"`   // 凭据字段说明
+	OAuth       string `json:"oauth,omitempty"`      // codex/antigravity=authorize+code；workbuddy=start+poll
+	Credential  string `json:"credential,omitempty"` // 凭据字段说明
 }
 
 // initializableEngine 需要异步初始化的引擎。
@@ -205,6 +205,10 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		eb := NewWorkBuddy(cfg.Engines.WorkBuddy, st)
 		m.register(eb.Name(), eb, eb)
 	}
+	if cfg.Engines.Custom.Enabled {
+		ec := NewCustom(cfg.Engines.Custom, st)
+		m.register(ec.Name(), ec, ec)
+	}
 	if m.engineA == nil && m.engineB == nil && !cfg.GeminiAPI.Enabled && len(m.engines) == 0 {
 		return nil, errors.New("至少启用一个后端（engine_a、engine_b、engines 或 gemini_api）")
 	}
@@ -275,6 +279,13 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 			}
 			creds := marshalCompact(WorkBuddyCredentials{Token: acc.Token, Email: acc.Email})
 			_, _ = m.st.CreateAccount("workbuddy", seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
+		}
+		for _, acc := range m.cfg.Engines.Custom.Accounts {
+			if strings.TrimSpace(acc.BaseURL) == "" || strings.TrimSpace(acc.APIKey) == "" {
+				continue
+			}
+			creds := marshalCompact(CustomCredentials{BaseURL: acc.BaseURL, APIKey: acc.APIKey, Models: acc.Models})
+			_, _ = m.st.CreateAccount("custom", seedLabel("custom", firstNonEmpty(acc.Name, acc.BaseURL)), creds, true)
 		}
 		accounts, err = m.st.ListAccounts()
 		if err != nil {
@@ -374,6 +385,16 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 					}
 				}
 			}
+		case "custom":
+			if eng := m.customEngine(); eng != nil {
+				var creds CustomCredentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.BaseURL != "" && creds.APIKey != "" {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
 		}
 	}
 	return nil
@@ -411,6 +432,15 @@ func (m *Manager) mWorkBuddyEngine() *WorkBuddyEngine {
 	if eng, ok := m.engines["workbuddy"]; ok {
 		if w, ok := eng.(*WorkBuddyEngine); ok {
 			return w
+		}
+	}
+	return nil
+}
+
+func (m *Manager) customEngine() *CustomEngine {
+	if eng, ok := m.engines["custom"]; ok {
+		if c, ok := eng.(*CustomEngine); ok {
+			return c
 		}
 	}
 	return nil
@@ -498,6 +528,8 @@ func (m *Manager) EngineProxy(name string) string {
 		return m.cfg.Engines.Kiro.Proxy
 	case "workbuddy":
 		return m.cfg.Engines.WorkBuddy.Proxy
+	case "custom":
+		return m.cfg.Engines.Custom.Proxy
 	}
 	return ""
 }
@@ -514,13 +546,13 @@ func (m *Manager) WorkBuddyBaseURL() string {
 
 // OAuthPendingSession 管理台发起的 OAuth 授权会话（authorize → exchange）。
 type OAuthPendingSession struct {
-	Engine      string    `json:"engine"`
-	SessionID   string    `json:"session_id"`
-	State       string    `json:"-"`
-	CodeVerifier string   `json:"-"`
-	AuthURL     string    `json:"auth_url"`
-	Proxy       string    `json:"-"`
-	CreatedAt   time.Time `json:"-"`
+	Engine       string    `json:"engine"`
+	SessionID    string    `json:"session_id"`
+	State        string    `json:"-"`
+	CodeVerifier string    `json:"-"`
+	AuthURL      string    `json:"auth_url"`
+	Proxy        string    `json:"-"`
+	CreatedAt    time.Time `json:"-"`
 }
 
 // oauthSessions OAuth 会话注册表（内存，30 分钟过期）。
@@ -670,8 +702,30 @@ func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, e
 			label = strings.TrimSpace(creds.Email)
 		}
 		return m.addWorkBuddyAccount(label, creds)
+	case "custom":
+		var creds CustomCredentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if strings.TrimSpace(creds.BaseURL) == "" {
+			return store.Account{}, errors.New("base_url 不能为空")
+		}
+		if strings.TrimSpace(creds.APIKey) == "" {
+			return store.Account{}, errors.New("api_key 不能为空")
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(req.Email)
+		}
+		if label == "" {
+			label = "自定义供应商"
+		}
+		return m.addCustomAccount(label, creds)
 	default:
-		return store.Account{}, fmt.Errorf("未知引擎: %s（支持 a、b、codex、antigravity、kiro、workbuddy）", req.Engine)
+		return store.Account{}, fmt.Errorf("未知引擎: %s（支持 a、b、codex、antigravity、kiro、workbuddy、custom）", req.Engine)
 	}
 }
 
@@ -766,7 +820,27 @@ func (m *Manager) addWorkBuddyAccount(label string, creds WorkBuddyCredentials) 
 	return acc, nil
 }
 
-// UpdateSubscriptionCredentials 更新订阅引擎账号凭据（codex/antigravity/kiro/workbuddy）。
+// addCustomAccount 添加第三方 Key 账号（存储 + 入池）。
+func (m *Manager) addCustomAccount(label string, creds CustomCredentials) (store.Account, error) {
+	eng := m.customEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("custom 引擎未启用（engines.custom.enabled）")
+	}
+	if label == "" {
+		return store.Account{}, errors.New("label 不能为空")
+	}
+	acc, err := m.st.CreateAccount("custom", label, marshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
+// UpdateSubscriptionCredentials 更新订阅/第三方引擎账号凭据。
 func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMessage) error {
 	acc, err := m.st.GetAccount(id)
 	if err != nil {
@@ -809,6 +883,21 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 			return err
 		}
 		return m.mWorkBuddyEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	case "custom":
+		var creds CustomCredentials
+		if err := json.Unmarshal(credentials, &creds); err != nil {
+			return errors.New("credentials 不是合法 JSON")
+		}
+		if strings.TrimSpace(creds.BaseURL) == "" {
+			return errors.New("credentials.base_url 不能为空")
+		}
+		if strings.TrimSpace(creds.APIKey) == "" {
+			return errors.New("credentials.api_key 不能为空")
+		}
+		if err := m.st.UpdateAccountCredentials(id, marshalCompact(creds)); err != nil {
+			return err
+		}
+		return m.customEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
 	}
 	return fmt.Errorf("引擎 %s 不支持凭据更新", acc.Engine)
 }
@@ -975,8 +1064,8 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 		}
 		_ = m.st.UpdateAccountStatus(id, "ok", "")
 		return nil
-	case "codex", "antigravity", "kiro", "workbuddy":
-		// 订阅引擎：重建账号（重新初始化 token / project）
+	case "codex", "antigravity", "kiro", "workbuddy", "custom":
+		// 订阅/第三方引擎：重建账号（重新初始化 token / 探测模型）
 		if err := m.UpdateSubscriptionCredentials(id, json.RawMessage(acc.Credentials)); err != nil {
 			return err
 		}
@@ -1023,7 +1112,7 @@ func (m *Manager) AccountOverview() []AccountOverview {
 // ==================== 路由与对话 ====================
 
 // pickEngine 按模型名路由引擎。第二个返回值表示模型是否为该引擎专属
-//（订阅引擎目录命中或订阅引擎显式路由）：专属模型引擎不可用时不做
+// （订阅引擎目录命中或订阅引擎显式路由）：专属模型引擎不可用时不做
 // 跨引擎切换——其他引擎不认识该模型，切换只会产生误导性错误。
 func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	name := strings.ToLower(strings.TrimSpace(modelName))
@@ -1050,29 +1139,20 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 		}
 	}
 
-	// 2) 多模态模型走引擎B（保持历史行为）
+	// 2) 订阅/custom 目录精确命中（先于多模态启发式，避免 gpt-image-* 等被误送引擎B）
+	if eng, ok := m.matchSubscriptionCatalog(name); ok {
+		return eng, true
+	}
+
+	// 3) 多模态模型走引擎B（Gemini image/veo/tts 等历史行为）
 	if eng, ok := m.engines["b"]; ok && isMultimodalModel(name) {
 		return eng, false
 	}
 
-	// 3) default_engine 显式指定（支持任意注册引擎）
+	// 4) default_engine 显式指定（支持任意注册引擎）
 	if m.defaultEngine != "auto" && m.defaultEngine != "" {
 		if eng, ok := m.engines[m.defaultEngine]; ok {
 			return eng, isSubscriptionEngine(m.defaultEngine)
-		}
-	}
-
-	// 4) auto：模型名精确命中某订阅引擎目录 → 该引擎（模型专属）
-	for _, engName := range m.engineOrder {
-		if engName == "a" || engName == "b" {
-			continue
-		}
-		if eng, ok := m.engines[engName]; ok {
-			for _, mi := range eng.ListModels() {
-				if strings.EqualFold(mi.ID, name) {
-					return eng, true
-				}
-			}
 		}
 	}
 
@@ -1091,10 +1171,70 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	return nil, false
 }
 
-// isSubscriptionEngine 是否为订阅引擎（codex/antigravity/kiro/workbuddy）。
+// matchSubscriptionCatalog 按模型 id 精确命中订阅/custom 引擎目录。
+func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, bool) {
+	for _, engName := range m.engineOrder {
+		if engName == "a" || engName == "b" {
+			continue
+		}
+		eng, ok := m.engines[engName]
+		if !ok {
+			continue
+		}
+		if engineHasModel(eng, modelName) {
+			return eng, true
+		}
+	}
+	return nil, false
+}
+
+// engineHasModel 引擎目录是否包含该模型（大小写不敏感）。
+func engineHasModel(eng engine.Engine, modelName string) bool {
+	if eng == nil {
+		return false
+	}
+	name := strings.TrimSpace(modelName)
+	for _, mi := range eng.ListModels() {
+		if strings.EqualFold(mi.ID, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstEngineModel 返回引擎目录中第一个可用模型 id。
+func firstEngineModel(eng engine.Engine) string {
+	if eng == nil {
+		return ""
+	}
+	for _, mi := range eng.ListModels() {
+		id := strings.TrimSpace(mi.ID)
+		if id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// applyEngineBModelFallback 引擎B 作为兜底时：请求模型不在实时目录则改用目录第一个。
+func applyEngineBModelFallback(eng engine.Engine, req model.ChatRequest) model.ChatRequest {
+	if eng == nil || eng.Name() != "b" {
+		return req
+	}
+	if engineHasModel(eng, req.Model) {
+		return req
+	}
+	if alt := firstEngineModel(eng); alt != "" {
+		req.Model = alt
+	}
+	return req
+}
+
+// isSubscriptionEngine 是否为「模型专属」引擎（订阅号池或第三方 Key）。
+// 命中后引擎不可用时不做跨引擎切换，避免误导性错误。
 func isSubscriptionEngine(name string) bool {
 	switch name {
-	case "codex", "antigravity", "kiro", "workbuddy":
+	case "codex", "antigravity", "kiro", "workbuddy", "custom":
 		return true
 	}
 	return false
@@ -1128,45 +1268,154 @@ func isMultimodalModel(name string) bool {
 	return false
 }
 
+// ProbeModel 管理台模型检查：按用途走对应上游探测接口。
+// 生图 → /v1/images/generations；向量 → /v1/embeddings；其余对话模型 → chat；
+// 视频/音乐/语音只做目录可达性检查（避免昂贵的真实生成）。
+func (m *Manager) ProbeModel(ctx context.Context, modelID string) (string, error) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return "", errors.New("model 不能为空")
+	}
+	kind := model.ClassifyKind(modelID, "", nil)
+	for _, mi := range m.ListAllModels() {
+		if strings.EqualFold(mi.ID, modelID) {
+			if mi.Kind != "" {
+				kind = mi.Kind
+			}
+			break
+		}
+	}
+	switch kind {
+	case model.KindImage:
+		return m.probeImageModel(ctx, modelID)
+	case model.KindEmbedding:
+		return m.probeEmbeddingModel(ctx, modelID)
+	case model.KindVideo, model.KindMusic, model.KindSpeech:
+		return m.probeCatalogModel(modelID, kind)
+	default:
+		return m.probeChatModel(ctx, modelID)
+	}
+}
+
+func (m *Manager) probeChatModel(ctx context.Context, modelID string) (string, error) {
+	maxTokens := 16
+	temp := 0.0
+	res, err := m.Chat(ctx, model.ChatRequest{
+		Model:       modelID,
+		Messages:    []model.ChatMessage{{Role: "user", Content: "ping"}},
+		MaxTokens:   &maxTokens,
+		Temperature: &temp,
+	})
+	if err != nil {
+		return "", err
+	}
+	detail := ""
+	if res != nil {
+		detail = strings.TrimSpace(res.Text)
+	}
+	if detail == "" {
+		return "响应正常", nil
+	}
+	if len(detail) > 120 {
+		detail = detail[:120] + "…"
+	}
+	return detail, nil
+}
+
+func (m *Manager) probeImageModel(ctx context.Context, modelID string) (string, error) {
+	eng, _ := m.pickEngine(modelID)
+	switch e := eng.(type) {
+	case *CustomEngine:
+		return e.ProbeImage(ctx, modelID)
+	case *AIStudioEngine:
+		if e != nil && e.up != nil {
+			return e.up.ProbeImage(ctx, modelID)
+		}
+	}
+	// 原生 AI Studio 等：图片走 chat/completions。
+	return m.probeChatModel(ctx, modelID)
+}
+
+func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (string, error) {
+	eng, _ := m.pickEngine(modelID)
+	switch e := eng.(type) {
+	case *CustomEngine:
+		return e.ProbeEmbedding(ctx, modelID)
+	case *AIStudioEngine:
+		if e != nil && e.up != nil {
+			return e.up.ProbeEmbedding(ctx, modelID)
+		}
+	}
+	return "", fmt.Errorf("当前引擎不支持向量探测，请手动验证")
+}
+
+func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
+	for _, mi := range m.ListAllModels() {
+		if !strings.EqualFold(mi.ID, modelID) {
+			continue
+		}
+		if mi.Available {
+			return fmt.Sprintf("已在目录中（%s 模型未做生成探测）", kindLabel(kind)), nil
+		}
+		return "", fmt.Errorf("模型在目录中但上游暂不可用")
+	}
+	return "", fmt.Errorf("模型不在当前目录")
+}
+
+func kindLabel(kind string) string {
+	switch kind {
+	case model.KindVideo:
+		return "视频"
+	case model.KindMusic:
+		return "音乐"
+	case model.KindSpeech:
+		return "语音"
+	case model.KindImage:
+		return "生图"
+	case model.KindEmbedding:
+		return "向量"
+	default:
+		return "对话"
+	}
+}
+
 // Chat 非流式对话。
 func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
-	eng, owned := m.pickEngine(req.Model)
-	if eng == nil {
-		return nil, errors.New("没有可用的引擎")
-	}
-	if !eng.Ready() {
-		if owned {
-			// 模型为该订阅引擎专属：不跨引擎切换，直接返回该引擎的具体错误
-			return nil, engineUnavailableError(eng)
-		}
-		alt := m.alternate(eng)
-		if alt != nil {
-			eng = alt
-		} else {
-			return nil, engineUnavailableError(eng)
-		}
+	eng, req, err := m.resolveChatEngine(req)
+	if err != nil {
+		return nil, err
 	}
 	return eng.Chat(ctx, req)
 }
 
 // ChatStream 流式对话。
 func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+	eng, req, err := m.resolveChatEngine(req)
+	if err != nil {
+		return nil, err
+	}
+	return eng.ChatStream(ctx, req, onDelta)
+}
+
+// resolveChatEngine 选定引擎；引擎B 兜底且模型不在目录时改用第一个可用模型。
+func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model.ChatRequest, error) {
 	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
-		return nil, errors.New("没有可用的引擎")
+		return nil, req, errors.New("没有可用的引擎")
 	}
 	if !eng.Ready() {
 		if owned {
-			return nil, engineUnavailableError(eng)
+			// 模型为该订阅引擎专属：不跨引擎切换，直接返回该引擎的具体错误
+			return nil, req, engineUnavailableError(eng)
 		}
 		alt := m.alternate(eng)
 		if alt != nil {
 			eng = alt
 		} else {
-			return nil, engineUnavailableError(eng)
+			return nil, req, engineUnavailableError(eng)
 		}
 	}
-	return eng.ChatStream(ctx, req, onDelta)
+	return eng, applyEngineBModelFallback(eng, req), nil
 }
 
 // GenerateVideo 通过引擎B的 AI Studio GenerateVideo 协议创建 Veo 长任务。
@@ -1279,25 +1528,56 @@ func (m *Manager) alternate(cur engine.Engine) engine.Engine {
 	return nil
 }
 
-// ListModels 聚合模型列表（引擎A 保持历史裸 ID 行为，其余引擎以 ID@engine 去重）。
+// ListModels 聚合模型列表：按裸模型 ID 去重（同名跨引擎只保留一条，先出现的引擎优先）。
+// 对外身份就是裸 ID，客户端不指定引擎；实际请求由 pickEngine 按路由规则选上游。
+// 管理台标记为不可用的模型会被过滤，下游 /v1/models 与用户控制台看不到。
 func (m *Manager) ListModels() []model.ModelInfo {
+	return m.listModels(true)
+}
+
+// ListAllModels 聚合全部模型（含管理台标记为不可用的），供管理台展示与启停。
+func (m *Manager) ListAllModels() []model.ModelInfo {
+	return m.listModels(false)
+}
+
+func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
+	var disabled map[string]struct{}
+	if publicOnly && m.st != nil {
+		if set, err := m.st.DisabledModels(); err == nil {
+			disabled = set
+		}
+	}
 	var out []model.ModelInfo
-	seen := map[string]bool{}
+	indexByID := map[string]int{}
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]
 		if !ok {
 			continue
 		}
 		for _, mi := range eng.ListModels() {
-			key := mi.ID + "@" + name
-			if name == "a" {
-				key = mi.ID
-			}
-			if seen[key] {
+			id := strings.TrimSpace(mi.ID)
+			if id == "" {
 				continue
 			}
-			seen[key] = true
-			out = append(out, withModelKind(mi))
+			if _, skip := disabled[id]; skip {
+				continue
+			}
+			mi = withModelKind(mi)
+			mi.ID = id
+			if mi.Engine == "" {
+				mi.Engine = name
+			}
+			if idx, ok := indexByID[id]; ok {
+				// 同名：保留先出现的条目，合并可用态与更具体的用途。
+				out[idx].Available = out[idx].Available || mi.Available
+				out[idx].Kind = model.PreferKind(out[idx].Kind, mi.Kind)
+				if out[idx].DisplayName == "" {
+					out[idx].DisplayName = mi.DisplayName
+				}
+				continue
+			}
+			indexByID[id] = len(out)
+			out = append(out, mi)
 		}
 	}
 	return out
@@ -1332,6 +1612,7 @@ func (m *Manager) EngineMetaList() []EngineMeta {
 		{Name: "antigravity", Describe: "Google Antigravity（Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
 		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},
 		{Name: "workbuddy", Describe: "腾讯 CodeBuddy/WorkBuddy（SaaS 订阅）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token（OAuth 扫码授权）"},
+		{Name: "custom", Describe: "第三方 OpenAI 兼容 Key（支持常见供应商余额查询）", Enabled: m.engines["custom"] != nil, AccountPool: true, Credential: "base_url + api_key；余额：MiniMax/OpenRouter/硅基流动/DeepSeek/Sub2API/NewAPI 等"},
 	}
 	return metas
 }

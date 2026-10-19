@@ -12,7 +12,11 @@ func TestClassifyKind(t *testing.T) {
 	}{
 		{id: "gemini-2.5-flash", want: KindChat},
 		{id: "gemini-3.1-flash-image", want: KindImage},
+		{id: "gpt-image-2.5-sunburst", want: KindImage},
+		{id: "dall-e-3", want: KindImage},
 		{id: "veo-3.1-fast-generate-preview", want: KindVideo},
+		{id: "gemini-omni-1.1-flash", want: KindVideo},
+		{id: "gemini-omni-flash-preview", want: KindVideo},
 		{id: "lyria-3", display: "Lyria", want: KindMusic},
 		{id: "gemini-2.5-flash-preview-tts", want: KindSpeech},
 		{id: "text-embedding-004", want: KindEmbedding},

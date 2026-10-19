@@ -25,6 +25,9 @@ func TestLoadUsesDefaultsWhenConfigIsMissing(t *testing.T) {
 	if !cfg.EngineB.Enabled || cfg.EngineB.Mode != "native" || cfg.EngineB.AuthStates != "auth" {
 		t.Fatalf("unexpected engine B defaults: %#v", cfg.EngineB)
 	}
+	if !cfg.Engines.Custom.Enabled {
+		t.Fatalf("第三方 Key 引擎默认应启用: %#v", cfg.Engines.Custom)
+	}
 }
 
 func TestLoadUsesDefaultsWhenConfigPathIsDirectory(t *testing.T) {
