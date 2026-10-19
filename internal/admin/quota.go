@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -234,25 +236,190 @@ func (a *API) handleUsageExport(w http.ResponseWriter, r *http.Request) {
 	out.Flush()
 }
 
-// handleModels GET /admin/api/models：聚合模型目录，附带生效倍率。
+// handleModels GET /admin/api/models：聚合模型目录（含不可用），附带生效倍率与检查状态。
 func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 	type modelView struct {
-		ID          string  `json:"id"`
-		DisplayName string  `json:"display_name,omitempty"`
-		Engine      string  `json:"engine,omitempty"`
-		Available   bool    `json:"available"`
-		Kind        string  `json:"kind,omitempty"`
-		Multiplier  float64 `json:"multiplier"`
+		ID              string  `json:"id"`
+		DisplayName     string  `json:"display_name,omitempty"`
+		Engine          string  `json:"engine,omitempty"`
+		Available       bool    `json:"available"`
+		Enabled         bool    `json:"enabled"`
+		Kind            string  `json:"kind,omitempty"`
+		Multiplier      float64 `json:"multiplier"`
+		LastCheckAt     int64   `json:"last_check_at,omitempty"`
+		LastCheckOK     bool    `json:"last_check_ok"`
+		LastCheckDetail string  `json:"last_check_detail,omitempty"`
+	}
+	settings := map[string]store.ModelSetting{}
+	if list, err := a.st.ListModelSettings(); err == nil {
+		for _, s := range list {
+			settings[s.Model] = s
+		}
 	}
 	out := []modelView{}
 	if a.mgr != nil {
-		for _, m := range a.mgr.ListModels() {
+		for _, m := range a.mgr.ListAllModels() {
 			multiplier, _ := a.st.ModelMultiplierFor(m.ID)
-			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Engine: m.Engine, Available: m.Available, Kind: m.Kind, Multiplier: multiplier})
+			view := modelView{
+				ID: m.ID, DisplayName: m.DisplayName, Engine: m.Engine,
+				Available: m.Available, Enabled: true, Kind: m.Kind, Multiplier: multiplier,
+			}
+			if s, ok := settings[m.ID]; ok {
+				view.Enabled = s.Enabled
+				view.LastCheckAt = s.LastCheckAt
+				view.LastCheckOK = s.LastCheckOK
+				view.LastCheckDetail = s.LastCheckDetail
+			}
+			out = append(out, view)
 		}
+	}
+	// 已单独设置过上下架/检查、但不在当前引擎目录中的模型也展示。
+	seen := map[string]struct{}{}
+	for _, m := range out {
+		seen[m.ID] = struct{}{}
+	}
+	for modelID, s := range settings {
+		if _, ok := seen[modelID]; ok {
+			continue
+		}
+		multiplier, _ := a.st.ModelMultiplierFor(modelID)
+		out = append(out, modelView{
+			ID: modelID, Enabled: s.Enabled, Multiplier: multiplier,
+			LastCheckAt: s.LastCheckAt, LastCheckOK: s.LastCheckOK, LastCheckDetail: s.LastCheckDetail,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+}
+
+// handlePatchModel PATCH /admin/api/models/{model...}：设置模型是否对下游开放。
+func (a *API) handlePatchModel(w http.ResponseWriter, r *http.Request) {
+	modelID := strings.TrimSpace(r.PathValue("model"))
+	if modelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model 不能为空"})
+		return
+	}
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请提供 enabled"})
+		return
+	}
+	setting, err := a.st.SetModelEnabled(modelID, *req.Enabled)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": setting})
+}
+
+// handleCheckModel POST /admin/api/models/check：探测单个或多个模型。
+// body: { model?, models?, sync_status? }；sync_status 默认 true（失败下架、成功开放）。
+func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model       string   `json:"model"`
+		Models      []string `json:"models"`
+		SyncStatus  *bool    `json:"sync_status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 JSON"})
+		return
+	}
+	ids := make([]string, 0, len(req.Models)+1)
+	seen := map[string]struct{}{}
+	for _, id := range append(req.Models, req.Model) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请提供 model 或 models"})
+		return
+	}
+	if a.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "引擎未就绪"})
+		return
+	}
+	syncStatus := true
+	if req.SyncStatus != nil {
+		syncStatus = *req.SyncStatus
+	}
+
+	results := make([]modelCheckResult, 0, len(ids))
+	passed, failed := 0, 0
+	for _, modelID := range ids {
+		if err := r.Context().Err(); err != nil {
+			break
+		}
+		item := a.probeModel(r.Context(), modelID, syncStatus)
+		results = append(results, item)
+		if item.OK {
+			passed++
+		} else {
+			failed++
+		}
+	}
+	out := map[string]any{
+		"ok":      failed == 0,
+		"total":   len(results),
+		"passed":  passed,
+		"failed":  failed,
+		"results": results,
+	}
+	if len(results) == 1 {
+		out["model"] = results[0].Setting
+		out["detail"] = results[0].Detail
+		if !results[0].OK {
+			out["error"] = results[0].Detail
+			writeJSON(w, http.StatusBadGateway, out)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type modelCheckResult struct {
+	Model   string             `json:"model"`
+	OK      bool               `json:"ok"`
+	Detail  string             `json:"detail,omitempty"`
+	Enabled bool               `json:"enabled"`
+	Setting store.ModelSetting `json:"setting"`
+}
+
+func (a *API) probeModel(parent context.Context, modelID string, syncStatus bool) modelCheckResult {
+	out := modelCheckResult{Model: modelID, Enabled: true}
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+	defer cancel()
+	detail, err := a.mgr.ProbeModel(ctx, modelID)
+	ok := err == nil
+	if err != nil {
+		detail = err.Error()
+	} else if strings.TrimSpace(detail) == "" {
+		detail = "响应正常"
+	}
+	setting, saveErr := a.st.RecordModelCheck(modelID, ok, detail)
+	if saveErr != nil {
+		a.logger.Printf("[models] 保存检查结果失败 model=%q: %v", modelID, saveErr)
+	}
+	if syncStatus {
+		if synced, err := a.st.SetModelEnabled(modelID, ok); err == nil {
+			setting = synced
+		} else {
+			a.logger.Printf("[models] 同步上下架失败 model=%q: %v", modelID, err)
+		}
+	}
+	out.OK = ok
+	out.Detail = detail
+	out.Enabled = setting.Enabled
+	out.Setting = setting
+	return out
 }
 
 // handleVersion GET /admin/api/version

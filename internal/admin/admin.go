@@ -4,6 +4,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -61,6 +62,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", a.auth(a.handleDeleteAccount))
 	// 引擎元数据与订阅引擎 OAuth 授权
 	mux.HandleFunc("GET /admin/api/engines", a.auth(a.handleEngineMeta))
+	mux.HandleFunc("POST /admin/api/custom/models", a.auth(a.handleProbeCustomModels))
 	mux.HandleFunc("POST /admin/api/oauth/{engine}/authorize", a.auth(a.handleOAuthAuthorize))
 	mux.HandleFunc("POST /admin/api/oauth/{engine}/exchange", a.auth(a.handleOAuthExchange))
 	mux.HandleFunc("POST /admin/api/oauth/{engine}/poll", a.auth(a.handleOAuthPoll))
@@ -74,6 +76,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/usage/export.csv", a.auth(a.handleUsageExport))
 	mux.HandleFunc("POST /admin/api/keys/{id}/regenerate", a.auth(a.handleRegenerateKey))
 	mux.HandleFunc("GET /admin/api/models", a.auth(a.handleModels))
+	mux.HandleFunc("PATCH /admin/api/models/{model...}", a.auth(a.handlePatchModel))
+	mux.HandleFunc("POST /admin/api/models/check", a.auth(a.handleCheckModel))
 	mux.HandleFunc("GET /admin/api/version", a.auth(a.handleVersion))
 	mux.HandleFunc("GET /admin/api/multipliers", a.auth(a.handleListMultipliers))
 	mux.HandleFunc("PUT /admin/api/multipliers", a.auth(a.handlePutMultiplier))
@@ -210,6 +214,7 @@ func openAPISpec() map[string]any {
 			"/admin/api/accounts/{id}/credentials": map[string]any{"put": map[string]any{"tags": []string{"账号"}, "summary": "更新账号凭据", "description": "引擎A：{psid, psidts}；订阅引擎：{credentials: {...}}。", "requestBody": body("GeminiCredentialsInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
 			"/admin/api/accounts/{id}/check":       map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "触发账号健康检测", "responses": map[string]any{"200": response("检测已触发")}}},
 			"/admin/api/engines":                   map[string]any{"get": map[string]any{"tags": []string{"账号"}, "summary": "引擎元数据列表（添加账号表单数据驱动）", "responses": map[string]any{"200": response("engines")}}},
+			"/admin/api/custom/models":             map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "探测第三方供应商模型列表", "description": "用 base_url + api_key 调用上游 /v1/models，添加账号前预览可用模型。", "requestBody": body("CustomProbeInput"), "responses": map[string]any{"200": response("models"), "400": response("探测失败")}}},
 			"/admin/api/oauth/{engine}/authorize":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "生成订阅引擎 OAuth 授权链接", "description": "支持 codex（OpenAI）、antigravity（Google）、workbuddy（腾讯 CodeBuddy 设备授权）。返回 auth_url 供浏览器打开。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("session_id、auth_url"), "400": response("引擎不支持 OAuth")}}},
 			"/admin/api/oauth/{engine}/exchange":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "授权码换 token 并加号（codex/antigravity）", "description": "把浏览器回调 URL（含 code）或裸授权码回填，服务端交换 refresh_token 并入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "400": response("参数或授权错误")}}},
 			"/admin/api/oauth/{engine}/poll":      map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "轮询设备授权结果（workbuddy）", "description": "用户扫码/登录完成前返回 202 {pending: true}；完成后自动加号入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "202": response("pending"), "400": response("参数或授权错误")}}},
@@ -227,8 +232,15 @@ func openAPISpec() map[string]any {
 			"/admin/api/keys/{id}/regenerate": map[string]any{"post": map[string]any{"tags": []string{"API Key"}, "summary": "重新生成密钥", "description": "换发新的 sk- 密钥，旧密钥立即失效；额度、倍率、白名单等设置保留。", "parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}}, "responses": map[string]any{"200": response("key"), "404": response("Key 不存在")}}},
 			"/admin/api/usage/timeseries":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "用量时间序列", "description": "days=1 按小时，其余按本地自然日分桶；空桶补零。每点含 requests、success_requests、total_tokens、charged_tokens、avg_latency_ms。", "parameters": usageParams(false), "responses": map[string]any{"200": response("bucket、points")}}},
 			"/admin/api/usage/export.csv":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "导出逐请求明细 CSV", "description": "UTF-8（带 BOM），最多 100000 行，Key 脱敏。", "parameters": usageParams(false), "responses": map[string]any{"200": map[string]any{"description": "CSV 文件", "content": map[string]any{"text/csv": map[string]any{}}}}}},
-			"/admin/api/models":               map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含用途分类与生效倍率）", "description": "kind 为 chat、image、video、music、speech、embedding，分别对应对话、生图、视频、音乐、语音、向量。", "responses": map[string]any{"200": response("models")}}},
-			"/admin/api/version":              map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
+			"/admin/api/models": map[string]any{
+				"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含用途分类、生效倍率、上下架与检查状态）", "description": "kind 为 chat、image、video、music、speech、embedding。enabled=false 的模型不会出现在下游 /v1/models。", "responses": map[string]any{"200": response("models")}},
+			},
+			"/admin/api/models/{model}": map[string]any{
+				"parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"patch":      map[string]any{"tags": []string{"概览"}, "summary": "设置模型上下架", "description": "enabled=false 时下游无法获取该模型，调用也会被拒绝。", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("ok、model"), "400": response("参数错误")}},
+			},
+			"/admin/api/models/check": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "检查模型是否可用（支持批量）", "description": "按用途探测：对话走 chat/completions，生图走 images/generations，向量走 embeddings；视频/音乐/语音只做目录检查。可传 model 或 models[]。sync_status 默认 true：失败下架、成功开放。", "requestBody": body("ModelCheckInput"), "responses": map[string]any{"200": response("ok、total、passed、failed、results"), "502": response("单个模型探测失败")}}},
+			"/admin/api/version": map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
 			"/admin/api/multipliers": map[string]any{
 				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率 × 用户倍率)，用户倍率只对用户 Key 生效。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
 				"put": map[string]any{"tags": []string{"用量"}, "summary": "设置模型倍率", "requestBody": body("MultiplierInput"), "responses": map[string]any{"200": response("已保存"), "400": response("参数错误")}},
@@ -246,10 +258,12 @@ func openAPISpec() map[string]any {
 				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
 				"KeyPatchInput":          map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}, "name": map[string]any{"type": "string"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "reset_usage": map[string]any{"type": "boolean", "description": "true 时把 tokens_used 归零（保留用量明细）"}, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
 				"MultiplierInput":        map[string]any{"type": "object", "required": []string{"model", "multiplier"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；\"*\" 为默认倍率"}, "multiplier": map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier}}},
+				"ModelCheckInput":        map[string]any{"type": "object", "properties": map[string]any{"model": map[string]any{"type": "string", "description": "单个模型 ID"}, "models": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "批量模型 ID"}, "sync_status": map[string]any{"type": "boolean", "description": "默认 true：按检查结果同步上下架"}}},
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
 				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
-				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b", "codex", "antigravity", "kiro", "workbuddy"}, "description": "a=Gemini 网页，b=AI Studio；codex/antigravity/kiro/workbuddy 为订阅引擎（凭据走 credentials 对象）"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "引擎A/B 的 storage-state.json 原文"}, "credentials": map[string]any{"type": "object", "description": "订阅引擎凭据：codex/antigravity/kiro 传 {refresh_token, email?, proxy?}；workbuddy 传 {token, email?, expires_at?, proxy?}"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b", "codex", "antigravity", "kiro", "workbuddy", "custom"}, "description": "a=Gemini 网页，b=AI Studio；codex/antigravity/kiro/workbuddy 为订阅引擎；custom 为第三方 OpenAI 兼容 Key"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "引擎A/B 的 storage-state.json 原文"}, "credentials": map[string]any{"type": "object", "description": "订阅引擎：codex/antigravity/kiro 传 {refresh_token}；workbuddy 传 {token}；custom 传 {base_url, api_key, models?, proxy?}"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+				"CustomProbeInput":       map[string]any{"type": "object", "required": []string{"base_url", "api_key"}, "properties": map[string]any{"base_url": map[string]any{"type": "string"}, "api_key": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 			"OAuthExchangeInput":     map[string]any{"type": "object", "required": []string{"session_id", "code"}, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "code": map[string]any{"type": "string", "description": "授权码或完整回调 URL"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string"}}},
 			},
 		},
@@ -482,7 +496,7 @@ func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpdateCredentials 更新账号凭据：引擎A 为 Gemini Cookie（psid/psidts），
-// 订阅引擎（codex/antigravity/kiro/workbuddy）为 credentials 凭据对象。
+// 订阅/第三方引擎为 credentials 凭据对象。
 func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -514,7 +528,7 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	case "codex", "antigravity", "kiro", "workbuddy":
+	case "codex", "antigravity", "kiro", "workbuddy", "custom":
 		var req struct {
 			Credentials json.RawMessage `json:"credentials"`
 		}
@@ -534,6 +548,23 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + acc.Engine + " 不支持凭据更新"})
 	}
+}
+
+// handleProbeCustomModels 探测第三方供应商 /v1/models（添加前预览）。
+func (a *API) handleProbeCustomModels(w http.ResponseWriter, r *http.Request) {
+	var req provider.CustomCredentials
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体无效"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	models, err := provider.ProbeCustomModels(ctx, a.mgr.EngineProxy("custom"), req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
 // handleEngineMeta 引擎元数据列表（前端添加账号表单数据驱动）。

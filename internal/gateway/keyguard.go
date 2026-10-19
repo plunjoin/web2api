@@ -70,8 +70,26 @@ func writeKeyExpired(w http.ResponseWriter, expiresAt int64) {
 		time.Unix(expiresAt, 0).Format(time.RFC3339)), "authentication_error", "key_expired")
 }
 
-// modelAllowed 检查当前 Key 的模型白名单；不允许时写出 403 并返回 false。
+// modelCatalogAllowed 检查管理台是否将该模型标记为对下游开放。
+func (s *Server) modelCatalogAllowed(w http.ResponseWriter, model string) bool {
+	if s.st == nil || strings.TrimSpace(model) == "" {
+		return true
+	}
+	enabled, err := s.st.ModelEnabled(model)
+	if err != nil || enabled {
+		return true
+	}
+	writeError(w, http.StatusNotFound, fmt.Sprintf(
+		"Model %q is not available (该模型已下架或不可用).", model),
+		"invalid_request_error", "model_unavailable")
+	return false
+}
+
+// modelAllowed 检查模型是否对下游开放，以及当前 Key 的模型白名单。
 func (s *Server) modelAllowed(w http.ResponseWriter, r *http.Request, model string) bool {
+	if !s.modelCatalogAllowed(w, model) {
+		return false
+	}
 	info, ok := keyInfoFrom(r)
 	if !ok || info.ModelAllowed(model) {
 		return true
@@ -84,9 +102,14 @@ func (s *Server) modelAllowed(w http.ResponseWriter, r *http.Request, model stri
 
 // withModelGuard 用于模型不在固定字段里的路由（Gemini 原生、多模态透传）：
 // 从路径 models/{model} 与 JSON 请求体的 "model" 字段提取模型并校验白名单。
-// 只有设置了白名单的 Key 才会读取请求体。
+// 上下架校验始终执行；白名单仅在 Key 配置了 allowed_models 时读取请求体。
 func (s *Server) withModelGuard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		for _, model := range modelsInPath(r.URL.Path) {
+			if !s.modelCatalogAllowed(w, model) {
+				return
+			}
+		}
 		info, ok := keyInfoFrom(r)
 		if !ok || len(info.AllowedModels) == 0 {
 			next(w, r)
