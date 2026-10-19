@@ -41,13 +41,30 @@ type OpenAI struct {
 
 // New 创建上游。
 func New(name, baseURL, apiKey string, passthrough bool, timeout time.Duration) *OpenAI {
+	return NewWithClient(name, baseURL, apiKey, passthrough, &http.Client{Timeout: timeout})
+}
+
+// NewWithClient 使用自定义 HTTP 客户端创建上游（可带代理）。
+func NewWithClient(name, baseURL, apiKey string, passthrough bool, client *http.Client) *OpenAI {
+	if client == nil {
+		client = &http.Client{Timeout: 300 * time.Second}
+	}
 	return &OpenAI{
 		name:        name,
-		baseURL:     strings.TrimRight(baseURL, "/"),
+		baseURL:     NormalizeBaseURL(baseURL),
 		apiKey:      apiKey,
 		passthrough: passthrough,
-		http:        &http.Client{Timeout: timeout},
+		http:        client,
 	}
+}
+
+// NormalizeBaseURL 去掉尾部斜杠和可选的 /v1。
+func NormalizeBaseURL(baseURL string) string {
+	u := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if strings.HasSuffix(strings.ToLower(u), "/v1") {
+		u = strings.TrimRight(u[:len(u)-3], "/")
+	}
+	return u
 }
 
 // Name 上游名。
@@ -284,6 +301,48 @@ func (o *OpenAI) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 	}
 	o.MarkReady()
 	return &model.ChatResult{Text: full.String(), Engine: o.name, Model: req.Model}, nil
+}
+
+// ProbeImage 探测图片模型：调用 /v1/images/generations（不走 Chat Completions）。
+func (o *OpenAI) ProbeImage(ctx context.Context, modelName string) (string, error) {
+	attempts := []map[string]any{
+		{"model": modelName, "prompt": "a tiny red dot", "n": 1, "size": "1024x1024"},
+		{"model": modelName, "prompt": "a tiny red dot", "n": 1},
+		{"model": modelName, "prompt": "a tiny red dot"},
+	}
+	var last error
+	for _, payload := range attempts {
+		data, status, err := o.do(ctx, http.MethodPost, "/v1/images/generations", payload)
+		if err != nil {
+			return "", err
+		}
+		if status == http.StatusOK {
+			o.MarkReady()
+			return "图片接口响应正常", nil
+		}
+		last = fmt.Errorf("上游返回 HTTP %d: %s", status, truncate(data))
+		if status != http.StatusBadRequest {
+			break
+		}
+	}
+	return "", last
+}
+
+// ProbeEmbedding 探测向量模型：调用 /v1/embeddings。
+func (o *OpenAI) ProbeEmbedding(ctx context.Context, modelName string) (string, error) {
+	payload := map[string]any{
+		"model": modelName,
+		"input": "ping",
+	}
+	data, status, err := o.do(ctx, http.MethodPost, "/v1/embeddings", payload)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("上游返回 HTTP %d: %s", status, truncate(data))
+	}
+	o.MarkReady()
+	return "向量接口响应正常", nil
 }
 
 // ServePassthrough 将请求原样转发到上游同路径。
