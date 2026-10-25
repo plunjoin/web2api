@@ -1189,13 +1189,19 @@ func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, boo
 }
 
 // engineHasModel 引擎目录是否包含该模型（大小写不敏感）。
+// Google OpenAI 兼容端点的目录 id 带 models/ 前缀，两侧均做去前缀的宽松匹配，
+// 客户端用裸名或带前缀名都能命中。
 func engineHasModel(eng engine.Engine, modelName string) bool {
 	if eng == nil {
 		return false
 	}
-	name := strings.TrimSpace(modelName)
+	name := strings.TrimPrefix(strings.TrimSpace(modelName), "models/")
+	if name == "" {
+		return false
+	}
 	for _, mi := range eng.ListModels() {
-		if strings.EqualFold(mi.ID, name) {
+		id := strings.TrimPrefix(strings.TrimSpace(mi.ID), "models/")
+		if id != "" && strings.EqualFold(id, name) {
 			return true
 		}
 	}
@@ -1632,4 +1638,24 @@ func (m *Manager) ServePassthrough(ctx context.Context, method, path string, bod
 		return errors.New("没有启用支持多模态透传的引擎")
 	}
 	return eng.ServePassthrough(ctx, method, path, body, contentType, w)
+}
+
+// ServeModelPassthrough 按模型路由多模态透传：请求体的模型命中订阅/custom 引擎目录时，
+// 转发到对应上游（当前仅 custom 第三方 Key 的 OpenAI 兼容端点支持）。
+// handled=false 表示没有引擎认领该模型，调用方应回退引擎B（upstream 模式）。
+func (m *Manager) ServeModelPassthrough(ctx context.Context, modelID, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) (bool, error) {
+	name := strings.TrimSpace(modelID)
+	if name == "" {
+		return false, nil
+	}
+	eng, ok := m.matchSubscriptionCatalog(name)
+	if !ok {
+		return false, nil
+	}
+	custom, isCustom := eng.(*CustomEngine)
+	if !isCustom {
+		// 订阅引擎不是通用 OpenAI 兼容上游，维持引擎B回退。
+		return false, nil
+	}
+	return true, custom.ServeModelPassthrough(ctx, name, method, path, body, contentType, w)
 }

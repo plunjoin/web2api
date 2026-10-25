@@ -391,13 +391,15 @@ func (e *CustomEngine) pick(modelName string) *customAccount {
 
 	// 优先选声明了该模型的账号。
 	if want != "" {
+		bare := strings.TrimPrefix(want, "models/")
 		for i := 0; i < n; i++ {
 			acc := e.accounts[(start+i)%n]
 			acc.mu.Lock()
 			ok := acc.enabled && acc.ready && time.Now().After(acc.cooldownUntil)
 			has := len(acc.models) == 0 // 无目录时任意模型都可试
 			for _, m := range acc.models {
-				if strings.EqualFold(m.ID, want) {
+				// 目录 id 可能带 models/ 前缀（Google OpenAI 兼容端点），宽松匹配。
+				if strings.EqualFold(strings.TrimPrefix(m.ID, "models/"), bare) {
 					has = true
 					break
 				}
@@ -443,6 +445,17 @@ func (e *CustomEngine) usableCount() int {
 		return 1
 	}
 	return n
+}
+
+// ServeModelPassthrough 按模型把 OpenAI 兼容端点请求原样转发到拥有该模型的账号上游
+// （/v1/embeddings、/v1/images/generations 等）。与 ServePassthrough 的区别：先解析
+// 模型归属的账号再转发；解析失败（引擎不可用/无可用账号）时返回错误且未写出响应。
+func (e *CustomEngine) ServeModelPassthrough(ctx context.Context, modelID, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+	up, err := e.upstreamFor(modelID)
+	if err != nil {
+		return err
+	}
+	return up.ServePassthrough(ctx, method, path, body, contentType, w)
 }
 
 // ProbeImage 用账号上游探测图片模型（/v1/images/generations）。
