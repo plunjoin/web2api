@@ -263,8 +263,11 @@ Gemini 官方参数审计（2026-10-07）：[参数映射与实现遗漏](docs/a
 `GET /health`、`GET /v1/accounts`。Veo 使用独立长任务接口：
 `POST /v1/videos` 创建、`GET /v1/videos/{id}` 轮询、
 `GET /v1/videos/{id}/content` 下载完成的视频；请求会走引擎B的
-`GenerateVideo` / `GetGenerateVideoOperation` 协议。upstream 模式引擎B 另支持
-`/v1/images|videos|audio|files` 透传。
+`GenerateVideo` / `GetGenerateVideoOperation` 协议。多模态透传
+（`/v1/images|videos|audio|files|embeddings`）按模型路由：请求体模型命中
+custom（第三方 Key）目录时转发对应上游（native 模式即可用，如 Google
+OpenAI 兼容端的 `gemini-embedding-*` 向量模型）；未命中时回退引擎B
+upstream 模式透传。
 
 ### 本机一键导入 AI Studio 登录态
 

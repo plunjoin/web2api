@@ -1,6 +1,9 @@
 # 多模态透传
 
-在引擎 B 的 `upstream` 模式且开启 `passthrough: true` 时，以下路径会将请求透传到配置的 OpenAI 兼容上游服务。对应上游必须实现这些端点：
+多模态透传按两级路由：
+
+1. **按模型路由（优先）**：请求体 `model` 命中订阅/custom 引擎目录时，转发到拥有该模型的第三方 Key 上游（OpenAI 兼容）。原生模式下即可使用，例如把 Google AI Studio 的 API Key 作为 custom 账号添加后，`/v1/embeddings` 可直接调用 `gemini-embedding-*`。目录匹配对 `models/` 前缀宽松（Google 目录 id 带前缀，裸名同样命中）。
+2. **引擎 B upstream 模式回退**：模型未命中目录时，在 `mode: upstream` 且 `passthrough: true` 时透传到配置的 OpenAI 兼容上游。对应上游必须实现这些端点：
 
 | 路径 | 用途 |
 | --- | --- |
@@ -12,7 +15,7 @@
 | `POST /v1/files/*` | 文件上传和处理 |
 | `POST /v1/embeddings/*` | Embedding 请求 |
 
-透传请求仍然使用 `Authorization: Bearer sk-...`。JSON 请求使用 `Content-Type: application/json`，二进制内容使用 `application/octet-stream`。路径和请求体字段由对应上游协议决定，使用前请确认配置中的 `mode: upstream`。
+透传请求仍然使用 `Authorization: Bearer sk-...`。JSON 请求使用 `Content-Type: application/json`，二进制内容使用 `application/octet-stream`。路径和请求体字段由对应上游协议决定，使用前请确认配置中的 `mode: upstream`（按模型路由不受此限制）。
 
 ## 透传范围与 Gemini 官方参数
 
@@ -24,4 +27,6 @@
 
 `POST /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content` 固定使用原生 Veo 适配，在 upstream 模式下不会透传，调用会返回未启用原生协议的错误。
 
-默认 native 模式的图片/音频生成使用 `/v1/chat/completions`；图片/音频专用透传路径在该模式下返回 `502`。透传只替换为服务端配置的上游认证，保留请求方法、路径、Content-Type 和请求体，以及上游响应状态、响应头和正文；字段支持范围及默认值由上游决定。
+默认 native 模式的图片/音频生成使用 `/v1/chat/completions`；图片/音频专用透传路径在该模式下且模型未命中 custom 目录时返回 `502`。透传只替换为服务端配置的上游认证，保留请求方法、路径、Content-Type 和请求体，以及上游响应状态、响应头和正文；字段支持范围及默认值由上游决定。
+
+> AI生成
