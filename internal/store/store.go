@@ -120,6 +120,8 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) migrate() error {
 	// 历史版本的 accounts 表带 CHECK(engine IN ('a','b')) 约束，
 	// 阻止 codex/antigravity 等新引擎写入；检测到时重建为无约束版本。
+	// 注意顺序：本迁移在 CREATE TABLE 之前执行，仅用于已存在的旧表；
+	// 全新库直接由下方建表语句创建无约束版本。
 	if err := s.migrateAccountsEngineCheck(); err != nil {
 		return fmt.Errorf("迁移 accounts 表失败: %w", err)
 	}
@@ -134,7 +136,7 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			engine TEXT NOT NULL CHECK(engine IN ('a','b')),
+			engine TEXT NOT NULL,
 			label TEXT NOT NULL,
 			credentials TEXT NOT NULL DEFAULT '{}',
 			enabled INTEGER NOT NULL DEFAULT 1,
