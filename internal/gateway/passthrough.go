@@ -29,6 +29,14 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 	}
 	eng := s.mgr.PassthroughEngine()
 	if eng == nil {
+		// OpenAI 协议端点（embeddings/images 等）model 是必填参数；缺失时
+		// 给出明确的 400 提示，而不是误导性的“引擎B未启用”。
+		if isModelRequiredEndpoint(path) {
+			writeError(w, http.StatusBadRequest,
+				"Missing required parameter: 'model'. Please provide the model id in the request body (请在请求体的 JSON 中提供 model 字段，如 {\"model\":\"gemini-embedding-001\",\"input\":\"...\"}).",
+				"invalid_request_error", nil)
+			return
+		}
 		writeError(w, http.StatusBadGateway, "未启用支持多模态透传的引擎（引擎B）", "api_error", nil)
 		return
 	}
@@ -37,6 +45,21 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 		// 头可能已写出，无法再 writeError；尝试记录
 		s.logger.Printf("[passthrough] %s %s 失败: %v", r.Method, path, err)
 	}
+}
+
+// isModelRequiredEndpoint 判断端点在 OpenAI 协议下是否必填 model
+// （模型路由也依赖该字段）。GET 类查询路径不要求。
+func isModelRequiredEndpoint(path string) bool {
+	switch {
+	case strings.HasPrefix(path, "/v1/embeddings"):
+		return true
+	case strings.HasPrefix(path, "/v1/images"):
+		// /v1/images/generations|edits|variations 均需 model；/v1/models 例外。
+		return !strings.HasPrefix(path, "/v1/images/models")
+	case strings.HasPrefix(path, "/v1/audio/transcriptions"), strings.HasPrefix(path, "/v1/audio/translations"):
+		return true
+	}
+	return false
 }
 
 // passthroughModelFromBody 读取 JSON 请求体的 model 字段（供模型路由），

@@ -188,6 +188,53 @@ func TestGatewayEmbeddingsRouteToCustom(t *testing.T) {
 	}
 }
 
+// TestGatewayEmbeddingsMissingModelNative native 模式（引擎B不可透传）下，
+// 缺 model 应返回 400 明确提示补参数，而非误导性的“引擎B未启用”。
+func TestGatewayEmbeddingsMissingModelNative(t *testing.T) {
+	engineB := mockEngineB(t)
+	customUp, _ := mockCustomUpstream(t)
+	cfg := &config.Config{
+		Server:  config.ServerConfig{Listen: "127.0.0.1:0", APIKeys: []string{"sk-gw"}, DBPath: filepath.Join(t.TempDir(), "test.db")},
+		Routing: config.RoutingConfig{DefaultEngine: "auto"},
+		EngineB: config.EngineBConfig{Enabled: true, Mode: "native", BaseURL: engineB.URL},
+		Engines: config.EnginesConfig{Custom: config.CustomConfig{Enabled: true}},
+	}
+	st, err := store.Open(cfg.Server.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mgr, err := provider.NewManager(cfg, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = mgr.Init(ctx)
+	srv, err := NewServer(mgr, st, cfg.Server.APIKeys, 0, 0, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = customUp // native 模式下 custom 账号无需就绪，仅验证错误提示
+
+	do := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer sk-gw")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	rec := do(`{"input":"x"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "model") {
+		t.Fatalf("缺 model 应 400 并提示补 model: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(`{"model":"","input":"x"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "model") {
+		t.Fatalf("空 model 应同样 400: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestGatewayImagesRouteToCustomByModel(t *testing.T) {
 	srv, _ := newPassthroughTestServer(t)
 
