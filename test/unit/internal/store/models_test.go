@@ -31,6 +31,37 @@ func TestModelEnabledDefaultAndDisable(t *testing.T) {
 	}
 }
 
+func TestSetModelsEnabledBatch(t *testing.T) {
+	s := newTestStore(t)
+	n, err := s.SetModelsEnabled([]string{" m1 ", "m2", "m1", ""}, false)
+	if err != nil || n != 2 {
+		t.Fatalf("批量下架应去重生效 2 条: n=%d err=%v", n, err)
+	}
+	for _, m := range []string{"m1", "m2"} {
+		if ok, err := s.ModelEnabled(m); err != nil || ok {
+			t.Fatalf("%s 应已下架: %v %v", m, ok, err)
+		}
+	}
+	if ok, _ := s.ModelEnabled("m3"); !ok {
+		t.Fatal("未批量设置的 m3 应保持默认开放")
+	}
+	// 已有检查记录的模型批量切换不应清掉检查结果
+	if _, err := s.RecordModelCheck("m1", true, "pong"); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.SetModelsEnabled([]string{"m1"}, true)
+	if err != nil || n != 1 {
+		t.Fatalf("批量开放失败: n=%d err=%v", n, err)
+	}
+	setting, err := s.ModelSettingFor("m1")
+	if err != nil || !setting.Enabled || !setting.LastCheckOK || setting.LastCheckDetail != "pong" {
+		t.Fatalf("批量开放不应清除检查结果: %+v %v", setting, err)
+	}
+	if _, err := s.SetModelsEnabled(nil, true); err == nil {
+		t.Fatal("空列表应报错")
+	}
+}
+
 func TestRecordModelCheckPreservesEnabled(t *testing.T) {
 	s := newTestStore(t)
 	if _, err := s.SetModelEnabled("m1", false); err != nil {

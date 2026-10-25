@@ -223,6 +223,34 @@ func TestAdminExtendedKeyAndUsageAPI(t *testing.T) {
 	if _, ok := out["models"].([]any); !ok {
 		t.Fatalf("models 字段缺失: %v", out)
 	}
+	// 批量上下架
+	if code, out = do("POST", "/admin/api/models/batch", `{"models":["gemini-3.7-flash","gemini-2.5-pro","gemini-3.7-flash"],"enabled":false}`, token); code != http.StatusOK || out["total"].(float64) != 2 {
+		t.Fatalf("批量下架应去重生效 2 条: %d %v", code, out)
+	}
+	if code, out = do("GET", "/admin/api/models", "", token); code != http.StatusOK {
+		t.Fatalf("models: %d %v", code, out)
+	}
+	disabled := 0
+	for _, m := range out["models"].([]any) {
+		if mm, ok := m.(map[string]any); ok && mm["enabled"] == false {
+			disabled++
+		}
+	}
+	if disabled != 2 {
+		t.Fatalf("应有 2 个模型已下架: %d", disabled)
+	}
+	if code, out = do("POST", "/admin/api/models/batch", `{"models":["gemini-3.7-flash","gemini-2.5-pro"],"enabled":true}`, token); code != http.StatusOK || out["total"].(float64) != 2 {
+		t.Fatalf("批量开放: %d %v", code, out)
+	}
+	if code, out = do("POST", "/admin/api/models/batch", `{"models":[],"enabled":true}`, token); code != http.StatusBadRequest {
+		t.Fatalf("空 models 应 400: %d %v", code, out)
+	}
+	if code, out = do("POST", "/admin/api/models/batch", `{"models":["m"]}`, token); code != http.StatusBadRequest {
+		t.Fatalf("缺 enabled 应 400: %d %v", code, out)
+	}
+	if code, _ = do("POST", "/admin/api/models/batch", `{"models":["m"],"enabled":false}`, ""); code != http.StatusUnauthorized {
+		t.Fatal("批量接口必须鉴权")
+	}
 	if code, out = do("GET", "/admin/api/version", "", token); code != http.StatusOK || out["version"] == "" || out["go_version"] == "" {
 		t.Fatalf("version: %d %v", code, out)
 	}

@@ -314,6 +314,37 @@ func (a *API) handlePatchModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": setting})
 }
 
+// handleBatchModels POST /admin/api/models/batch：批量上下架。
+// body: {models: [model...], enabled: bool}；去重后单事务写入，最多 500 个。
+func (a *API) handleBatchModels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Models  []string `json:"models"`
+		Enabled *bool    `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 JSON"})
+		return
+	}
+	if req.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请提供 enabled"})
+		return
+	}
+	if len(req.Models) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请提供 models"})
+		return
+	}
+	if len(req.Models) > 500 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "单次最多 500 个模型"})
+		return
+	}
+	updated, err := a.st.SetModelsEnabled(req.Models, *req.Enabled)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": updated, "enabled": *req.Enabled})
+}
+
 // handleCheckModel POST /admin/api/models/check：探测单个或多个模型。
 // body: { model?, models?, sync_status? }；sync_status 默认 true（失败下架、成功开放）。
 func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {

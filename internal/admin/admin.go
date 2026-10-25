@@ -78,6 +78,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/models", a.auth(a.handleModels))
 	mux.HandleFunc("PATCH /admin/api/models/{model...}", a.auth(a.handlePatchModel))
 	mux.HandleFunc("POST /admin/api/models/check", a.auth(a.handleCheckModel))
+	mux.HandleFunc("POST /admin/api/models/batch", a.auth(a.handleBatchModels))
 	mux.HandleFunc("GET /admin/api/version", a.auth(a.handleVersion))
 	mux.HandleFunc("GET /admin/api/multipliers", a.auth(a.handleListMultipliers))
 	mux.HandleFunc("PUT /admin/api/multipliers", a.auth(a.handlePutMultiplier))
@@ -240,6 +241,7 @@ func openAPISpec() map[string]any {
 				"patch":      map[string]any{"tags": []string{"概览"}, "summary": "设置模型上下架", "description": "enabled=false 时下游无法获取该模型，调用也会被拒绝。", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("ok、model"), "400": response("参数错误")}},
 			},
 			"/admin/api/models/check": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "检查模型是否可用（支持批量）", "description": "按用途探测：对话走 chat/completions，生图走 images/generations，向量走 embeddings；视频/音乐/语音只做目录检查。可传 model 或 models[]。sync_status 默认 true：失败下架、成功开放。", "requestBody": body("ModelCheckInput"), "responses": map[string]any{"200": response("ok、total、passed、failed、results"), "502": response("单个模型探测失败")}}},
+			"/admin/api/models/batch": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "批量设置模型上下架", "description": "models 去重后单事务写入，单次最多 500 个；enabled=false 时下游无法获取这些模型，调用也会被拒绝。适合按引擎批量精简目录。", "requestBody": body("ModelBatchInput"), "responses": map[string]any{"200": response("ok、total、enabled"), "400": response("参数错误")}}},
 			"/admin/api/version": map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
 			"/admin/api/multipliers": map[string]any{
 				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率 × 用户倍率)，用户倍率只对用户 Key 生效。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
@@ -259,6 +261,7 @@ func openAPISpec() map[string]any {
 				"KeyPatchInput":          map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}, "name": map[string]any{"type": "string"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "reset_usage": map[string]any{"type": "boolean", "description": "true 时把 tokens_used 归零（保留用量明细）"}, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
 				"MultiplierInput":        map[string]any{"type": "object", "required": []string{"model", "multiplier"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；\"*\" 为默认倍率"}, "multiplier": map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier}}},
 				"ModelCheckInput":        map[string]any{"type": "object", "properties": map[string]any{"model": map[string]any{"type": "string", "description": "单个模型 ID"}, "models": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "批量模型 ID"}, "sync_status": map[string]any{"type": "boolean", "description": "默认 true：按检查结果同步上下架"}}},
+				"ModelBatchInput":        map[string]any{"type": "object", "required": []string{"models", "enabled"}, "properties": map[string]any{"models": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 500, "description": "模型 ID 列表（自动去重、忽略空白）"}, "enabled": map[string]any{"type": "boolean", "description": "true=批量开放，false=批量下架"}}},
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
 				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},

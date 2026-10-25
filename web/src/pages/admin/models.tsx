@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Boxes, Check, Pencil, RefreshCw, RotateCcw, Search, X } from 'lucide-react'
+import { Boxes, Check, ChevronDown, ChevronRight, Pencil, RefreshCw, RotateCcw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -11,9 +12,10 @@ import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { Pill, StatusDot } from '@/components/status'
 import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/model-kind'
 import { CopyButton } from '@/components/copy'
+import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { multiplier, relative } from '@/lib/format'
-import type { ModelInfo } from '@/lib/types'
+import { engineLabel, type ModelInfo } from '@/lib/types'
 
 interface MultItem {
   model: string
@@ -46,6 +48,11 @@ type CheckResult = {
   }
 }
 
+type Group = { key: string; label: string; rows: Row[]; enabledCount: number }
+
+// 分组展示顺序：双引擎 → 订阅引擎 → 第三方 Key → 其他 → 不在当前目录
+const ENGINE_ORDER = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
+
 export default function AdminModels() {
   const qc = useQueryClient()
   const models = useQuery({ queryKey: ['admin', 'models'], queryFn: () => api<{ models: ModelInfo[] }>('/admin/api/models') })
@@ -58,6 +65,10 @@ export default function AdminModels() {
   const [checking, setChecking] = useState<string | null>(null)
   const [batching, setBatching] = useState(false)
   const [batchProgress, setBatchProgress] = useState('')
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [toggling, setToggling] = useState(false)
+  const confirm = useConfirm()
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin', 'models'] })
   const explicit = useMemo(() => new Map((mults.data?.multipliers || []).map((m) => [m.model, m])), [mults.data])
@@ -97,6 +108,27 @@ export default function AdminModels() {
       .filter((r) => !s || r.id.toLowerCase().includes(s) || (r.display || '').toLowerCase().includes(s) || modelKindLabel(r.kind).includes(s))
       .sort((a, b) => a.id.localeCompare(b.id))
   }, [models.data, mults.data, search, kind, status])
+
+  const groups = useMemo<Group[]>(() => {
+    const rank = (r: Row) => {
+      for (const e of ENGINE_ORDER) if (r.engines.has(e)) return ENGINE_ORDER.indexOf(e)
+      return r.engines.size ? ENGINE_ORDER.length : ENGINE_ORDER.length + 1
+    }
+    const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id))
+    const map = new Map<string, Row[]>()
+    for (const r of sorted) {
+      const key = r.engines.size ? [...r.engines].sort().join('+') : '_none'
+      const list = map.get(key) || []
+      list.push(r)
+      map.set(key, list)
+    }
+    return [...map.entries()].map(([key, list]) => ({
+      key,
+      label: key === '_none' ? '不在当前目录' : key.split('+').map(engineLabel).join(' + '),
+      rows: list,
+      enabledCount: list.filter((r) => r.enabled).length,
+    }))
+  }, [rows])
 
   const applyCheckToCache = (result: CheckResult) => {
     qc.setQueryData<{ models: ModelInfo[] }>(['admin', 'models'], (prev) => {
@@ -156,6 +188,69 @@ export default function AdminModels() {
       invalidate()
     }
   }
+  const applyBatch = async (ids: string[], enabled: boolean) => {
+    if (!ids.length) return
+    setToggling(true)
+    try {
+      await api('/admin/api/models/batch', { method: 'POST', json: { models: ids, enabled } })
+      qc.setQueryData<{ models: ModelInfo[] }>(['admin', 'models'], (prev) =>
+        prev ? { models: prev.models.map((m) => (ids.includes(m.id) ? { ...m, enabled } : m)) } : prev,
+      )
+      toast.success(enabled ? `已开放 ${ids.length} 个模型` : `已下架 ${ids.length} 个模型，下游不可见`)
+      setSelected(new Set())
+      invalidate()
+    } catch (e) {
+      toast.error((e as Error).message)
+      invalidate()
+    } finally {
+      setToggling(false)
+    }
+  }
+  const selectedAction = async (enabled: boolean) => {
+    const ids = [...selected]
+    if (!ids.length) return
+    if (!enabled) {
+      const ok = await confirm({
+        title: `下架选中的 ${ids.length} 个模型？`,
+        description: '下架后下游 /v1/models 不可见、调用会被拒绝；可随时重新开放。',
+        confirmText: '批量下架',
+        destructive: true,
+      })
+      if (!ok) return
+    }
+    await applyBatch(ids, enabled)
+  }
+  const groupAction = async (g: Group, enabled: boolean) => {
+    const ids = g.rows.map((r) => r.id)
+    if (!ids.length) return
+    if (!enabled) {
+      const ok = await confirm({
+        title: `下架 ${g.label} 的 ${ids.length} 个模型？`,
+        description: '下架后下游 /v1/models 不可见、调用会被拒绝；组内可随时「全部开放」恢复。',
+        confirmText: '全部下架',
+        destructive: true,
+      })
+      if (!ok) return
+    }
+    await applyBatch(ids, enabled)
+  }
+  const toggleGroup = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  const toggleGroupSelection = (g: Group) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      const allSelected = g.rows.every((r) => next.has(r.id))
+      for (const r of g.rows) {
+        if (allSelected) next.delete(r.id)
+        else next.add(r.id)
+      }
+      return next
+    })
   const checkOne = async (id: string, opts?: { quiet?: boolean }) => {
     setChecking(id)
     try {
@@ -191,8 +286,8 @@ export default function AdminModels() {
     }
   }
   const checkBatch = async () => {
-    // 对话 / 生图 / 向量可真实探测；视频/音乐/语音走目录检查。
-    const targets = rows
+    // 对话 / 生图 / 向量可真实探测；视频/音乐/语音走目录检查。勾选后只检查选中的模型。
+    const targets = selected.size ? rows.filter((r) => selected.has(r.id)) : rows
     if (!targets.length) {
       toast.error('当前列表没有可检查的模型')
       return
@@ -274,13 +369,13 @@ export default function AdminModels() {
     )
   }
 
-  const busy = batching || checking !== null
+  const busy = batching || checking !== null || toggling
 
   return (
     <>
       <PageHeader
         title="模型与定价"
-        description="扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉。检查模型会按结果自动上下架；也可用开关手动控制。下架后下游 /v1/models 不可见。"
+        description="扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉。按引擎分组管理：可折叠分组、勾选批量上下架、整组一键开放/下架；检查模型会按结果自动上下架。下架后下游 /v1/models 不可见。"
       />
       <Section title="默认倍率" description="适用于所有没有单独设置倍率的模型（键为 *）" className="mb-4">
         <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -313,15 +408,29 @@ export default function AdminModels() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           {batchProgress && <span className="text-xs text-muted-foreground tabular-nums">{batchProgress}</span>}
-          <Button size="sm" variant="outline" disabled={busy || !rows.length} onClick={checkBatch}>
+          {selected.size > 0 && (
+            <div className="flex items-center gap-0.5 rounded-md border bg-muted/40 py-0.5 pl-2 pr-0.5">
+              <span className="px-1 text-xs text-muted-foreground tabular-nums">已选 {selected.size}</span>
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy} onClick={() => selectedAction(true)}>
+                批量开放
+              </Button>
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy} onClick={() => selectedAction(false)}>
+                批量下架
+              </Button>
+              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-xs" onClick={() => setSelected(new Set())} aria-label="清除选择" title="清除选择">
+                <X className="size-3" />
+              </Button>
+            </div>
+          )}
+          <Button size="sm" variant="outline" disabled={busy || !rows.length} onClick={checkBatch} title={selected.size ? '只检查选中的模型' : '检查当前筛选的全部模型'}>
             <RefreshCw className={batching ? 'animate-spin' : undefined} />
             {batching ? '检查中…' : '批量检查'}
           </Button>
         </div>
       </Toolbar>
-      <Section title={`${rows.length} 个模型`}>
+      <Section title={`${rows.length} 个模型 · ${groups.length} 组`}>
         {models.isLoading || mults.isLoading ? (
-          <TableSkeleton rows={8} cols={6} />
+          <TableSkeleton rows={8} cols={7} />
         ) : models.isError ? (
           <ErrorState error={models.error} onRetry={() => models.refetch()} />
         ) : !rows.length ? (
@@ -331,6 +440,14 @@ export default function AdminModels() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={rows.length > 0 && rows.every((r) => selected.has(r.id)) ? true : rows.some((r) => selected.has(r.id)) ? 'indeterminate' : false}
+                      onCheckedChange={(v) => setSelected(v === true ? new Set(rows.map((r) => r.id)) : new Set())}
+                      aria-label="全选当前筛选的模型"
+                      disabled={busy}
+                    />
+                  </TableHead>
                   <TableHead>模型 ID</TableHead>
                   <TableHead>用途</TableHead>
                   <TableHead>引擎</TableHead>
@@ -340,64 +457,112 @@ export default function AdminModels() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((r) => {
-                  const m = explicit.get(r.id)
-                  const rowBusy = checking === r.id
+                {groups.map((g) => {
+                  const isCollapsed = collapsed.has(g.key)
+                  const groupSelected = g.rows.filter((r) => selected.has(r.id)).length
                   return (
-                    <TableRow key={r.id} className={!r.enabled ? 'opacity-70' : undefined}>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <span className="font-mono text-xs">{r.id}</span>
-                          <CopyButton value={r.id} label="模型 ID 已复制" className="opacity-50 hover:opacity-100" />
-                        </div>
-                        {r.display && r.display !== r.id && <div className="text-[11px] text-muted-foreground">{r.display}</div>}
-                      </TableCell>
-                      <TableCell>
-                        <ModelKindPill kind={r.kind} />
-                      </TableCell>
-                      <TableCell className="space-x-1">
-                        {[...r.engines].map((e) => (
-                          <Pill key={e} tone={e === 'a' ? 'primary' : 'muted'}>
-                            {e === 'a' ? '网页' : e === 'b' ? 'AI Studio' : e}
-                          </Pill>
-                        ))}
-                        {!r.engines.size && <span className="text-xs text-muted-foreground">不在当前目录</span>}
-                      </TableCell>
-                      <TableCell className="max-w-[16rem]">{statusCell(r)}</TableCell>
-                      <TableCell className="text-right">
-                        {editing === r.id ? (
-                          editor(r.id)
-                        ) : (
-                          <button
-                            className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 tabular-nums hover:bg-accent"
-                            onClick={() => { setEditing(r.id); setValue(String(m?.multiplier ?? def)) }}
-                            title={m ? `更新于 ${relative(m.updated_at)}` : '使用默认倍率'}
-                          >
-                            {m ? <span className="font-medium">{multiplier(m.multiplier)}</span> : <span className="text-muted-foreground">{multiplier(def)} 默认</span>}
-                            <Pencil className="size-3 opacity-40" />
-                          </button>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center justify-end gap-0.5">
-                          {m && (
-                            <Button variant="ghost" size="icon-sm" onClick={() => reset(r.id)} aria-label="恢复默认" title="恢复默认倍率">
-                              <RotateCcw />
-                            </Button>
-                          )}
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            disabled={busy}
-                            onClick={() => checkOne(r.id)}
-                            aria-label="检查模型"
-                            title="检查并同步上下架"
-                          >
-                            <RefreshCw className={rowBusy ? 'animate-spin' : undefined} />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                    <Fragment key={g.key}>
+                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                        <TableCell colSpan={7} className="py-1.5">
+                          <div className="flex items-center gap-2">
+                            <button type="button" className="flex items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-accent" onClick={() => toggleGroup(g.key)} aria-expanded={!isCollapsed} title={isCollapsed ? '展开分组' : '折叠分组'}>
+                              {isCollapsed ? <ChevronRight className="size-3.5 text-muted-foreground" /> : <ChevronDown className="size-3.5 text-muted-foreground" />}
+                              <span className="text-[13px] font-medium">{g.label}</span>
+                            </button>
+                            <span className="text-[11px] text-muted-foreground tabular-nums">
+                              {g.rows.length} 个模型 · 开放 {g.enabledCount}
+                            </span>
+                            <div className="ml-auto flex items-center gap-0.5">
+                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || !g.rows.length} onClick={() => toggleGroupSelection(g)}>
+                                全选{groupSelected ? ` (${groupSelected})` : ''}
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || !g.enabledCount} onClick={() => groupAction(g, true)}>
+                                全部开放
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || g.enabledCount === g.rows.length} onClick={() => groupAction(g, false)}>
+                                全部下架
+                              </Button>
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {!isCollapsed &&
+                        g.rows.map((r) => {
+                          const m = explicit.get(r.id)
+                          const rowBusy = checking === r.id
+                          return (
+                            <TableRow key={r.id} className={!r.enabled ? 'opacity-70' : undefined}>
+                              <TableCell className="w-10">
+                                <Checkbox
+                                  checked={selected.has(r.id)}
+                                  onCheckedChange={(v) =>
+                                    setSelected((prev) => {
+                                      const next = new Set(prev)
+                                      if (v) next.add(r.id)
+                                      else next.delete(r.id)
+                                      return next
+                                    })
+                                  }
+                                  aria-label={`选择 ${r.id}`}
+                                  disabled={busy}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-1">
+                                  <span className="font-mono text-xs">{r.id}</span>
+                                  <CopyButton value={r.id} label="模型 ID 已复制" className="opacity-50 hover:opacity-100" />
+                                </div>
+                                {r.display && r.display !== r.id && <div className="text-[11px] text-muted-foreground">{r.display}</div>}
+                              </TableCell>
+                              <TableCell>
+                                <ModelKindPill kind={r.kind} />
+                              </TableCell>
+                              <TableCell className="space-x-1">
+                                {[...r.engines].map((e) => (
+                                  <Pill key={e} tone={e === 'a' ? 'primary' : 'muted'}>
+                                    {engineLabel(e)}
+                                  </Pill>
+                                ))}
+                                {!r.engines.size && <span className="text-xs text-muted-foreground">不在当前目录</span>}
+                              </TableCell>
+                              <TableCell className="max-w-[16rem]">{statusCell(r)}</TableCell>
+                              <TableCell className="text-right">
+                                {editing === r.id ? (
+                                  editor(r.id)
+                                ) : (
+                                  <button
+                                    className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 tabular-nums hover:bg-accent"
+                                    onClick={() => { setEditing(r.id); setValue(String(m?.multiplier ?? def)) }}
+                                    title={m ? `更新于 ${relative(m.updated_at)}` : '使用默认倍率'}
+                                  >
+                                    {m ? <span className="font-medium">{multiplier(m.multiplier)}</span> : <span className="text-muted-foreground">{multiplier(def)} 默认</span>}
+                                    <Pencil className="size-3 opacity-40" />
+                                  </button>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center justify-end gap-0.5">
+                                  {m && (
+                                    <Button variant="ghost" size="icon-sm" onClick={() => reset(r.id)} aria-label="恢复默认" title="恢复默认倍率">
+                                      <RotateCcw />
+                                    </Button>
+                                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    disabled={busy}
+                                    onClick={() => checkOne(r.id)}
+                                    aria-label="检查模型"
+                                    title="检查并同步上下架"
+                                  >
+                                    <RefreshCw className={rowBusy ? 'animate-spin' : undefined} />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                    </Fragment>
                   )
                 })}
               </TableBody>

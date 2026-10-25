@@ -103,6 +103,49 @@ func (s *Store) SetModelEnabled(model string, enabled bool) (ModelSetting, error
 	return s.ModelSettingFor(model)
 }
 
+// SetModelsEnabled 批量设置模型是否对下游开放，返回生效条数（去重、去空白后）。
+// 单事务写入；任一失败整体回滚。不改变已记录的检查结果。
+func (s *Store) SetModelsEnabled(models []string, enabled bool) (int, error) {
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		ids = append(ids, model)
+	}
+	if len(ids) == 0 {
+		return 0, errors.New("models 不能为空")
+	}
+	ts := now()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
+		VALUES (?, ?, ?, 0, 0, '')
+		ON CONFLICT(model) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	for _, model := range ids {
+		if _, err := stmt.Exec(model, boolToInt(enabled), ts); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 // RecordModelCheck 写入最近一次模型检查结果（不改变 enabled，除非尚无记录则默认启用）。
 func (s *Store) RecordModelCheck(model string, ok bool, detail string) (ModelSetting, error) {
 	model = strings.TrimSpace(model)
