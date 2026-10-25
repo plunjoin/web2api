@@ -190,14 +190,79 @@ func TestPickEnginePrefersCustomCatalogOverMultimodal(t *testing.T) {
 		t.Fatalf("期望命中 custom，got eng=%v owned=%v", engName(eng), owned)
 	}
 
-	// 未在其他引擎目录的 Gemini 多模态仍走引擎B
+	// 未在其他引擎目录的 Gemini 多模态仍走引擎B（目录命中，引擎不可用时直接报错）
 	eng, owned = m.pickEngine("gemini-3.1-flash-image")
-	if eng == nil || eng.Name() != "b" || owned {
-		t.Fatalf("期望多模态走引擎B，got eng=%v owned=%v", engName(eng), owned)
+	if eng == nil || eng.Name() != "b" || !owned {
+		t.Fatalf("期望目录命中引擎B，got eng=%v owned=%v", engName(eng), owned)
 	}
 }
 
-func TestApplyEngineBModelFallback(t *testing.T) {
+func TestPickEngineMatchesCoreCatalog(t *testing.T) {
+	a := &stubEngine{
+		name:  "a",
+		ready: true,
+		models: []model.ModelInfo{
+			{ID: "gemini-argon"},
+			{ID: "gemini-flash"},
+		},
+	}
+	b := &stubEngine{
+		name:  "b",
+		ready: true,
+		models: []model.ModelInfo{
+			{ID: "gemini-4-argon"},
+			{ID: "gemini-3.1-flash-image"},
+		},
+	}
+	custom := &stubEngine{
+		name:  "custom",
+		ready: true,
+		models: []model.ModelInfo{
+			{ID: "models/gemini-flash-latest"},
+		},
+	}
+	m := &Manager{
+		defaultEngine: "auto",
+		engineOrder:   []string{"a", "b", "custom"},
+		engines: map[string]engine.Engine{
+			"a":      a,
+			"b":      b,
+			"custom": custom,
+		},
+	}
+
+	// 引擎A 目录命中的裸名模型不再落入 auto 兜底被静默换模
+	eng, owned := m.pickEngine("gemini-argon")
+	if eng == nil || eng.Name() != "a" || !owned {
+		t.Fatalf("期望命中引擎A，got eng=%v owned=%v", engName(eng), owned)
+	}
+
+	// 引擎B 目录命中的模型归属引擎B
+	eng, owned = m.pickEngine("gemini-4-argon")
+	if eng == nil || eng.Name() != "b" || !owned {
+		t.Fatalf("期望命中引擎B，got eng=%v owned=%v", engName(eng), owned)
+	}
+
+	// 带 models/ 前缀宽松命中引擎A
+	eng, owned = m.pickEngine("models/gemini-flash")
+	if eng == nil || eng.Name() != "a" || !owned {
+		t.Fatalf("期望前缀宽松命中引擎A，got eng=%v owned=%v", engName(eng), owned)
+	}
+
+	// 订阅/custom 目录优先于引擎A/B：既有路由保持不变
+	eng, owned = m.pickEngine("models/gemini-flash-latest")
+	if eng == nil || eng.Name() != "custom" || !owned {
+		t.Fatalf("期望订阅目录优先命中 custom，got eng=%v owned=%v", engName(eng), owned)
+	}
+
+	// 目录外模型仍走 auto 兜底（引擎B，非专属）
+	eng, owned = m.pickEngine("totally-unknown-model")
+	if eng == nil || eng.Name() != "b" || owned {
+		t.Fatalf("期望目录外模型 auto 兜底引擎B，got eng=%v owned=%v", engName(eng), owned)
+	}
+}
+
+func TestResolveChatEngineKeepsRequestedModel(t *testing.T) {
 	b := &stubEngine{
 		name:  "b",
 		ready: true,
@@ -206,20 +271,27 @@ func TestApplyEngineBModelFallback(t *testing.T) {
 			{ID: "gemini-3.1-flash-image"},
 		},
 	}
-	req := applyEngineBModelFallback(b, model.ChatRequest{Model: "gpt-image-2.5-sunburst"})
-	if req.Model != "gemini-3.7-flash" {
-		t.Fatalf("兜底模型 = %q, want gemini-3.7-flash", req.Model)
+	m := &Manager{
+		defaultEngine: "auto",
+		engineOrder:   []string{"b"},
+		engines:       map[string]engine.Engine{"b": b},
 	}
 
-	req = applyEngineBModelFallback(b, model.ChatRequest{Model: "gemini-3.1-flash-image"})
-	if req.Model != "gemini-3.1-flash-image" {
-		t.Fatalf("已在目录中不应改写: %q", req.Model)
+	// 引擎B 兜底收到目录外模型：不再静默改写为目录第一个模型
+	req := model.ChatRequest{Model: "gpt-image-2.5-sunburst"}
+	eng, resolved, err := m.resolveChatEngine(req)
+	if err != nil || eng == nil || eng.Name() != "b" {
+		t.Fatalf("期望引擎B，got eng=%v err=%v", engName(eng), err)
+	}
+	if resolved.Model != "gpt-image-2.5-sunburst" {
+		t.Fatalf("不应改写请求模型: %q", resolved.Model)
 	}
 
-	custom := &stubEngine{name: "custom", ready: true}
-	req = applyEngineBModelFallback(custom, model.ChatRequest{Model: "gpt-image-2.5-sunburst"})
-	if req.Model != "gpt-image-2.5-sunburst" {
-		t.Fatalf("非引擎B不应改写: %q", req.Model)
+	// 目录内模型同样原样透传
+	req = model.ChatRequest{Model: "gemini-3.7-flash"}
+	_, resolved, err = m.resolveChatEngine(req)
+	if err != nil || resolved.Model != "gemini-3.7-flash" {
+		t.Fatalf("目录内模型应原样透传: %q err=%v", resolved.Model, err)
 	}
 }
 

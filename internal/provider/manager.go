@@ -1112,7 +1112,7 @@ func (m *Manager) AccountOverview() []AccountOverview {
 // ==================== 路由与对话 ====================
 
 // pickEngine 按模型名路由引擎。第二个返回值表示模型是否为该引擎专属
-// （订阅引擎目录命中或订阅引擎显式路由）：专属模型引擎不可用时不做
+// （任一引擎目录命中或订阅引擎显式路由）：专属模型引擎不可用时不做
 // 跨引擎切换——其他引擎不认识该模型，切换只会产生误导性错误。
 func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	name := strings.ToLower(strings.TrimSpace(modelName))
@@ -1144,19 +1144,26 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 		return eng, true
 	}
 
-	// 3) 多模态模型走引擎B（Gemini image/veo/tts 等历史行为）
+	// 3) 引擎A/B 实时目录精确命中：裸名模型（如引擎A 的 gemini-argon、引擎B
+	//    目录中的正式 ID）归属到拥有它的引擎，不再落入 auto 兜底后被静默换模。
+	//    订阅引擎优先于 A/B，既有路由（models/* 镜像目录等）保持不变。
+	if eng, ok := m.matchCoreCatalog(name); ok {
+		return eng, true
+	}
+
+	// 4) 多模态模型走引擎B（Gemini image/veo/tts 等历史行为）
 	if eng, ok := m.engines["b"]; ok && isMultimodalModel(name) {
 		return eng, false
 	}
 
-	// 4) default_engine 显式指定（支持任意注册引擎）
+	// 5) default_engine 显式指定（支持任意注册引擎）
 	if m.defaultEngine != "auto" && m.defaultEngine != "" {
 		if eng, ok := m.engines[m.defaultEngine]; ok {
 			return eng, isSubscriptionEngine(m.defaultEngine)
 		}
 	}
 
-	// 5) auto 回退：引擎B协议是主协议，其次引擎A，最后任意 Ready 引擎
+	// 6) auto 回退：引擎B协议是主协议，其次引擎A，最后任意 Ready 引擎
 	if eng, ok := m.engines["b"]; ok {
 		return eng, false
 	}
@@ -1188,6 +1195,25 @@ func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, boo
 	return nil, false
 }
 
+// matchCoreCatalog 按模型 id 精确命中引擎A/B 的实时目录（按注册顺序，a 先于 b）。
+// 命中即视为模型专属：其他引擎不认识该模型，引擎不可用时直接返回该引擎的
+// 具体错误，而不是切换引擎后产生误导性错误。
+func (m *Manager) matchCoreCatalog(modelName string) (engine.Engine, bool) {
+	for _, engName := range m.engineOrder {
+		if engName != "a" && engName != "b" {
+			continue
+		}
+		eng, ok := m.engines[engName]
+		if !ok {
+			continue
+		}
+		if engineHasModel(eng, modelName) {
+			return eng, true
+		}
+	}
+	return nil, false
+}
+
 // engineHasModel 引擎目录是否包含该模型（大小写不敏感）。
 // Google OpenAI 兼容端点的目录 id 带 models/ 前缀，两侧均做去前缀的宽松匹配，
 // 客户端用裸名或带前缀名都能命中。
@@ -1206,34 +1232,6 @@ func engineHasModel(eng engine.Engine, modelName string) bool {
 		}
 	}
 	return false
-}
-
-// firstEngineModel 返回引擎目录中第一个可用模型 id。
-func firstEngineModel(eng engine.Engine) string {
-	if eng == nil {
-		return ""
-	}
-	for _, mi := range eng.ListModels() {
-		id := strings.TrimSpace(mi.ID)
-		if id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-// applyEngineBModelFallback 引擎B 作为兜底时：请求模型不在实时目录则改用目录第一个。
-func applyEngineBModelFallback(eng engine.Engine, req model.ChatRequest) model.ChatRequest {
-	if eng == nil || eng.Name() != "b" {
-		return req
-	}
-	if engineHasModel(eng, req.Model) {
-		return req
-	}
-	if alt := firstEngineModel(eng); alt != "" {
-		req.Model = alt
-	}
-	return req
 }
 
 // isSubscriptionEngine 是否为「模型专属」引擎（订阅号池或第三方 Key）。
@@ -1403,7 +1401,9 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, onDelta
 	return eng.ChatStream(ctx, req, onDelta)
 }
 
-// resolveChatEngine 选定引擎；引擎B 兜底且模型不在目录时改用第一个可用模型。
+// resolveChatEngine 选定引擎。目录命中的模型归属其引擎：引擎不可用时直接返回
+// 该引擎的具体错误；引擎B 收到目录外模型时不再静默换模，由引擎B 返回明确的
+// 目录错误，避免「换用不可用模型后报无可用账户」这类误导性错误。
 func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model.ChatRequest, error) {
 	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
@@ -1411,7 +1411,7 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 	}
 	if !eng.Ready() {
 		if owned {
-			// 模型为该订阅引擎专属：不跨引擎切换，直接返回该引擎的具体错误
+			// 模型为该引擎专属：不跨引擎切换，直接返回该引擎的具体错误
 			return nil, req, engineUnavailableError(eng)
 		}
 		alt := m.alternate(eng)
@@ -1421,7 +1421,7 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 			return nil, req, engineUnavailableError(eng)
 		}
 	}
-	return eng, applyEngineBModelFallback(eng, req), nil
+	return eng, req, nil
 }
 
 // GenerateVideo 通过引擎B的 AI Studio GenerateVideo 协议创建 Veo 长任务。
