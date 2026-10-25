@@ -86,7 +86,7 @@ go build -o web2api.exe .
 | 号池账号 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 Cookie；AI Studio 粘贴 `storage-state.json`；订阅引擎 OAuth/粘贴 token；**第三方 Key** 填 Base URL + API Key；实时状态与健康检测 |
 | API 密钥 | 管理员 Key 与用户 Key，**Token 额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、清零已用额度、重新生成 |
 | 用量 | 按 Key × 模型汇总、趋势图（计费 Token/总 Token/请求）、逐请求明细与扣费计算过程、对用户请求退款、CSV 导出 |
-| 模型与定价 | 模型目录、默认倍率 `*`、逐模型倍率行内编辑与恢复默认；**模型检查**与上下架（不可用时下游 `/v1/models` 不可见） |
+| 模型与定价 | 模型目录、默认倍率 `*`、逐模型倍率行内编辑与恢复默认；**按引擎分组折叠**展示，勾选或整组**批量上下架**（含「全部开放/全部下架」一键操作，不可用时下游 `/v1/models` 不可见）；**模型检查**与上下架 |
 | 设置 | 开放注册、注册赠送、新用户默认倍率、每人 Key 上限、视频计费、不计量接口开关、站点名与公告、版本与一键升级 |
 | 接口文档 | 网关 API 与管理 API 的 OpenAPI 3.1 浏览、搜索与导出 |
 
@@ -147,6 +147,7 @@ GET    /admin/api/multipliers                      模型倍率列表、默认�
 PUT    /admin/api/multipliers                      {model, multiplier}（model 为 * 时设置默认倍率）
 DELETE /admin/api/multipliers/{model}              删除单独倍率，回落到默认
 GET    /admin/api/models                           模型目录（含生效倍率）
+POST   /admin/api/models/batch                     批量上下架 {models, enabled}（去重，单次最多 500）
 GET    /admin/api/version                          版本、提交号、Go 版本
 GET    /admin/api/status                           引擎详细状态
 GET    /admin/api/docs                             OpenAPI 3.1 JSON（可导入 Postman/Insomnia）
