@@ -42,7 +42,7 @@ func publicAPISpec() map[string]any {
 			map[string]any{"name": "视频", "description": "Veo GenerateVideo 长任务接口"},
 			map[string]any{"name": "图片", "description": "原生模式通过聊天接口生成图片；upstream 模式可透传图片专用接口"},
 			map[string]any{"name": "音频", "description": "原生模式通过聊天接口请求音频；upstream 模式可透传语音专用接口"},
-			map[string]any{"name": "透传", "description": "仅 upstream 引擎B可用的多模态透传路径"},
+			map[string]any{"name": "透传", "description": "仅 upstream 模式 AI Studio 可用的多模态透传路径"},
 		},
 		"paths": map[string]any{
 			"/health": map[string]any{
@@ -63,6 +63,9 @@ func publicAPISpec() map[string]any {
 			"/v1/chat/completions": map[string]any{
 				"post": map[string]any{"tags": []string{"聊天"}, "summary": "创建聊天补全", "description": "stream=true 时返回 text/event-stream；普通请求返回 ChatCompletionResponse。", "requestBody": jsonBody("ChatCompletionRequest"), "responses": map[string]any{"200": jsonResponse("聊天结果或 SSE 流", "ChatCompletionResponse"), "400": jsonResponse("请求参数错误", "Error"), "401": jsonResponse("API Key 无效", "Error"), "502": jsonResponse("上游模型调用失败", "Error")}},
 			},
+			"/v1/responses": map[string]any{
+				"post": map[string]any{"tags": []string{"聊天"}, "summary": "OpenAI Responses 兼容端点", "description": "把 Responses 请求（input/instructions/tools）转换为内部 Chat 请求执行：stream=true 返回 response.created / output_text.delta / function_call_arguments.delta / response.completed 事件流并带 usage，否则返回 Responses 对象。供 Codex 等只讲 Responses 的客户端直连，无需本地路由做协议转换。支持 function 类型的工具调用；非 function 类型的内置工具（local_shell、web_search）会被忽略，previous_response_id 等有状态字段不支持。", "requestBody": map[string]any{"required": true, "content": jsonContent(map[string]any{"type": "object"})}, "responses": map[string]any{"200": map[string]any{"description": "Responses 对象或 response.* 事件流"}, "400": jsonResponse("请求参数错误", "Error"), "401": jsonResponse("API Key 无效", "Error"), "404": jsonResponse("模型无人声明", "Error"), "502": jsonResponse("上游模型调用失败", "Error")}},
+			},
 			"/v1/videos": map[string]any{
 				"post": map[string]any{"tags": []string{"视频"}, "summary": "创建 Veo 视频任务", "requestBody": jsonBody("VideoCreateRequest"), "responses": map[string]any{"202": jsonResponse("任务已创建", "VideoResponse"), "400": jsonResponse("请求参数错误", "Error"), "401": jsonResponse("API Key 无效", "Error"), "429": jsonResponse("上游限流、配额不足或账户冷却", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
 			},
@@ -74,11 +77,11 @@ func publicAPISpec() map[string]any {
 				"parameters": []any{pathID},
 				"get":        map[string]any{"tags": []string{"视频"}, "summary": "下载完成的 Veo 视频", "responses": map[string]any{"200": map[string]any{"description": "video/mp4 二进制流", "content": map[string]any{"video/mp4": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}}, "409": jsonResponse("视频仍在生成", "Error"), "401": jsonResponse("API Key 无效", "Error"), "429": jsonResponse("上游限流、配额不足或账户冷却", "Error"), "502": jsonResponse("Veo 协议调用失败", "Error")}},
 			},
-			"/v1/images/{path}":     passthroughPath("图片透传：模型命中 custom 目录时转发对应上游，否则引擎B upstream 模式"),
-			"/v1/audio/{path}":      passthroughPath("音频透传：模型命中 custom 目录时转发对应上游，否则引擎B upstream 模式"),
-			"/v1/music/{path}":      passthroughPath("音乐透传（/v1/music/generations）：模型命中 custom 目录时转发对应上游，否则引擎B upstream 模式。音乐模型不能走 /v1/chat/completions，chat 端点只能返回文本"),
-			"/v1/files/{path}":      passthroughPath("文件透传：模型命中 custom 目录时转发对应上游，否则引擎B upstream 模式"),
-			"/v1/embeddings/{path}": passthroughPath("Embedding 透传：模型命中 custom 目录时转发对应上游（如 Google OpenAI 兼容端的 gemini-embedding-*），否则引擎B upstream 模式"),
+			"/v1/images/{path}":     passthroughPath("图片透传：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式"),
+			"/v1/audio/{path}":      passthroughPath("音频透传：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式"),
+			"/v1/music/{path}":      passthroughPath("音乐透传（/v1/music/generations）：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式。音乐模型不能走 /v1/chat/completions，chat 端点只能返回文本"),
+			"/v1/files/{path}":      passthroughPath("文件透传：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式"),
+			"/v1/embeddings/{path}": passthroughPath("Embedding 透传：模型命中 custom 目录时转发对应上游（如 Google OpenAI 兼容端的 gemini-embedding-*），否则 AI Studio upstream 模式"),
 		},
 		"components": map[string]any{
 			"securitySchemes": map[string]any{"ApiKey": map[string]any{"type": "http", "scheme": "bearer", "bearerFormat": "API Key", "description": "管理台创建的 sk- API Key"}},

@@ -39,3 +39,28 @@ gemini_api:
   access_token: ""                 # GCS files:register 等需要 OAuth 的功能
   proxy: ""
   timeout_seconds: 0               # 0 不限制总时长，允许长后台 SSE
+
+# 订阅引擎 + 第三方 Key：codex(GPT) / antigravity / kiro / workbuddy / custom
+# 加号：管理台 → 添加账号（下拉菜单选择对应引擎）
+# - codex(GPT) / antigravity：OAuth 授权链接 或 粘贴 refresh_token
+# - kiro：粘贴 Kiro IDE 的 refresh_token
+# - workbuddy：扫码授权 或 粘贴 accessToken
+# - custom：填 Base URL + API Key（OpenAI 兼容）
+# 访问 OpenAI / Google 上游通常需要代理；账号级代理也可在凭据里指定
+engines:
+  codex:
+    enabled: true
+    proxy: ""                        # 容器内访问宿主机代理：http://host.docker.internal:7890
+  antigravity:
+    enabled: true
+    proxy: ""
+  kiro:
+    enabled: true
+    proxy: ""
+  workbuddy:
+    enabled: true
+    base_url: "https://www.codebuddy.ai"
+    proxy: ""
+  custom:
+    enabled: true
+    proxy: ""

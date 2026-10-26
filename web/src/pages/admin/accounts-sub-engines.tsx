@@ -206,13 +206,13 @@ export function AddOAuthEngineDialog({
   )
 }
 
-/** Codex 账号添加弹窗（OAuth 授权 + 粘贴 refresh_token 双模式）。 */
+/** GPT 账号添加弹窗（OAuth 授权 + 粘贴 refresh_token 双模式）。 */
 export function AddCodexDialog(props: Omit<Parameters<typeof AddOAuthEngineDialog>[0], 'engine' | 'title' | 'description' | 'hint'>) {
   return (
     <AddOAuthEngineDialog
       {...props}
       engine="codex"
-      title="添加 Codex 账号"
+      title="添加 GPT 账号"
       description="登录 ChatGPT 账号并授权后，把浏览器跳转的 localhost 地址完整粘贴回来；也可以直接粘贴 Codex CLI 的 refresh_token。"
       hint="从 Codex CLI 的 ~/.codex/auth.json 中复制 refresh_token 字段。"
     />

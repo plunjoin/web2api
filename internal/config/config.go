@@ -44,7 +44,7 @@ type CustomAccountConf struct {
 	Models  []string `yaml:"models"` // 可选；上游无 /v1/models 时手填
 }
 
-// CodexConfig OpenAI Codex 引擎：ChatGPT 订阅号（OAuth refresh_token）。
+// CodexConfig GPT（ChatGPT）引擎：ChatGPT 订阅号（OAuth refresh_token）。
 type CodexConfig struct {
 	Enabled  bool               `yaml:"enabled"`
 	Proxy    string             `yaml:"proxy"`

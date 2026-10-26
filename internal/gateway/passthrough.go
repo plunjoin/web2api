@@ -31,14 +31,14 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 	eng := s.mgr.PassthroughEngine()
 	if eng == nil {
 		// OpenAI 协议端点（embeddings/images 等）model 是必填参数；缺失时
-		// 给出明确的 400 提示，而不是误导性的“引擎B未启用”。
+		// 给出明确的 400 提示，而不是误导性的“AI Studio 未启用”。
 		if isModelRequiredEndpoint(path) {
 			writeError(w, http.StatusBadRequest,
 				"Missing required parameter: 'model'. Please provide the model id in the request body (请在请求体的 JSON 中提供 model 字段，如 {\"model\":\"gemini-embedding-001\",\"input\":\"...\"}).",
 				"invalid_request_error", nil)
 			return
 		}
-		writeError(w, http.StatusBadGateway, "未启用支持多模态透传的引擎（引擎B）", "api_error", nil)
+		writeError(w, http.StatusBadGateway, "未启用支持多模态透传的引擎（AI Studio）", "api_error", nil)
 		return
 	}
 	err := eng.ServePassthrough(r.Context(), r.Method, path, r.Body, r.Header.Get("Content-Type"), w)

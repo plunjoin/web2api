@@ -181,7 +181,7 @@ export interface AccountLive {
   cooldowns?: AccountCooldown[]
 }
 
-// 引擎标识：a=Gemini 网页、b=AI Studio；订阅引擎 + custom 第三方 Key。
+// 引擎标识：a=Gemini Web、b=AI Studio；codex=GPT、antigravity、订阅引擎 + custom 第三方 Key。
 export type EngineName = 'a' | 'b' | 'codex' | 'antigravity' | 'kiro' | 'workbuddy' | 'custom'
 
 export interface EngineMeta {
@@ -195,9 +195,9 @@ export interface EngineMeta {
 
 // 引擎显示名映射（后端未启用该引擎时仍可展示存量账号）。
 export const ENGINE_LABELS: Record<string, string> = {
-  a: 'Gemini 网页',
+  a: 'Gemini Web',
   b: 'AI Studio',
-  codex: 'Codex',
+  codex: 'GPT',
   antigravity: 'Antigravity',
   kiro: 'Kiro',
   workbuddy: 'WorkBuddy',

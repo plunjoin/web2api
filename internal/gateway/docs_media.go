@@ -5,7 +5,7 @@ const mediaAPIOverview = `所有生成请求使用 Authorization: Bearer sk-...�
 
 ## 生成接口怎么选
 
-| 用途 | 引擎B native（默认） | 引擎B upstream 且 passthrough=true |
+| 用途 | AI Studio native（默认） | AI Studio upstream 且 passthrough=true |
 | --- | --- | --- |
 | 图片生成 | POST /v1/chat/completions，选择图片模型 | POST /v1/images/generations，需上游实现该接口 |
 | 音频生成 | POST /v1/chat/completions，选择 TTS/音频模型 | POST /v1/audio/speech，需上游实现该接口 |
@@ -15,7 +15,7 @@ native 图片和音频生成返回聊天 JSON，媒体位于 choices[0].message.
 
 /v1/docs 返回可导入 Postman、Insomnia 或 Swagger UI 的 OpenAPI 3.1 JSON，无需 API Key。下面每个生成接口均提供请求字段、示例及结果读取说明。`
 
-const nativeMediaDescription = `## 图片生成（引擎B native）
+const nativeMediaDescription = `## 图片生成（AI Studio native）
 
 选择 GET /v1/models 中的图片模型，例如 gemini-3.1-flash-image，在 messages 中描述图片。建议先使用 stream=false。
 
@@ -26,7 +26,7 @@ const nativeMediaDescription = `## 图片生成（引擎B native）
 ` + "```\n" + `
 结果在 choices[0].message.content，例如 ![media](data:image/png;base64,...)。提取括号内的 data URI，按逗号分隔 MIME 信息和 Base64 数据，解码后保存图片；也可能返回媒体 URL。
 
-## 音频生成（引擎B native）
+## 音频生成（AI Studio native）
 
 选择实际目录中的 TTS/音频模型，例如 gemini-2.5-flash-preview-tts。底层会根据模型目录请求 AUDIO 输出；具体模型是否接受该请求仍由上游决定。
 
@@ -103,7 +103,7 @@ func mediaChatResponse(modelID, content string) map[string]any {
 
 func addVideoAPIDocs(paths, schemas map[string]any) {
 	create := paths["/v1/videos"].(map[string]any)["post"].(map[string]any)
-	create["description"] = `仅引擎B native 模式可用。model 和 prompt 必填，创建成功返回 202 JSON 和任务 id，此时还没有视频文件。使用返回的真实 id 轮询 GET /v1/videos/{id}，status=completed 后请求 GET /v1/videos/{id}/content 下载 MP4；status=failed 则终止轮询。
+	create["description"] = `仅 AI Studio native 模式可用。model 和 prompt 必填，创建成功返回 202 JSON 和任务 id，此时还没有视频文件。使用返回的真实 id 轮询 GET /v1/videos/{id}，status=completed 后请求 GET /v1/videos/{id}/content 下载 MP4；status=failed 则终止轮询。
 
 ` + "```bash\n" + `curl http://localhost:8800/v1/videos \
   -H 'Authorization: Bearer sk-xxxxxxxx' \

@@ -121,9 +121,9 @@ export default function AdminAccounts() {
     .map(([k, n]) => `${engineLabel(k)} ${n}`)
     .join(' · ')
   const addMenuItems: { key: EngineName; title: string; hint: string }[] = [
-    { key: 'a', title: 'Gemini 网页号（引擎 A）', hint: '粘贴 __Secure-1PSID / 1PSIDTS Cookie' },
-    { key: 'b', title: 'AI Studio 号（引擎 B）', hint: '粘贴 Playwright storage_state JSON' },
-    { key: 'codex', title: 'Codex（OpenAI ChatGPT 订阅）', hint: 'OAuth 授权或粘贴 refresh_token' },
+    { key: 'a', title: 'Gemini Web 网页号', hint: '粘贴 __Secure-1PSID / 1PSIDTS Cookie' },
+    { key: 'b', title: 'AI Studio 号', hint: '粘贴 Playwright storage_state JSON' },
+    { key: 'codex', title: 'GPT（ChatGPT 订阅）', hint: 'OAuth 授权或粘贴 refresh_token' },
     { key: 'antigravity', title: 'Antigravity（Google 订阅）', hint: 'Google OAuth 授权或粘贴 refresh_token' },
     { key: 'kiro', title: 'Kiro（AWS CodeWhisperer）', hint: '粘贴 Kiro IDE 的 refresh_token' },
     { key: 'workbuddy', title: 'WorkBuddy / CodeBuddy（腾讯）', hint: '扫码授权或粘贴 accessToken' },
@@ -284,7 +284,7 @@ function AddGeminiDialog({ open, onOpenChange, onDone }: { open: boolean; onOpen
       <DialogContent className="sm:max-w-[460px]">
         <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
-            <DialogTitle className="text-[15px]">添加 Gemini 网页号</DialogTitle>
+            <DialogTitle className="text-[15px]">添加 Gemini Web 网页号</DialogTitle>
             <DialogDescription className="text-[13px]">在已登录 gemini.google.com 的浏览器开发者工具 → Application → Cookies 中复制。</DialogDescription>
           </DialogHeader>
           <Field label="名称" htmlFor="ga-label">
