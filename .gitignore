@@ -22,6 +22,9 @@ node_modules/
 docs/.vitepress/cache/
 .temp/
 
+# 测试用例仅本地保留，不随仓库分发
+/test/
+
 # 本地构建/下载产物
 *.tar.gz
 web2api-linux-*
