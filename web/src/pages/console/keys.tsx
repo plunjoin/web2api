@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Copy, Eye, EyeOff, KeyRound, Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Eye, EyeOff, KeyRound, Pause, Pencil, Play, PlugZap, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -14,6 +14,7 @@ import { StatusDot } from '@/components/status'
 import { CopyButton, copyText } from '@/components/copy'
 import { Field } from '@/components/fields'
 import { QuickStart } from '@/components/quickstart'
+import { CcSwitchImportDialog } from '@/components/ccswitch'
 import { useConfirm } from '@/components/confirm'
 import { QuotaBar } from '@/components/quota-bar'
 import { useNewParam } from '@/hooks/use-misc'
@@ -35,6 +36,7 @@ export default function ConsoleKeys() {
   const [edit, setEdit] = useState<ApiKey | null>(null)
   const [detail, setDetail] = useState<ApiKey | null>(null)
   const [created, setCreated] = useState<ApiKey | null>(null)
+  const [importKey, setImportKey] = useState<ApiKey | null>(null)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['user'] })
 
   const patch = useMutation({
@@ -45,6 +47,7 @@ export default function ConsoleKeys() {
 
   const actions = (k: ApiKey) => [
     { label: '复制密钥', icon: <Copy />, onSelect: () => copyText(k.key, '密钥已复制') },
+    { label: '导入 CC Switch', icon: <PlugZap />, onSelect: () => setImportKey(k) },
     { label: '编辑名称与额度', icon: <Pencil />, onSelect: () => setEdit(k) },
     k.enabled
       ? { label: '停用', icon: <Pause />, onSelect: () => patch.mutate({ id: k.id, body: { enabled: false } }, { onSuccess: () => toast.success('已停用') }) }
@@ -185,6 +188,8 @@ export default function ConsoleKeys() {
       </Dialog>
 
       <KeyDetailSheet keyItem={detail} onOpenChange={(o) => !o && setDetail(null)} actions={detail ? actions(detail) : []} />
+
+      <CcSwitchImportDialog keyItem={importKey} onOpenChange={(o) => !o && setImportKey(null)} />
     </>
   )
 }

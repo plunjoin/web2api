@@ -54,6 +54,9 @@ func publicAPISpec() map[string]any {
 			"/v1/models": map[string]any{
 				"get": map[string]any{"tags": []string{"基础"}, "summary": "列出可用模型", "responses": map[string]any{"200": jsonResponse("模型列表", "ModelList"), "401": jsonResponse("API Key 无效", "Error")}},
 			},
+			"/v1/codex/catalog": map[string]any{
+				"get": map[string]any{"tags": []string{"基础"}, "summary": "Codex 模型目录（model_catalog_url）", "description": "返回当前 Key 可用的 chat 模型，格式与 cc-switch-model-catalog.json 一致；供 Codex 的 model_catalog_url 或 CC Switch 导入配置拉取，模型列表随号池动态变化。鉴权：Bearer 或 ?key=", "responses": map[string]any{"200": jsonResponse("Codex 模型目录", "ModelList"), "401": jsonResponse("API Key 无效", "Error")}},
+			},
 			"/v1/accounts": map[string]any{
 				"get": map[string]any{"tags": []string{"基础"}, "summary": "查看引擎和账号池状态", "responses": map[string]any{"200": jsonResponse("账号状态", "AccountsResponse"), "401": jsonResponse("API Key 无效", "Error")}},
 			},

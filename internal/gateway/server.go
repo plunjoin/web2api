@@ -90,6 +90,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /tools/export-storage.sh", s.handleExportToolScript)
 	mux.HandleFunc("GET /tools/export-storage.js", s.handleExportToolScript)
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleModels))
+	// Codex 模型目录（model_catalog_url 拉取，Bearer 或 ?key= 鉴权）
+	mux.HandleFunc("GET /v1/codex/catalog", s.handleCodexCatalog)
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChat))
 	// Veo 视频长任务：创建、轮询和下载结果。
 	mux.HandleFunc("POST /v1/videos", s.withAuth(s.handleCreateVideo))
@@ -340,6 +342,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET  /v1/videos/{id}",
 			"GET  /v1/videos/{id}/content",
 			"GET  /v1/models",
+			"GET  /v1/codex/catalog (Codex model_catalog_url)",
 			"GET  /v1/accounts",
 			"GET  /admin        (管理台)",
 			"GET  /console      (用户控制台)",

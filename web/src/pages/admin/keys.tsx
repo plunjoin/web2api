@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Ban, CheckCircle2, Copy, KeyRound, Pencil, Plus, RefreshCw, RotateCcw, Search, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, Copy, KeyRound, Pencil, PlugZap, Plus, RefreshCw, RotateCcw, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -14,6 +14,7 @@ import { Pill, StatusDot } from '@/components/status'
 import { Field, MiniSelect } from '@/components/fields'
 import { CopyButton, copyText } from '@/components/copy'
 import { useConfirm } from '@/components/confirm'
+import { CcSwitchImportDialog } from '@/components/ccswitch'
 import { useNewParam } from '@/hooks/use-misc'
 import { QuotaBar } from '@/components/quota-bar'
 import { api } from '@/lib/api'
@@ -36,6 +37,7 @@ export default function AdminKeys() {
   const [createOpen, setCreateOpen] = useNewParam()
   const [edit, setEdit] = useState<ApiKey | null>(null)
   const [revealed, setRevealed] = useState<ApiKey | null>(null)
+  const [importKey, setImportKey] = useState<ApiKey | null>(null)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin'] })
 
   const patch = async (k: ApiKey, body: Record<string, unknown>, ok: string) => {
@@ -49,6 +51,7 @@ export default function AdminKeys() {
   }
   const actions = (k: ApiKey): RowAction[] => [
     { label: '复制密钥', icon: <Copy />, onSelect: () => copyText(k.key, '密钥已复制') },
+    { label: '导入 CC Switch', icon: <PlugZap />, onSelect: () => setImportKey(k) },
     { label: '编辑', icon: <Pencil />, onSelect: () => setEdit(k) },
     k.enabled ? { label: '停用', icon: <Ban />, onSelect: () => patch(k, { enabled: false }, '已停用') } : { label: '启用', icon: <CheckCircle2 />, onSelect: () => patch(k, { enabled: true }, '已启用') },
     {
@@ -198,6 +201,8 @@ export default function AdminKeys() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CcSwitchImportDialog keyItem={importKey} onOpenChange={(o) => !o && setImportKey(null)} />
     </>
   )
 }

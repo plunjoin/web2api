@@ -296,6 +296,22 @@ custom（第三方 Key）目录时转发对应上游（native 模式即可用，
 OpenAI 兼容端的 `gemini-embedding-*` 向量模型）；未命中时回退引擎B
 upstream 模式透传。音乐模型（如 `lyria-3.5`）请走 `POST /v1/music/generations`。
 
+### 一键导入 CC Switch（Codex / Claude Code）
+
+管理台/控制台的 API 密钥页提供「导入 CC Switch」：生成 `ccswitch://` Deep Link
+（CC Switch v4+），一键把该密钥导入为 Codex 或 Claude Code 供应商。配置要点：
+
+- `wire_api = "chat"` / `apiFormat = openai_chat`：网关只实现 Chat Completions，
+  CC Switch 会自动开启本地路由做协议转换（Codex 的 Responses、Claude Code 的
+  Anthropic Messages 都在本地代理翻译成 Chat Completions 后再进网关）
+- `model_catalog_url` 指向 `GET /v1/codex/catalog`（`Bearer` 或 `?key=` 鉴权）：
+  Codex 从该 URL 动态拉取模型目录，输出该 Key 当前可用的 chat 模型
+  （白名单与上下架过滤在网关侧生效），号池变化后无需重改配置
+- 目录条目与 `cc-switch-model-catalog.json` / 官方 `models_cache.json` 同构
+  （`visibility` 枚举只有 `list/hide/none`，`support_verbosity` 等为必填字段）
+- Claude Code 注意：网关没有 Anthropic `/v1/messages` 端点，不能把
+  `ANTHROPIC_BASE_URL` 直接指向网关，必须经 CC Switch 本地路由转换
+
 ### 本机一键导入 AI Studio 登录态
 
 用户可以在自己的电脑上打开可见浏览器完成登录，脚本会把登录态通过管理员 API
