@@ -59,6 +59,9 @@ function utf8Base64(s: string): string {
 /** 生成 Codex 的 config.toml：wire_api=responses（Codex 已移除 chat），model_catalog_url 动态拉模型。 */
 export function buildCcSwitchTOML(baseURL: string, apiKey: string, model: string): string {
   return [
+    // 必须显式选路到 custom：缺这一行 Codex 用内置 openai 提供方，会把网关 Key 发到 api.openai.com。
+    // CC Switch 导入时也会补这一行（deeplink/codex_link.rs render），手动粘贴就全靠它。
+    'model_provider = "custom"',
     `model = "${model}"`,
     'model_reasoning_effort = "medium"',
     '[model_providers.custom]',

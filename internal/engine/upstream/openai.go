@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -80,6 +82,35 @@ func NormalizeBaseURL(baseURL string) string {
 	return u
 }
 
+// endpoint 拼接上游地址。base_url 自带版本段时（Gemini 的
+// https://generativelanguage.googleapis.com/v1beta/openai、智谱 /api/paas/v4 等）
+// 不能再补 /v1：/v1beta/openai/v1/models 会 404。此时把路径里的 /v1 前缀去掉。
+func (o *OpenAI) endpoint(path string) string {
+	if HasVersionedBase(o.baseURL) {
+		if rest, ok := strings.CutPrefix(path, "/v1/"); ok {
+			path = "/" + rest
+		}
+	}
+	return o.baseURL + path
+}
+
+// HasVersionedBase 判断 base_url 的路径是否已经包含 API 版本段
+// （末段形如 v1beta / v4，或 Gemini 的 .../openai）。
+func HasVersionedBase(baseURL string) bool {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/"))
+	if err != nil || u.Path == "" {
+		return false
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	last := strings.ToLower(segs[len(segs)-1])
+	if last == "openai" && len(segs) >= 2 && versionSegment.MatchString(strings.ToLower(segs[len(segs)-2])) {
+		return true
+	}
+	return versionSegment.MatchString(last)
+}
+
+var versionSegment = regexp.MustCompile(`^v\d+[a-z0-9]*$`)
+
 // Name 上游名。
 func (o *OpenAI) Name() string { return o.name }
 
@@ -130,7 +161,7 @@ func (o *OpenAI) do(ctx context.Context, method, path string, body any) ([]byte,
 		}
 		reader = bytes.NewReader(data)
 	}
-	url := o.baseURL + path
+	url := o.endpoint(path)
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
 		return nil, 0, err
@@ -188,6 +219,45 @@ func (o *OpenAI) Models() []model.ModelInfo {
 	return o.ListModels()
 }
 
+// dummyThoughtSignature 是 Gemini 文档给出的占位签名：历史里的工具调用拿不到
+// 原始 thought_signature 时（客户端没回传、网关重启丢了缓存）用它跳过校验。
+// https://ai.google.dev/gemini-api/docs/thought-signatures
+var dummyThoughtSignature = json.RawMessage(`{"google":{"thought_signature":"skip_thought_signature_validator"}}`)
+
+// withThoughtSignatures 给发往 Gemini 模型的历史工具调用补齐 thought_signature：
+// 先用网关缓存的原始签名，缺失时用占位签名。非 Gemini 模型原样返回。
+func withThoughtSignatures(modelName string, messages []model.ChatMessage) []model.ChatMessage {
+	if !strings.Contains(strings.ToLower(modelName), "gemini") {
+		return messages
+	}
+	var out []model.ChatMessage
+	for i, msg := range messages {
+		if len(msg.ToolCalls) == 0 {
+			continue
+		}
+		if out == nil {
+			out = append([]model.ChatMessage(nil), messages...)
+		}
+		calls := append([]model.ToolCall(nil), msg.ToolCalls...)
+		for j := range calls {
+			if len(calls[j].ExtraContent) > 0 {
+				continue
+			}
+			if extra := model.LookupToolCallExtra(calls[j].ID); len(extra) > 0 {
+				calls[j].ExtraContent = extra
+			} else if j == 0 {
+				// Gemini 只要求每个回合第一个 functionCall 带签名。
+				calls[j].ExtraContent = dummyThoughtSignature
+			}
+		}
+		out[i].ToolCalls = calls
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
 // BaseURL 上游地址。
 func (o *OpenAI) BaseURL() string { return o.baseURL }
 
@@ -196,7 +266,7 @@ func (o *OpenAI) BaseURL() string { return o.baseURL }
 func (o *OpenAI) chatPayload(req model.ChatRequest, stream bool) map[string]any {
 	payload := map[string]any{
 		"model":    req.Model,
-		"messages": req.Messages,
+		"messages": withThoughtSignatures(req.Model, req.Messages),
 		"stream":   stream,
 	}
 	if req.Temperature != nil {
@@ -211,7 +281,9 @@ func (o *OpenAI) chatPayload(req model.ChatRequest, stream bool) map[string]any 
 	if len(req.Tools) > 0 {
 		payload["tools"] = req.Tools
 		if choice := bytes.TrimSpace(req.ToolChoice); len(choice) > 0 && string(choice) != "null" {
-			payload["tool_choice"] = choice
+			// 必须转回 json.RawMessage：[]byte 会被 encoding/json 编成 base64 字符串
+			// （"auto" → "ImF1dG8i"），上游直接 400。
+			payload["tool_choice"] = json.RawMessage(choice)
 		}
 		if req.ParallelToolCalls != nil {
 			payload["parallel_tool_calls"] = *req.ParallelToolCalls
@@ -245,6 +317,7 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 	if len(resp.Choices) > 0 {
 		result.Text = resp.Choices[0].Message.Content
 		result.ToolCalls = resp.Choices[0].Message.ToolCalls
+		rememberToolCallExtras(result.ToolCalls)
 		result.FinishReason = resp.Choices[0].FinishReason
 	}
 	o.MarkReady()
@@ -274,7 +347,7 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 	if err != nil {
 		return nil, err
 	}
-	url := o.baseURL + "/v1/chat/completions"
+	url := o.endpoint("/v1/chat/completions")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -353,6 +426,9 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 			}
 			acc.Function.Name += tc.Function.Name
 			acc.Function.Arguments += tc.Function.Arguments
+			if len(tc.ExtraContent) > 0 {
+				acc.ExtraContent = tc.ExtraContent
+			}
 			if err := sink.ToolCall(tc); err != nil {
 				return nil, err
 			}
@@ -375,10 +451,19 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 		}
 		result.ToolCalls = append(result.ToolCalls, call)
 	}
+	rememberToolCallExtras(result.ToolCalls)
 	if len(result.ToolCalls) > 0 && result.FinishReason == "" {
 		result.FinishReason = "tool_calls"
 	}
 	return result, nil
+}
+
+// rememberToolCallExtras 记下上游给的 extra_content（thought_signature），
+// 供只回传 call_id 的客户端（Codex / Responses）下一轮补回。
+func rememberToolCallExtras(calls []model.ToolCall) {
+	for _, call := range calls {
+		model.RememberToolCallExtra(call.ID, call.ExtraContent)
+	}
 }
 
 // ProbeImage 探测图片模型：调用 /v1/images/generations（不走 Chat Completions）。
@@ -425,7 +510,7 @@ func (o *OpenAI) ProbeEmbedding(ctx context.Context, modelName string) (string, 
 
 // ServePassthrough 将请求原样转发到上游同路径。
 func (o *OpenAI) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w PassthroughWriter) error {
-	url := o.baseURL + "/" + strings.TrimLeft(path, "/")
+	url := o.endpoint("/" + strings.TrimLeft(path, "/"))
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return err

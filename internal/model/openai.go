@@ -115,6 +115,10 @@ type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function ToolFunction `json:"function"`
+	// ExtraContent 上游附带的不透明扩展（Gemini OpenAI 兼容端点的
+	// {"google":{"thought_signature":"..."}}）。多轮工具调用时必须原样带回，
+	// 否则 Gemini 3 系列直接 400 "missing a thought_signature"。
+	ExtraContent json.RawMessage `json:"extra_content,omitempty"`
 }
 
 // ToolFunction 被调用的函数名与 JSON 字符串形式的参数。
@@ -132,10 +136,11 @@ type ToolFunctionDelta struct {
 // ToolCallDelta 流式工具调用增量。一次调用会被拆成多块下发，
 // 客户端按 Index 归并、按到达顺序拼接 Arguments。
 type ToolCallDelta struct {
-	Index    int               `json:"index"`
-	ID       string            `json:"id,omitempty"`
-	Type     string            `json:"type,omitempty"`
-	Function ToolFunctionDelta `json:"function"`
+	Index        int               `json:"index"`
+	ID           string            `json:"id,omitempty"`
+	Type         string            `json:"type,omitempty"`
+	Function     ToolFunctionDelta `json:"function"`
+	ExtraContent json.RawMessage   `json:"extra_content,omitempty"`
 }
 
 // StreamSink 是引擎的流式输出目标：文本增量与工具调用增量都写到这里，
