@@ -1,6 +1,6 @@
 // Package gateway 提供 OpenAI 兼容 HTTP 网关 + 管理台：
 //
-//	POST /v1/chat/completions  — 对话（支持流式 SSE，按模型名路由双引擎，记录用量）
+//	POST /v1/chat/completions  — 对话（支持流式 SSE，按模型名路由到声明它的引擎，记录用量）
 //	GET  /v1/models            — 聚合模型列表
 //	GET  /health               — 健康检查（免鉴权）
 //	GET  /v1/accounts          — 引擎与账号状态
@@ -97,7 +97,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/videos/{id}", s.withAuth(s.handleGetVideo))
 
 	// 多模态透传
-	for _, sub := range []string{"images", "videos", "audio", "files", "embeddings"} {
+	for _, sub := range []string{"images", "videos", "audio", "music", "files", "embeddings"} {
 		mux.HandleFunc("/v1/"+sub+"/", s.withAuth(s.withUserMeteringGuard(s.withModelGuard(s.handlePassthrough))))
 		mux.HandleFunc("/v1/"+sub, s.withAuth(s.withUserMeteringGuard(s.withModelGuard(s.handlePassthrough))))
 	}
@@ -344,7 +344,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET  /admin        (管理台)",
 			"GET  /console      (用户控制台)",
 			"GET  /admin/api/docs (管理 API OpenAPI 文档)",
-			"多模态透传: /v1/images|videos|audio|files/*（仅 upstream 模式）",
+			"多模态透传: /v1/images|videos|audio|music|files|embeddings/*（按模型路由）",
 		},
 	})
 }

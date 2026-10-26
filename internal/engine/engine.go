@@ -32,6 +32,14 @@ type Engine interface {
 	Status() map[string]any
 }
 
+// ChatMediaEngine 可选能力：能在 /v1/chat/completions 的文本响应里直接带回
+// 音频/图片等媒体。目前只有引擎B 原生模式支持（把 inline data 转成 data URI）。
+// 第三方 OpenAI 兼容端点不支持——它们的 chat 只能返回文本，音乐/视频模型
+// 硬发过去会被上游以 “Unhandled generated data mime type: audio/mpeg” 拒掉。
+type ChatMediaEngine interface {
+	ChatSupportsMedia() bool
+}
+
 // PassthroughWriter 抽象透传响应的写出目标（网关的 http.ResponseWriter）。
 type PassthroughWriter interface {
 	Header() http.Header

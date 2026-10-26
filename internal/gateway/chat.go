@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"web2api/internal/model"
+	"web2api/internal/provider"
 	"web2api/internal/store"
 )
 
@@ -97,6 +98,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Printf("[chat] 请求失败 model=%q: %v", req.Model, err)
 		s.recordChat(r, req, nil, false, err, start)
+		// 「没有任何账号/引擎声明该模型」是客户端问题，返回 404 + model_not_found，
+		// 不要包装成 502 让下游误以为可以重试。
+		if provider.IsModelNotFound(err) {
+			writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_not_found")
+			return
+		}
+		// 模型用途与端点不匹配（音乐模型打到 chat）：400 + 明确的正确入口。
+		if provider.IsUnsupportedEndpoint(err) {
+			writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "unsupported_endpoint")
+			return
+		}
 		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 		return
 	}

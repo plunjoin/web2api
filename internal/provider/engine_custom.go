@@ -56,6 +56,32 @@ func (a *customAccount) proxy(engineProxy string) string {
 	return engineProxy
 }
 
+// usableLocked 账号当前是否可接单（调用方需持有 a.mu）。
+func (a *customAccount) usableLocked() bool {
+	return a.enabled && a.ready && time.Now().After(a.cooldownUntil)
+}
+
+// declaresLocked 账号目录是否声明了该模型（调用方需持有 a.mu）。
+// 目录为空即「没声明任何模型」——不再被当成「任意模型都能试」。
+func (a *customAccount) declaresLocked(modelID string) bool {
+	want := normalizeModelID(modelID)
+	if want == "" {
+		return false
+	}
+	for _, m := range a.models {
+		if normalizeModelID(m.ID) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeModelID 统一模型 ID 口径：去空白、去 models/ 前缀、小写。
+// Google 的 OpenAI 兼容端点目录会带 models/ 前缀，客户端通常用裸名。
+func normalizeModelID(id string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))
+}
+
 // CustomEngine 第三方 OpenAI 兼容 Key 号池。
 type CustomEngine struct {
 	name  string
@@ -182,10 +208,12 @@ func (e *CustomEngine) refreshAccount(ctx context.Context, acc *customAccount) {
 			acc.lastErr = "模型列表探测失败，已使用手动模型: " + err
 		}
 	} else {
-		// 无模型目录也可直调（用户自填 model）；标为 ready，细节记错误。
+		// 没有模型目录：账号仍在池中展示，但不再对任意模型开放——按声明选号后
+		// 这种账号接不到任何请求，必须把原因写清楚，否则管理台只看到「就绪」。
 		acc.ready = true
+		acc.lastErr = "未拉到模型目录且未手填 models：该账号不会承接任何模型（请点“获取模型列表”或手填）"
 		if err := up.ReadyErr(); err != "" {
-			acc.lastErr = "未拉到模型列表（可手动填模型名）: " + err
+			acc.lastErr = "未拉到模型目录，该账号不会承接任何模型: " + err
 		}
 	}
 	acc.mu.Unlock()
@@ -309,6 +337,12 @@ func (e *CustomEngine) AccountStates() []AccountState {
 			state.Detail = "冷却中: " + acc.cooldownReason
 		case !acc.ready:
 			state.Status = "initializing"
+		case len(acc.models) == 0:
+			// 没有模型目录 → 不会承接任何模型，管理台必须能一眼看出来。
+			state.Status = "error"
+			if strings.TrimSpace(state.Detail) == "" {
+				state.Detail = "未声明任何模型：不会接单，请点“获取模型列表”或手填 models"
+			}
 		default:
 			state.Status = "ok"
 			state.Ready = true
@@ -332,12 +366,14 @@ func (e *CustomEngine) Describe() string {
 	return "第三方 OpenAI 兼容 Key（base_url + api_key，常见供应商余额查询）"
 }
 
+// Ready 是否至少有一个「能真正接单」的账号：启用、就绪、未冷却，且目录非空。
+// 目录为空的账号已经不能承接任何模型（不再兜底），计入就绪只会误导管理台与 /health。
 func (e *CustomEngine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
-		ok := acc.enabled && acc.ready && time.Now().After(acc.cooldownUntil)
+		ok := acc.usableLocked() && len(acc.models) > 0
 		acc.mu.Unlock()
 		if ok {
 			return true
@@ -347,6 +383,7 @@ func (e *CustomEngine) Ready() bool {
 }
 
 // ListModels 合并各供应商模型目录（去重）。
+// available 的口径：该模型至少出现在一个可用账号（启用、就绪、未冷却）的目录里。
 func (e *CustomEngine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -354,7 +391,7 @@ func (e *CustomEngine) ListModels() []model.ModelInfo {
 	order := make([]string, 0)
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
-		enabled := acc.enabled && time.Now().After(acc.cooldownUntil)
+		enabled := acc.usableLocked()
 		for _, m := range acc.models {
 			id := m.ID
 			if id == "" {
@@ -379,47 +416,110 @@ func (e *CustomEngine) ListModels() []model.ModelInfo {
 	return out
 }
 
-func (e *CustomEngine) pick(modelName string) *customAccount {
+// candidates 按模型精确挑选候选账号。
+// 返回值：usable 为「声明了该模型且当前可用」的账号（按轮转起点排序）；
+// declared 为声明了该模型的账号总数（不看可用态）；total 为号池账号总数。
+// 关键约束：没有声明该模型的账号一律不入选，目录为空的账号也不再兜底。
+func (e *CustomEngine) candidates(modelName string) (usable []*customAccount, declared int, total int) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
 	if n == 0 {
-		return nil
+		return nil, 0, 0
 	}
-	want := strings.TrimSpace(modelName)
+	want := normalizeModelID(modelName)
 	start := int(e.next.Add(1))
-
-	// 优先选声明了该模型的账号。
-	if want != "" {
-		bare := strings.TrimPrefix(want, "models/")
-		for i := 0; i < n; i++ {
-			acc := e.accounts[(start+i)%n]
-			acc.mu.Lock()
-			ok := acc.enabled && acc.ready && time.Now().After(acc.cooldownUntil)
-			has := len(acc.models) == 0 // 无目录时任意模型都可试
-			for _, m := range acc.models {
-				// 目录 id 可能带 models/ 前缀（Google OpenAI 兼容端点），宽松匹配。
-				if strings.EqualFold(strings.TrimPrefix(m.ID, "models/"), bare) {
-					has = true
-					break
-				}
-			}
-			acc.mu.Unlock()
-			if ok && has {
-				return acc
-			}
-		}
-	}
+	usable = make([]*customAccount, 0, n)
 	for i := 0; i < n; i++ {
 		acc := e.accounts[(start+i)%n]
 		acc.mu.Lock()
-		ok := acc.enabled && acc.ready && time.Now().After(acc.cooldownUntil)
+		has := acc.declaresLocked(want)
+		ok := has && acc.usableLocked()
 		acc.mu.Unlock()
+		if has {
+			declared++
+		}
 		if ok {
-			return acc
+			usable = append(usable, acc)
 		}
 	}
-	return nil
+	return usable, declared, n
+}
+
+// pick 按模型精确选号：只返回目录里明确声明了该模型的可用账号。
+// 这里刻意不再保留「找不到就随便抓一个就绪号」的兜底——那会把 lyria / veo
+// 这类模型打到完全不相干的第三方供应商上，最后以误导性的上游 404 收场。
+func (e *CustomEngine) pick(modelName string) (*customAccount, error) {
+	usable, declared, total := e.candidates(modelName)
+	if len(usable) > 0 {
+		return usable[0], nil
+	}
+	switch {
+	case total == 0:
+		return nil, errors.New("custom: 号池没有账号")
+	case declared == 0:
+		return nil, e.missError(modelName)
+	default:
+		return nil, fmt.Errorf("custom: 声明了模型 %q 的 %d 个账号当前均不可用（已停用 / 初始化中 / 冷却中）",
+			strings.TrimPrefix(strings.TrimSpace(modelName), "models/"), declared)
+	}
+}
+
+// missError 生成「没有账号声明该模型」的明确错误，附带号池现状便于排查。
+func (e *CustomEngine) missError(modelName string) error {
+	want := normalizeModelID(modelName)
+	if want == "" {
+		return newModelNotFound("", "请求未指定模型，custom 号池无法选号")
+	}
+	display := strings.TrimPrefix(strings.TrimSpace(modelName), "models/")
+	e.mu.RLock()
+	accounts := append([]*customAccount(nil), e.accounts...)
+	e.mu.RUnlock()
+	if len(accounts) == 0 {
+		return newModelNotFound(display, fmt.Sprintf("custom 号池没有账号，无法承接模型 %q", display))
+	}
+	const shown = 3
+	empty := 0
+	parts := make([]string, 0, shown)
+	for i, acc := range accounts {
+		acc.mu.Lock()
+		label := acc.label
+		if strings.TrimSpace(label) == "" {
+			label = acc.id
+		}
+		state := fmt.Sprintf("%d 个模型", len(acc.models))
+		if len(acc.models) == 0 {
+			empty++
+			state = "无模型目录"
+		}
+		if !acc.enabled {
+			state += "、已停用"
+		}
+		acc.mu.Unlock()
+		if i < shown {
+			parts = append(parts, fmt.Sprintf("%s（%s）", label, state))
+		}
+	}
+	detail := fmt.Sprintf("custom 号池没有账号声明模型 %q（%s", display, strings.Join(parts, "、"))
+	if len(accounts) > shown {
+		detail += fmt.Sprintf(" 等 %d 个账号", len(accounts))
+	}
+	detail += "）"
+	if empty > 0 {
+		detail += fmt.Sprintf("；其中 %d 个账号没有模型目录，未拉到目录的账号不再兜底接单，请在管理台获取模型列表或手填 models", empty)
+	}
+	return newModelNotFound(display, detail)
+}
+
+// isMediaMimeRejection 上游以「产出不了这种 MIME 类型」为由拒绝请求。
+// 典型场景：把 Lyria 音乐模型发到只能返回文本的 chat 端点，Google 会回
+// “Unhandled generated data mime type: audio/mpeg”。这不是参数写错，
+// 而是端点选错了，需要提示调用方换端点。
+func isMediaMimeRejection(msg string) bool {
+	if !strings.Contains(msg, "mime type") && !strings.Contains(msg, "mimetype") {
+		return false
+	}
+	return strings.Contains(msg, "audio/") || strings.Contains(msg, "video/") || strings.Contains(msg, "image/")
 }
 
 func (e *CustomEngine) markCooldown(acc *customAccount, reason string, d time.Duration) {
@@ -428,23 +528,6 @@ func (e *CustomEngine) markCooldown(acc *customAccount, reason string, d time.Du
 	acc.cooldownReason = reason
 	acc.lastErr = reason
 	acc.mu.Unlock()
-}
-
-func (e *CustomEngine) usableCount() int {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	n := 0
-	for _, acc := range e.accounts {
-		acc.mu.Lock()
-		if acc.enabled && acc.ready {
-			n++
-		}
-		acc.mu.Unlock()
-	}
-	if n == 0 {
-		return 1
-	}
-	return n
 }
 
 // ServeModelPassthrough 按模型把 OpenAI 兼容端点请求原样转发到拥有该模型的账号上游
@@ -477,12 +560,9 @@ func (e *CustomEngine) ProbeEmbedding(ctx context.Context, modelID string) (stri
 }
 
 func (e *CustomEngine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
-	if !e.Ready() {
-		return nil, engineUnavailableError(e)
-	}
-	acc := e.pick(modelID)
-	if acc == nil {
-		return nil, errors.New("没有可用的第三方账号")
+	acc, err := e.pick(modelID)
+	if err != nil {
+		return nil, err
 	}
 	acc.mu.Lock()
 	up := acc.up
@@ -494,14 +574,20 @@ func (e *CustomEngine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
 }
 
 func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	if !e.Ready() {
-		return nil, engineUnavailableError(e)
+	// 严格按模型选号：只有目录里声明了该模型的账号才有资格接单。
+	// 没有任何账号声明 → 直接 model_not_found，绝不换号改投别的供应商。
+	usable, _, _ := e.candidates(req.Model)
+	if len(usable) == 0 {
+		// 复用 pick 的分支错误：区分「号池为空」「无人声明该模型」「声明了但都不可用」。
+		if _, err := e.pick(req.Model); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("custom: 没有可用账号")
 	}
 	var lastErr error
-	for attempt := 0; attempt < e.usableCount(); attempt++ {
-		acc := e.pick(req.Model)
-		if acc == nil {
-			break
+	for _, acc := range usable {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		acc.mu.Lock()
 		up := acc.up
@@ -536,10 +622,13 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDe
 		case strings.Contains(msg, "http 429") || strings.Contains(msg, "rate"):
 			e.markCooldown(acc, "上游限流", 2*time.Minute)
 		default:
-			// 模型不存在等业务错误不冷却，直接返回给客户端。
-			acc.mu.Lock()
-			acc.lastErr = err.Error()
-			acc.mu.Unlock()
+			// 上游以「产出不了这种 MIME」为由拒绝：说明模型用途和端点不匹配
+			// （把音乐/语音模型发到了只能返回文本的 chat 端点），换成能看懂的提示。
+			if kind := model.ClassifyKind(req.Model, "", nil); model.ChatIncompatibleKind(kind) && isMediaMimeRejection(msg) {
+				return nil, newUnsupportedEndpoint(req.Model, kind)
+			}
+			// 模型不存在、参数非法等业务错误属于「这一次请求」的问题，不是账号健康问题：
+			// 既不写进账号详情（避免错误详情挂到不相干的账号上），也不换号重试。
 			return nil, fmt.Errorf("custom: %w", err)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -330,7 +331,7 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 		}
 	}
 
-	// 反向导入：auth 目录已存在但存储没有的账号（AIStudio2API 生成的 auth 目录直用）
+	// 反向导入：auth 目录已存在但存储没有的账号（已有的 auth 目录直接复用）
 	if native, ok := m.engineB.(*NativeAIStudioEngine); ok && native != nil {
 		for _, poolID := range native.PoolAccountIDs() {
 			if _, err := m.st.GetAccountByLabel("b", poolID); err == nil {
@@ -1112,31 +1113,26 @@ func (m *Manager) AccountOverview() []AccountOverview {
 // ==================== 路由与对话 ====================
 
 // pickEngine 按模型名路由引擎。第二个返回值表示模型是否为该引擎专属
-// （任一引擎目录命中或订阅引擎显式路由）：专属模型引擎不可用时不做
-// 跨引擎切换——其他引擎不认识该模型，切换只会产生误导性错误。
+// （配置显式指定、任一引擎目录命中、多模态关键词）：专属模型引擎不可用时
+// 不做跨引擎切换——其他引擎不认识该模型，切换只会产生误导性错误。
 func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	name := strings.ToLower(strings.TrimSpace(modelName))
 
 	// 1) 显式模型路由：engine_a/b_models + routing.engine_models.<engine>
+	//    配置命中即为「专属」：写了就是点名要这个引擎，它挂了就报它的真实错误，
+	//    不再被 alternate 带去别的引擎（换过去只会拿到假 404 或错模型）。
 	if len(m.engineAModels) > 0 && matchAny(name, m.engineAModels) {
 		if eng, ok := m.engines["a"]; ok {
-			return eng, false
+			return eng, true
 		}
 	}
 	if len(m.engineBModels) > 0 && matchAny(name, m.engineBModels) {
 		if eng, ok := m.engines["b"]; ok {
-			return eng, false
+			return eng, true
 		}
 	}
-	for engName, patterns := range m.engineModels {
-		if len(patterns) == 0 {
-			continue
-		}
-		if matchAny(name, patterns) {
-			if eng, ok := m.engines[strings.ToLower(engName)]; ok {
-				return eng, isSubscriptionEngine(strings.ToLower(engName))
-			}
-		}
+	if eng, ok := m.matchConfiguredModels(name); ok {
+		return eng, true
 	}
 
 	// 2) 订阅/custom 目录精确命中（先于多模态启发式，避免 gpt-image-* 等被误送引擎B）
@@ -1151,12 +1147,22 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 		return eng, true
 	}
 
-	// 4) 多模态模型走引擎B（Gemini image/veo/tts 等历史行为）
-	if eng, ok := m.engines["b"]; ok && isMultimodalModel(name) {
-		return eng, false
+	// 4) 多模态模型（音乐/视频/生图/语音/向量）只能由声明它的引擎接单。
+	//    目录命中已在第 2、3 步处理；这里只处理「当前目录里还没有」的多模态请求：
+	//    交给引擎B 并标为专属，引擎B 不可用时直接报引擎B 的真实错误，
+	//    绝不再走 default/auto 兜底改投第三方 Key（lyria 打到 MiniMax 的根因）。
+	if isMultimodalModel(name) {
+		if eng, ok := m.engines["b"]; ok {
+			return eng, true
+		}
+		// 引擎B 未启用：这类模型没有任何承接方，交给上层返回 model_not_found。
+		return nil, false
 	}
 
 	// 5) default_engine 显式指定（支持任意注册引擎）
+	//    这里刻意保持「非专属」语义：default_engine 是「其余模型默认去哪」，
+	//    不是逐个模型的点名，所以引擎A/B 仍保留 auto 降级；订阅/custom 本身
+	//    只认目录，标为专属（换过去也接不了）。
 	if m.defaultEngine != "auto" && m.defaultEngine != "" {
 		if eng, ok := m.engines[m.defaultEngine]; ok {
 			return eng, isSubscriptionEngine(m.defaultEngine)
@@ -1173,6 +1179,22 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	for _, engName := range m.engineOrder {
 		if eng, ok := m.engines[engName]; ok && eng.Ready() {
 			return eng, false
+		}
+	}
+	return nil, false
+}
+
+// matchConfiguredModels 按 routing.engine_models.<engine> 匹配。
+// 按引擎注册顺序遍历而不是直接 range map：map 遍历顺序随机，同一个模型
+// 可能在多次重启间落到不同引擎，排查线上问题时非常难受。
+func (m *Manager) matchConfiguredModels(name string) (engine.Engine, bool) {
+	for _, engName := range m.engineOrder {
+		patterns := m.engineModels[engName]
+		if len(patterns) == 0 || !matchAny(name, patterns) {
+			continue
+		}
+		if eng, ok := m.engines[engName]; ok {
+			return eng, true
 		}
 	}
 	return nil, false
@@ -1353,17 +1375,33 @@ func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (stri
 	return "", fmt.Errorf("当前引擎不支持向量探测，请手动验证")
 }
 
+// probeCatalogModel 视频/音乐/语音类模型的可接单检查。
+// 不做真实生成（昂贵且会产生计费），但也不做「在目录里就算过」的假探测：
+// 至少要满足「有账号声明该模型」+「归属引擎能接单」两条。
 func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
+	eng, _ := m.pickEngine(modelID)
+	if eng == nil {
+		return "", newModelNotFound(modelID, m.ownershipHint(modelID))
+	}
+	if !engineHasModel(eng, modelID) {
+		return "", newModelNotFound(modelID, m.ownershipHint(modelID))
+	}
+	// 目录里有、但没有任何可用账号声明它（引擎自报 available=false）同样不算可用。
+	want := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
 	for _, mi := range m.ListAllModels() {
-		if !strings.EqualFold(mi.ID, modelID) {
+		id := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(mi.ID), "models/"))
+		if id != want {
 			continue
 		}
-		if mi.Available {
-			return fmt.Sprintf("已在目录中（%s 模型未做生成探测）", kindLabel(kind)), nil
+		if !mi.Available {
+			return "", fmt.Errorf("模型 %s 在 %s 引擎目录中，但没有可用账号声明它（账号停用 / 未拉到目录 / 冷却中）", modelID, eng.Name())
 		}
-		return "", fmt.Errorf("模型在目录中但上游暂不可用")
+		break
 	}
-	return "", fmt.Errorf("模型不在当前目录")
+	if !eng.Ready() {
+		return "", engineUnavailableError(eng)
+	}
+	return fmt.Sprintf("引擎 %s 已声明该模型且引擎可接单（%s 模型未做生成探测）", eng.Name(), kindLabel(kind)), nil
 }
 
 func kindLabel(kind string) string {
@@ -1405,16 +1443,33 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, onDelta
 // 该引擎的具体错误；引擎B 收到目录外模型时不再静默换模，由引擎B 返回明确的
 // 目录错误，避免「换用不可用模型后报无可用账户」这类误导性错误。
 func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model.ChatRequest, error) {
+	// 用途闸门：音乐/视频/向量模型走 /v1/chat/completions 一定拿不到结果。
+	// 第三方 OpenAI 兼容端点只会把请求原样发出去，然后被上游以
+	// “Unhandled generated data mime type: audio/mpeg” 之类的 400 拒掉。
+	// 能出媒体（引擎B 原生）就交给它，否则直接给调用方一个能看懂的 400。
+	kind := m.kindOf(req.Model)
+	if model.ChatIncompatibleKind(kind) {
+		if mediaEng, ok := m.chatMediaEngine(); ok {
+			if !mediaEng.Ready() {
+				return nil, req, engineUnavailableError(mediaEng)
+			}
+			return mediaEng, req, nil
+		}
+		return nil, req, newUnsupportedEndpoint(req.Model, kind)
+	}
+
 	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
-		return nil, req, errors.New("没有可用的引擎")
+		return nil, req, newModelNotFound(req.Model, m.ownershipHint(req.Model))
 	}
 	if !eng.Ready() {
-		if owned {
-			// 模型为该引擎专属：不跨引擎切换，直接返回该引擎的具体错误
+		// 多模态（lyria / veo / image / tts 等）与目录已标明归属的模型禁止换引擎：
+		// 换到 custom 只会把请求打到不相干的第三方供应商，最终以假 404 收场。
+		// 目标引擎不可用时返回它自己的真实错误（如 engine b: worker_ready=0）。
+		if owned || isMultimodalModel(strings.ToLower(strings.TrimSpace(req.Model))) {
 			return nil, req, engineUnavailableError(eng)
 		}
-		alt := m.alternate(eng)
+		alt := m.alternate(eng, req.Model)
 		if alt != nil {
 			eng = alt
 		} else {
@@ -1422,6 +1477,61 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 		}
 	}
 	return eng, req, nil
+}
+
+// chatMediaEngine 返回能在 /v1/chat/completions 里直接产出媒体的引擎
+// （目前只有引擎B 原生模式）。没有则返回 ok=false。
+func (m *Manager) chatMediaEngine() (engine.Engine, bool) {
+	for _, engName := range m.engineOrder {
+		eng, ok := m.engines[engName]
+		if !ok || eng == nil {
+			continue
+		}
+		if capable, ok := eng.(engine.ChatMediaEngine); ok && capable.ChatSupportsMedia() {
+			return eng, true
+		}
+	}
+	return nil, false
+}
+
+// kindOf 模型用途：优先取目录里的 kind（上游能力标记比名字更准），否则按名字推断。
+func (m *Manager) kindOf(modelID string) string {
+	name := strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+	kind := model.ClassifyKind(name, "", nil)
+	if name == "" {
+		return kind
+	}
+	for _, mi := range m.ListAllModels() {
+		if !strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(mi.ID), "models/"), name) {
+			continue
+		}
+		if mi.Kind != "" {
+			return mi.Kind
+		}
+		break
+	}
+	return kind
+}
+
+// ownershipHint 说明「查了哪些引擎、各自目录多大」，让 model_not_found 能自解释。
+func (m *Manager) ownershipHint(modelName string) string {
+	name := strings.TrimPrefix(strings.TrimSpace(modelName), "models/")
+	if name == "" {
+		return "请求未指定模型"
+	}
+	parts := make([]string, 0, len(m.engineOrder))
+	for _, engName := range m.engineOrder {
+		eng, ok := m.engines[engName]
+		if !ok || eng == nil {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s(%d)", engName, len(eng.ListModels())))
+	}
+	msg := fmt.Sprintf("当前号池无 %s：没有任何引擎或账号声明该模型", name)
+	if len(parts) > 0 {
+		msg += "（参与路由的引擎与目录规模：" + strings.Join(parts, "、") + "）"
+	}
+	return msg
 }
 
 // GenerateVideo 通过引擎B的 AI Studio GenerateVideo 协议创建 Veo 长任务。
@@ -1465,16 +1575,44 @@ func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (aistudi
 func engineUnavailableError(eng engine.Engine) error {
 	msg := fmt.Sprintf("引擎 %s 不可用", eng.Name())
 	if status := eng.Status(); status != nil {
-		if detail, ok := status["error"].(string); ok && strings.TrimSpace(detail) != "" {
-			msg += ": " + strings.TrimSpace(detail)
-		} else if accounts, ok := status["accounts"]; ok && emptyStatusList(accounts) {
+		switch {
+		case statusString(status["error"]) != "":
+			msg += ": " + statusString(status["error"])
+		case statusString(status["worker_error"]) != "":
+			// 账号 ready 但 WAA Worker 起不来：这层信息最容易被漏掉，单独透出。
+			msg += ": WAA Worker 未就绪（worker_ready=" + statusInt(status["worker_ready"]) + "）: " + statusString(status["worker_error"])
+		case status["worker_ready"] != nil && statusInt(status["worker_ready"]) == "0":
+			msg += ": WAA Worker 未就绪（worker_ready=0），账号在池但没有任何可用的工人"
+		case emptyStatusList(status["accounts"]):
 			msg += ": 没有可用账号（请在管理台添加账号，或检查 auth_states 配置）"
-		} else if detail := firstAccountError(status["accounts"]); detail != "" {
+		case firstAccountError(status["accounts"]) != "":
 			// 账号级错误（凭据失效 / 冷却中等）
-			msg += ": " + detail
+			msg += ": " + firstAccountError(status["accounts"])
 		}
 	}
 	return errors.New(msg)
+}
+
+// statusString 安全读取状态里的字符串字段。
+func statusString(v any) string {
+	s, _ := v.(string)
+	return strings.TrimSpace(s)
+}
+
+// statusInt 安全读取状态里的整数字段（数字或字符串形式）。
+func statusInt(v any) string {
+	switch n := v.(type) {
+	case int:
+		return strconv.Itoa(n)
+	case int64:
+		return strconv.FormatInt(n, 10)
+	case float64:
+		return strconv.FormatInt(int64(n), 10)
+	case string:
+		return strings.TrimSpace(n)
+	default:
+		return "0"
+	}
 }
 
 // firstAccountError 从账号状态列表中提取第一条错误描述。
@@ -1521,15 +1659,21 @@ func emptyStatusList(v any) bool {
 }
 
 // alternate 返回另一个引擎（按注册顺序优先就绪的）。
-func (m *Manager) alternate(cur engine.Engine) engine.Engine {
+// 声明式号池（第三方 Key）只认自己的模型目录：目标模型不在其目录里就不换过去，
+// 否则换过去只会拿到 model_not_found，把真正的故障源（如引擎B 挂了）盖掉。
+func (m *Manager) alternate(cur engine.Engine, modelName string) engine.Engine {
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]
 		if !ok || eng == cur {
 			continue
 		}
-		if eng.Ready() {
-			return eng
+		if !eng.Ready() {
+			continue
 		}
+		if _, strict := eng.(*CustomEngine); strict && !engineHasModel(eng, modelName) {
+			continue
+		}
+		return eng
 	}
 	return nil
 }

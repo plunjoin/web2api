@@ -25,10 +25,7 @@ import (
 
 // NativeAIStudioEngine 引擎B：内置纯 Go 逆向（AI Studio 私有协议 + WAA go 后端）。
 // 组装链：AccountStore → AccountPool → 固定出口头 → MakerSuiteHTTPTransport
-//
-//	→ 每账号懒启动 WAA Go Worker → WorkerProtectedTransport → Client → PooledService
-//
-// 协议实现源自 Mag1cFall/AIStudio2API（MIT，见 internal/aistudio2api/LICENSE）。
+// → 每账号懒启动 WAA Go Worker → WorkerProtectedTransport → Client → PooledService
 type NativeAIStudioEngine struct {
 	name string
 	cfg  config.EngineBConfig
@@ -53,6 +50,11 @@ type NativeAIStudioEngine struct {
 	lastErr  error
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	// 可用账号目录的短 TTL 缓存（ListModels 在路由热路径上被反复调用）。
+	declMu     sync.Mutex
+	declCache  map[string]bool
+	declExpire time.Time
 }
 
 // NewNativeAIStudio 构建原生引擎B（不发起网络请求，Init 时才装配）。
@@ -232,29 +234,79 @@ func (e *NativeAIStudioEngine) Describe() string {
 	return "aistudio.google.com（内置纯 Go 逆向：WAA go 后端 + 私有协议，零浏览器依赖）"
 }
 
-// Ready 引擎可用。
+// Ready 引擎是否真的能接单。
+// 账号 ready 但 WAA Worker 一个都起不来时不再谎报可用：那种情况下每个请求
+// 都会卡在 Worker 启动上，对外只表现为莫名其妙的失败。
+// Worker 是懒启动的，所以「还没试过」允许接单（首个请求触发启动），
+// 只有「试过且全部失败」才判为不可用。
 func (e *NativeAIStudioEngine) Ready() bool {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.ready && len(e.accounts) > 0
+	inited, accounts := e.ready, len(e.accounts)
+	e.mu.RUnlock()
+	if !inited || accounts == 0 {
+		return false
+	}
+	if e.workers == nil {
+		return true
+	}
+	readyN, failed := e.workers.Stats()
+	if readyN > 0 {
+		return true
+	}
+	return len(failed) < accounts
 }
 
+// ChatSupportsMedia 原生协议可以在 chat 响应里直接带回音频/图片（转 data URI），
+// 所以音乐（Lyria）、生图这类模型可以走 /v1/chat/completions。
+func (e *NativeAIStudioEngine) ChatSupportsMedia() bool { return true }
+
 // ListModels 模型列表。
+// available 的口径：该模型至少出现在一个可用账号的目录里，且引擎当前可接单。
+// 目录是各账号目录的并集，光「在并集里」不代表真有人能出这个模型。
 func (e *NativeAIStudioEngine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	models := e.models
 	e.mu.RUnlock()
+	declared := e.declaredModels()
+	canServe := e.Ready()
 	out := make([]model.ModelInfo, 0, len(models))
 	for _, m := range models {
+		id := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(m.ID), "models/"))
 		out = append(out, model.ModelInfo{
 			ID:          m.ID,
 			Object:      "model",
 			DisplayName: m.Name,
-			Available:   true,
+			Available:   canServe && declared[id],
 			Engine:      "b",
 			Kind:        model.ClassifyKind(m.ID, m.Name, m.Capabilities),
 		})
 	}
+	return out
+}
+
+// declaredModels 汇总「可用账号」（启用且未停用）目录里的模型 ID。
+// 带 3 秒缓存：ListModels 在每次请求的路由判定里都会被调用，
+// 而账号目录本身变化很慢，没必要每次重算。
+func (e *NativeAIStudioEngine) declaredModels() map[string]bool {
+	if e.pool == nil {
+		return nil
+	}
+	e.declMu.Lock()
+	defer e.declMu.Unlock()
+	if e.declCache != nil && time.Now().Before(e.declExpire) {
+		return e.declCache
+	}
+	out := map[string]bool{}
+	for _, st := range e.pool.Status() {
+		if !st.Enabled || st.State == aistudio.AccountDisabled {
+			continue
+		}
+		for _, id := range st.Models {
+			out[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))] = true
+		}
+	}
+	e.declCache = out
+	e.declExpire = time.Now().Add(3 * time.Second)
 	return out
 }
 
@@ -474,8 +526,15 @@ func (e *NativeAIStudioEngine) Status() map[string]any {
 		})
 	}
 	workerReady := 0
+	workerErr := ""
 	if e.workers != nil {
-		workerReady = e.workers.ReadyCount()
+		var failed map[string]string
+		workerReady, failed = e.workers.Stats()
+		// 只报第一条失败原因，够定位是哪类问题（代理 / 凭据 / WAA 启动）。
+		for _, msg := range failed {
+			workerErr = msg
+			break
+		}
 	}
 	return map[string]any{
 		"engine":       "b",
@@ -484,6 +543,7 @@ func (e *NativeAIStudioEngine) Status() map[string]any {
 		"auth_states":  e.cfg.AuthStates,
 		"accounts":     accounts,
 		"worker_ready": workerReady,
+		"worker_error": workerErr,
 		"models":       models,
 		"routing":      e.cfg.RoutingStrategy,
 		"channels":     e.cfg.UpstreamChannels,
@@ -896,6 +956,7 @@ type nativeWorkerManager struct {
 	mu      sync.Mutex
 	workers map[string]*aistudio.NativeWorker
 	booting map[string]struct{}
+	failed  map[string]string // accountID → 最近一次启动失败原因（启动成功后清除）
 }
 
 func newNativeWorkerManager(pool *aistudio.AccountPool, cfg config.EngineBConfig) *nativeWorkerManager {
@@ -904,7 +965,18 @@ func newNativeWorkerManager(pool *aistudio.AccountPool, cfg config.EngineBConfig
 		cfg:     cfg,
 		workers: map[string]*aistudio.NativeWorker{},
 		booting: map[string]struct{}{},
+		failed:  map[string]string{},
 	}
+}
+
+// noteFailure 记录某账号 Worker 启动失败（仅用于健康判定，不阻塞重试）。
+func (m *nativeWorkerManager) noteFailure(accountID string, err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	m.failed[accountID] = err.Error()
+	m.mu.Unlock()
 }
 
 // Worker 实现 aistudio.ProtectedPreparerProvider：按账号懒启动（复用已就绪实例）。
@@ -934,6 +1006,7 @@ func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, mode
 
 	account, err := m.pool.Account(accountID)
 	if err != nil {
+		m.noteFailure(accountID, err)
 		return nil, err
 	}
 	proxy := strings.TrimSpace(account.Config.Proxy)
@@ -950,26 +1023,34 @@ func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, mode
 	}
 	worker, err := aistudio.NewGoWorker(ctx, accountID, options)
 	if err != nil {
-		return nil, fmt.Errorf("启动账号 %s 的 WAA Go Worker 失败: %w", accountID, err)
+		bootErr := fmt.Errorf("启动账号 %s 的 WAA Go Worker 失败: %w", accountID, err)
+		m.noteFailure(accountID, bootErr)
+		return nil, bootErr
 	}
 	m.mu.Lock()
 	m.workers[accountID] = worker
+	delete(m.failed, accountID)
 	m.mu.Unlock()
 	return worker, nil
 }
 
-// ReadyCount 当前就绪 Worker 数。
-func (m *nativeWorkerManager) ReadyCount() int {
+// Stats 就绪 Worker 数 + 各账号最近一次启动失败原因。
+// Ready() 用这两个数判断「账号 ready 但工人全崩」的假可用状态。
+func (m *nativeWorkerManager) Stats() (ready int, failed map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	count := 0
+	ready = 0
 	for _, worker := range m.workers {
 		phase := worker.State().Phase
 		if phase == aistudio.WorkerReady || phase == aistudio.WorkerBusy {
-			count++
+			ready++
 		}
 	}
-	return count
+	failed = make(map[string]string, len(m.failed))
+	for id, msg := range m.failed {
+		failed[id] = msg
+	}
+	return ready, failed
 }
 
 // CloseAccount 关闭单个账号的 Worker（账号移除/禁用时调用）。
@@ -979,6 +1060,7 @@ func (m *nativeWorkerManager) CloseAccount(accountID string) {
 	if worker != nil {
 		delete(m.workers, accountID)
 	}
+	delete(m.failed, accountID)
 	m.mu.Unlock()
 	if worker != nil {
 		_ = worker.Close()
