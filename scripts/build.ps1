@@ -1,10 +1,11 @@
-param(
+﻿param(
     [string]$Version = "dev",
     [string]$Output = "dist"
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 脚本位于 scripts/ 下，仓库根目录是它的上一级。
+$Root = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $Root $Output
 $Targets = @(
     @{ Name = "windows-amd64"; GOOS = "windows"; GOARCH = "amd64"; Ext = ".exe"; Format = "zip" },
@@ -20,10 +21,15 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     throw "未找到 Go，请先安装 Go 1.27 或更高版本。"
 }
 
+# 用 -LiteralPath 直接删目录，不依赖管道绑定（Windows PowerShell 5.1 对
+# Get-ChildItem | Remove-Item -Recurse 会报 InputObjectNotBound）。
+if (Test-Path -LiteralPath $Dist) { Remove-Item -LiteralPath $Dist -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
-Get-ChildItem -LiteralPath $Dist -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 $env:CGO_ENABLED = "0"
 $env:GOCACHE = Join-Path $Root ".gocache-build"
+
+# go build 的包路径是 "."，必须以仓库根目录为工作目录；这样脚本从任意目录调用都成立。
+Set-Location -LiteralPath $Root
 
 foreach ($target in $Targets) {
     $name = "web2api-$Version-$($target.Name)"
@@ -41,7 +47,7 @@ foreach ($target in $Targets) {
     Copy-Item (Join-Path $Root "config.example.yaml") (Join-Path $stage "config.example.yaml")
     Copy-Item (Join-Path $Root "README.md") (Join-Path $stage "README.md")
     if ($target.GOOS -eq "windows") {
-        Copy-Item (Join-Path $Root "start.bat") (Join-Path $stage "start.bat")
+        Copy-Item (Join-Path $Root "scripts/start.bat") (Join-Path $stage "start.bat")
     } elseif ($target.GOOS -eq "linux") {
         Copy-Item (Join-Path $Root "deploy/README.md") (Join-Path $stage "DEPLOY.md")
         Copy-Item (Join-Path $Root "deploy/install.sh") (Join-Path $stage "install.sh")

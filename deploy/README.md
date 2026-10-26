@@ -19,20 +19,20 @@ Linux 和 macOS 发布包是 .tar.gz；Windows 用 PowerShell 打包时是 .zip�
 
 ## 从源码生成所有平台发布包
 
-在仓库根目录执行。脚本会清空并重新生成 dist/，每个包都包含示例配置和运行所需的文档，不会包含本机的 data/、auth/ 或敏感配置。Linux 包内的 config.yaml 是指向 /opt/web2api 的部署模板。
+在仓库根目录执行（脚本位于 `scripts/`）。脚本会清空并重新生成 dist/，每个包都包含示例配置和运行所需的文档，不会包含本机的 data/、auth/ 或敏感配置。Linux 包内的 config.yaml 是指向 /opt/web2api 的部署模板。
 
 ### Windows PowerShell（推荐）
 
 ~~~powershell
-.\build.ps1 -Version v1.0.0
+.\scripts\build.ps1 -Version v1.0.0
 # 输出：dist\web2api-v1.0.0-windows-amd64.zip 等
 ~~~
 
 ### Linux/macOS/WSL
 
 ~~~bash
-chmod +x build.sh
-./build.sh v1.0.0
+chmod +x scripts/build.sh
+./scripts/build.sh v1.0.0
 # 输出：dist/web2api-v1.0.0-linux-amd64.tar.gz 等
 ~~~
 

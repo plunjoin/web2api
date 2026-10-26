@@ -78,7 +78,7 @@ go build -o web2api.exe .
 #    Linux/macOS 输出文件名可用 web2api
 # go build -o web2api .
 # ./web2api -config config.yaml
-#    已有 web2api.exe 时也可以双击 start.bat
+#    已有 web2api.exe 时也可以双击 scripts\start.bat
 # 3. 打开管理台
 #    http://localhost:8800/admin   （首次设置邮箱、密码、昵称及 Redis 连接，之后邮箱密码登录）
 #    用户控制台在 http://localhost:8800/console（登录页 /login，开放注册后可用 /register）
@@ -350,19 +350,19 @@ SQLite（`data/web2api.db`，纯 Go 驱动无 cgo）：`accounts`（号池凭据
 
 ## 打包与部署
 
-仓库提供跨平台发布脚本，默认一次生成 Windows（amd64/arm64）、Linux（amd64/arm64/armv7）和 macOS（Intel/Apple Silicon）共 7 个发布包。详细的产物结构、Windows/Linux/macOS/Docker 部署步骤见 [deploy/README.md](deploy/README.md)。
+仓库提供跨平台发布脚本（位于 `scripts/`），默认一次生成 Windows（amd64/arm64）、Linux（amd64/arm64/armv7）和 macOS（Intel/Apple Silicon）共 7 个发布包。详细的产物结构、Windows/Linux/macOS/Docker 部署步骤见 [deploy/README.md](deploy/README.md)。
 
 在仓库根目录执行：
 
 ```powershell
 # Windows PowerShell：Windows 包为 zip，其余目标为 tar.gz
-.\build.ps1 -Version v1.0.0
+.\scripts\build.ps1 -Version v1.0.0
 ```
 
 ```bash
 # Linux/macOS/WSL：所有目标生成 tar.gz
-chmod +x build.sh
-./build.sh v1.0.0
+chmod +x scripts/build.sh
+./scripts/build.sh v1.0.0
 ```
 
 产物写入 `dist/`，并生成 `SHA256SUMS`。发布包只带示例配置（Linux 包另带 `/opt/web2api` 路径模板），不会带本机的数据库、Cookie 或 auth 凭据。
@@ -402,5 +402,3 @@ internal/aistudio/          引擎B 协议内核（AI Studio 私有协议 + 纯 
 internal/aistudio/waa/      BotGuard（WAA）纯 Go VM，内嵌 goja 执行官方解释器
 internal/aistudio/fingerprint/  账户浏览器指纹生成
 ```
-
-> AI生成

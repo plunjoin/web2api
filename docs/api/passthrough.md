@@ -31,5 +31,3 @@
 `POST /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content` 固定使用原生 Veo 适配，在 upstream 模式下不会透传，调用会返回未启用原生协议的错误。
 
 默认 native 模式的图片/音频生成使用 `/v1/chat/completions`；图片/音频专用透传路径在该模式下且模型未命中 custom 目录时返回 `502`。透传只替换为服务端配置的上游认证，保留请求方法、路径、Content-Type 和请求体，以及上游响应状态、响应头和正文；字段支持范围及默认值由上游决定。
-
-> AI生成

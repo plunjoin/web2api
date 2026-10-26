@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="${1:-dev}"
 OUTPUT="${2:-dist}"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/$OUTPUT"
 
 command -v go >/dev/null || { echo "未找到 Go，请先安装 Go 1.27 或更高版本。" >&2; exit 1; }
@@ -14,17 +14,20 @@ mkdir -p "$DIST"
 export CGO_ENABLED=0
 export GOCACHE="$ROOT/.gocache-build"
 
+# go build 的包路径是 "."，必须以仓库根目录为工作目录；这样脚本从任意目录调用都成立。
+cd "$ROOT"
+
 build_one() {
   local name="$1" goos="$2" goarch="$3" goarm="${4:-}" ext="$5"
   local package="web2api-$VERSION-$name"
   local stage="$DIST/$package"
   mkdir -p "$stage"
   if [[ -n "$goarm" ]]; then export GOARM="$goarm"; else unset GOARM || true; fi
-  GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags='-s -w' -o "$stage/web2api$ext" .
+  GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w -X web2api/internal/version.Version=$VERSION" -o "$stage/web2api$ext" .
   cp "$ROOT/config.example.yaml" "$stage/config.example.yaml"
   cp "$ROOT/README.md" "$stage/README.md"
   if [[ "$goos" == windows ]]; then
-    cp "$ROOT/start.bat" "$stage/start.bat"
+    cp "$ROOT/scripts/start.bat" "$stage/start.bat"
   elif [[ "$goos" == linux ]]; then
     cp "$ROOT/deploy/README.md" "$stage/DEPLOY.md"
     cp "$ROOT/deploy/install.sh" "$stage/install.sh"

@@ -24,7 +24,7 @@ config.yaml
 
 # 文档与脚本（非运行时需要）
 *.md
-start.bat
+scripts/start.bat
 LICENSE
 
 # docker 编排文件（构建时不需要）

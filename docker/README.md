@@ -138,5 +138,3 @@ docker run -d --name web2api \
 
 引擎A 需要访问 `gemini.google.com`，引擎B 需要访问 `aistudio.google.com`，
 部署在国内服务器时务必配置代理。
-
-> AI生成

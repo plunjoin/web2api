@@ -13,5 +13,3 @@ v0.3.5 新增 Codex 模型目录端点与 CC Switch 一键导入：密钥直接�
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
 
 验证：`go vet ./...`、`go build ./...`、前端 `tsc -b --noEmit` 全部通过，`internal/webui/dist` 已同步重建且入口引用的资源齐全。
-
-> AI生成
