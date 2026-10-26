@@ -1,6 +1,6 @@
 # 项目介绍
 
-web2api 是一个自托管的 Gemini 双引擎网关。它把账号池、请求调度、API Key 和用量统计组合成一个服务，对外提供熟悉的 OpenAI 兼容接口。
+web2api 是一个自托管的 AI 号池网关。它把账号池、请求调度、API Key 和用量统计组合成一个服务，对外提供熟悉的 OpenAI 兼容接口。
 
 ## 解决的问题
 
@@ -16,20 +16,28 @@ web2api 是一个自托管的 Gemini 双引擎网关。它把账号池、请求�
       ├─ Key 校验与限流
       ├─ 模型路由与账号调度
       ├─ 用量记录
-      ├─ Gemini 网页引擎（引擎 A）
-      └─ AI Studio 引擎（引擎 B）
+      ├─ 引擎 A：Gemini 网页号
+      ├─ 引擎 B：AI Studio 号
+      ├─ 订阅引擎：codex / antigravity / kiro / workbuddy
+      └─ 第三方 Key：custom（base_url + api_key）
           │
       管理台 / SQLite / Redis
 ```
 
-## 两个引擎
+## 引擎与账号来源
 
 | 引擎 | 账号来源 | 适合场景 |
 | --- | --- | --- |
 | A：Gemini 网页 | Gemini 网页 Cookie 会话 | 文本对话和兼容的轻量请求 |
 | B：AI Studio | AI Studio `storage-state.json` | 多模态、Veo、更多模型能力 |
+| 订阅引擎 | codex / antigravity / kiro / workbuddy 的授权凭据 | 复用订阅制额度 |
+| custom | 任意 OpenAI 兼容上游的 Base URL + API Key | 接入第三方供应商 |
 
-模型路由由 `routing.engine_a_models`、`routing.engine_b_models` 和 `auto` 策略共同决定。多模态和视频请求会优先使用引擎 B；账号不可用时，支持的请求会自动切换到其他账号。
+路由按「**谁声明谁接**」：显式配置（`routing.engine_a/b_models`、`routing.engine_models`）
+优先，其次按订阅/custom 目录与引擎实时目录精确命中。命中即专属——引擎不可用时返回该引擎
+的真实错误，不会换到别的引擎；多模态关键词（image / veo / lyria…）只交给引擎 B；
+没有任何引擎声明该模型时返回 `404 model_not_found`。音乐和视频模型不能走
+`/v1/chat/completions`（引擎 B native 除外），请使用 `/v1/music/generations` 与 `/v1/videos`。
 
 ## 数据和安全边界
 
@@ -43,7 +51,7 @@ web2api 是一个自托管的 Gemini 双引擎网关。它把账号池、请求�
 | 目录 | 作用 |
 | --- | --- |
 | `internal/gateway` | 对外 `/v1` 网关、认证、限流和 OpenAPI 文档 |
-| `internal/provider` | 双引擎调度与模型路由 |
+| `internal/provider` | 多引擎装配、调度与模型路由 |
 | `internal/store` | SQLite 数据访问 |
 | `internal/admin` | 管理 REST API 和管理员认证 |
 | `internal/webui` | `/admin` 管理台 |

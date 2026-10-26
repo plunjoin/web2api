@@ -12,8 +12,11 @@
 | `/v1/videos/*` | 未被标准视频路由占用的上游视频路径 |
 | `POST /v1/audio/speech` | 文本转语音，详见[音频生成](/api/audio) |
 | `POST /v1/audio/*` | 其他上游音频端点 |
+| `POST /v1/music/generations` | 音乐生成（Lyria 等），转发给拥有该模型的账号上游 |
 | `POST /v1/files/*` | 文件上传和处理 |
 | `POST /v1/embeddings/*` | Embedding 请求 |
+
+音乐模型**不要**发到 `/v1/chat/completions`：OpenAI 兼容的 chat 端点只能返回文本，上游会以 `Unhandled generated data mime type: audio/mpeg` 之类的 400 拒绝。网关现在会在发出请求前拦下这类用途不匹配的调用，返回 `400 unsupported_endpoint` 并提示正确端点；只有引擎 B `native` 模式（能把 inline data 转成 data URI 放进 chat 响应）才允许音乐/图片模型走 chat。
 
 透传请求仍然使用 `Authorization: Bearer sk-...`。JSON 请求使用 `Content-Type: application/json`，二进制内容使用 `application/octet-stream`。路径和请求体字段由对应上游协议决定，使用前请确认配置中的 `mode: upstream`（按模型路由不受此限制）。
 

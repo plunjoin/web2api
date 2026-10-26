@@ -1,8 +1,10 @@
 # web2api
 
-## Gemini 双引擎号池，统一成 OpenAI 兼容 API
+## 多引擎号池，统一成 OpenAI 兼容 API
 
-web2api 把 Gemini 网页端和 AI Studio 的账号池接入、调度、Key 分发和用量统计放在一个 Go 服务里。客户端只需要配置一个 Base URL 和一个 `sk-` Key，就能用熟悉的 OpenAI SDK 调用文本、流式聊天和 Veo 视频任务。
+web2api 把 Gemini 网页号、AI Studio 号、订阅制工具账号和第三方 Key 的接入、调度、Key 分发与用量统计放在一个 Go 服务里。客户端只需要配置一个 Base URL 和一个 `sk-` Key，就能用熟悉的 OpenAI SDK 调用文本、流式聊天和视频任务。
+
+路由只按一条规则：**谁声明谁接**。模型在哪个账号的目录里就交给那个引擎，没有任何账号声明就返回 `404 model_not_found`，不猜、不兜底。
 
 <div class="vp-hero-actions">
   <a class="vp-button vp-button-brand" href="./guide/quickstart">5 分钟接入</a>
@@ -19,8 +21,8 @@ web2api 把 Gemini 网页端和 AI Studio 的账号池接入、调度、Key 分�
   </div>
   <div class="vp-feature-card">
     <div class="vp-feature-icon">🔁</div>
-    <h3>双引擎号池</h3>
-    <p>Gemini 网页号与 AI Studio 号统一管理，自动轮询、冷却和故障切换。</p>
+    <h3>多引擎号池</h3>
+    <p>网页号、AI Studio、订阅号与第三方 Key 统一管理，自动轮询、冷却和故障切换。</p>
   </div>
   <div class="vp-feature-card">
     <div class="vp-feature-icon">🎛️</div>

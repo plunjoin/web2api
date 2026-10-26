@@ -7,7 +7,7 @@ const base = process.env.GITHUB_ACTIONS && name ? `/${name}/` : '/'
 export default defineConfig({
   lang: 'zh-CN',
   title: 'web2api',
-  description: 'Gemini 双引擎号池管理网关与 OpenAI 兼容 API',
+  description: '多引擎号池管理网关与 OpenAI 兼容 API',
   base,
   cleanUrls: true,
   lastUpdated: true,

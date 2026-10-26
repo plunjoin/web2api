@@ -225,4 +225,4 @@ npm --prefix docs run build
 
 生成器从全部官方操作入口递归追踪 $ref，并收录所有组件、展开内联对象、数组、字典、oneOf / anyOf / allOf；遇到无法解析的 schema 会失败。`--check` 验证字段页与保存快照完全一致。这个校验保证已保存官方 schema 的覆盖，不能自动验证模型实际可用性、指南专属限制或网关新增代码是否正确；这些变化仍需更新本页支持状态。
 
-代码依据：`internal/gateway/server.go`、`internal/gateway/chat.go`、`internal/model/openai.go`、`internal/provider/engine_b_native.go`、`internal/provider/engine_a.go`、`internal/engine/upstream/openai.go`、`internal/aistudio2api/aistudio/types.go`、`generate.go`、`interaction.go`、`transcribe.go`、`tools.go`、`tool_validation.go`。
+代码依据：`internal/gateway/server.go`、`internal/gateway/chat.go`、`internal/model/openai.go`、`internal/provider/engine_b_native.go`、`internal/provider/engine_a.go`、`internal/engine/upstream/openai.go`、`internal/aistudio/types.go`、`generate.go`、`interaction.go`、`transcribe.go`、`tools.go`、`tool_validation.go`。

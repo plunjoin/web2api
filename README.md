@@ -1,4 +1,4 @@
-# web2api — Gemini 双引擎号池管理网关（Go）
+# web2api — 多引擎号池管理网关（Go）
 
 > 📚 **在线文档**：[项目介绍与 v1 API 文档](https://plunjoin.github.io/web2api/)
 
@@ -10,14 +10,18 @@ npm ci
 npm run dev
 ```
 
-**号池管理平台**（账号池 →
-Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API：
+**号池管理平台**（账号池 → Key 分发 → 调度 → 用量统计），对外输出统一
+OpenAI 兼容 API。路由只有一条原则——**谁声明谁接**：模型出现在哪个账号的目录里，
+请求就交给那个引擎；没有任何账号声明，直接返回 `404 model_not_found`
+（错误里写明当前号池缺哪个模型）。不猜、不兜底、不跨引擎乱试。
+详见[号池调度](#号池调度)。
 
 - **引擎A（Gemini 网页号）**：`gemini.google.com` 网页版纯 Go 原生逆向
   （Cookie 会话 + `__Secure-1PSIDTS` 自动轮换续命）
 - **引擎B（AI Studio 号）**：`aistudio.google.com` 纯 Go 原生逆向
   ——私有协议 + **WAA（BotGuard）纯 Go VM**（内嵌 goja JS 引擎执行官方解释器
-  生成 proof，零浏览器依赖）
+  生成 proof，零浏览器依赖）。native 模式会把上游返回的 inline data 转成 data URI
+  随 chat 响应带回，图片/音频类输出不需要额外端点；upstream 模式与第三方 Key 只能出文本
 - **订阅引擎（codex / antigravity / kiro / workbuddy）**：把订阅制 AI 编程工具的
   账号接入同一号池，每个引擎独立账号池与凭据管理：
   - **Codex**：OpenAI ChatGPT 订阅号（OAuth 授权或 `~/.codex/auth.json` 导入，
@@ -29,10 +33,18 @@ Key 分发 → 调度 → 用量统计），对外输出统一 OpenAI 兼容 API
   - **WorkBuddy**：腾讯 CodeBuddy/WorkBuddy SaaS 号（管理台扫码授权或粘贴
     accessToken，OpenAI 协议透传）
 - **第三方 Key（custom）**：管理台填 OpenAI 兼容的 Base URL + API Key
-  （可点「获取模型列表」），多 Key 轮询；客户端仍用网关 `sk-` Key 调 `/v1/chat/completions`。
-  余额查询对齐官方供应商 + OpenAI 兼容中转级联探测
+  （可点「获取模型列表」），多 Key 轮询。**只承接目录里明确声明了该模型的请求**：
+  没有账号声明就 `404 model_not_found`，没拉到模型目录的账号也不再对任意模型开放
+  （需在管理台拉目录或手填 `models`）。客户端仍用网关 `sk-` Key 调
+  `/v1/chat/completions`。余额查询对齐官方供应商 + OpenAI 兼容中转级联探测
   （`/v1/usage` → `/user/balance` → NewAPI `/api/user/self`）；管理台展示剩余额度，
   约每 10 分钟自动刷新，点「立即检查」也会刷新
+
+**端点按模型用途分流**（`kind` 优先取上游目录的能力标记，其次按模型名推断）：
+对话走 `/v1/chat/completions`，视频走 `/v1/videos`，音乐走 `/v1/music/generations`，
+图片/语音/向量走 `/v1/images|audio|embeddings` 透传。音乐/图片/语音的透传端点由上游实现，
+账号上游不提供该路径时会原样返回上游的 404。音乐和视频模型误发到 chat 端点、
+又没有能出媒体的引擎接单时，返回 `400 unsupported_endpoint` 并提示正确入口。
 
 ```
                   浏览器打开 http://localhost:8800/admin
@@ -111,9 +123,22 @@ go build -o web2api.exe .
   Playground+Build 双额度通道自动降级，模型资格与冷却由池管理
 - **模型路由**：`routing.engine_a/b_models` 显式指定 > 订阅/custom 目录按模型 id 精确命中 >
   引擎A/B 实时目录精确命中（裸名模型归属拥有它的引擎，如 `gemini-argon` → 引擎A）>
-  多模态关键词（image/veo/lyria…）走引擎B > `auto`（引擎B 优先，不可用自动降级引擎A）。
-  目录命中的模型为该引擎专属：引擎不可用时直接返回具体错误；引擎B 收到目录外模型
-  时不再静默换用目录第一个模型，而是返回明确的目录错误
+  多模态关键词（image/veo/lyria…）走引擎B > `default_engine` > `auto`（引擎B 优先，
+  不可用自动降级引擎A）。除 `default_engine` 与 `auto` 外，命中即「专属」：引擎不可用时
+  直接返回该引擎的具体错误，不会被换到别的引擎；引擎B 收到目录外模型时也不再静默换用
+  目录第一个模型
+- **按声明接单（不猜、不兜底）**：第三方 Key 号池只把请求交给目录里明确声明了该模型的
+  账号；没有账号声明就返回 `404 model_not_found`（错误里写明当前号池缺哪个模型），
+  不会再「随便抓一个就绪号」顶替。没拉到模型目录的账号不再对任意模型开放，
+  需在管理台获取模型列表或手填 `models`
+- **多模态不跨引擎**：音乐/视频/生图/语音模型即使目录里暂时没有，也只交给引擎B，
+  引擎B 不可用时返回它自己的真实错误（账号与 Worker 状态），不会改投第三方 Key
+- **按用途选入口**：音乐/视频模型发到 `/v1/chat/completions` 时先过用途闸门——
+  能出媒体的引擎（目前只有引擎B native）接单，否则直接 `400 unsupported_endpoint`
+  并提示改用 `/v1/music/generations` 或 `/v1/videos`，不把上游的原始 400 透给下游
+- **就绪口径**：`/v1/models` 的 `available` 要求「至少一个可用账号的目录里有它」且
+  「归属引擎能接单」；引擎B 的 `Ready()` 还会看 WAA Worker 是否真的起得来，
+  账号 ready 但工人为 0 时不再谎报可用
 
 ## REST 管理 API（供脚本/二次开发）
 
@@ -254,22 +279,22 @@ curl -X PATCH http://localhost:8800/admin/api/keys/1 \
 |---|---|
 | Base URL | `http://localhost:8800/v1` |
 | API Key | 管理台创建的任意 `sk-` Key |
-| 文本模型 | `gemini-flash` / `gemini-pro`（引擎A），`/v1/models` 实时聚合双引擎 |
+| 文本模型 | `gemini-flash` / `gemini-pro`（引擎A），`/v1/models` 实时聚合所有引擎与账号目录 |
 
 完整对外接口文档：`GET /v1/docs`（OpenAPI 3.1，可导入 Postman/Insomnia）。
 
 Gemini 官方参数审计（2026-10-07）：[参数映射与实现遗漏](docs/api/gemini.md)、[官方全部字段对照](docs/api/gemini-schema.md)、[中文参考详解](docs/api/gemini-reference.md)。完整表由保存的官方 OpenAPI 自动生成，包含请求、响应、工具、agent、沙箱和 SSE 的深层字段。新增[官方 Gemini 后端](docs/api/gemini-official.md)，启用后官方 Interactions 参数和 SSE 完整转发；网页登录态聊天的字段限制单独标注。
 
-生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接。图片尺寸是顶层 `image_size`（`4K`，K 大写），Omni 视频分辨率是顶层 `resolution`（`4k`，k 小写）。Veo 用 `POST /v1/videos` 的 `size`，`veo-3.1-fast-generate-preview` 的 4K 需要 `seconds: 8`。`/v1/images/generations` 与 `/v1/audio/speech` 需要 upstream 模式开启透传，并由上游实现。
+生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接。图片尺寸是顶层 `image_size`（`4K`，K 大写），Omni 视频分辨率是顶层 `resolution`（`4k`，k 小写）。Veo 用 `POST /v1/videos` 的 `size`，`veo-3.1-fast-generate-preview` 的 4K 需要 `seconds: 8`。`/v1/images/generations`、`/v1/audio/speech` 与 `/v1/music/generations` 走透传，由上游实现。**音乐/视频模型不能走 `/v1/chat/completions`**（引擎B native 除外，它能把媒体塞进 chat 响应），误发会返回 `400 unsupported_endpoint`。
 端点：`POST /v1/chat/completions`（SSE 流式 + 非流式）、`GET /v1/models`、
 `GET /health`、`GET /v1/accounts`。Veo 使用独立长任务接口：
 `POST /v1/videos` 创建、`GET /v1/videos/{id}` 轮询、
 `GET /v1/videos/{id}/content` 下载完成的视频；请求会走引擎B的
 `GenerateVideo` / `GetGenerateVideoOperation` 协议。多模态透传
-（`/v1/images|videos|audio|files|embeddings`）按模型路由：请求体模型命中
+（`/v1/images|videos|audio|music|files|embeddings`）按模型路由：请求体模型命中
 custom（第三方 Key）目录时转发对应上游（native 模式即可用，如 Google
 OpenAI 兼容端的 `gemini-embedding-*` 向量模型）；未命中时回退引擎B
-upstream 模式透传。
+upstream 模式透传。音乐模型（如 `lyria-3.5`）请走 `POST /v1/music/generations`。
 
 ### 本机一键导入 AI Studio 登录态
 
@@ -299,10 +324,8 @@ Docker 部署可启用 `docker-compose.upgrade.yml`，之后在管理台「系�
 
 **AI Studio 号（引擎B）**：三选一——
 1. 管理台粘贴 `storage-state.json` 内容（浏览器插件导出）；
-2. 跑一次 AIStudio2API 的 `start.bat setup` 导入 Chrome 登录态，把生成的
-   `auth/` 目录整个放到 web2api 目录（自动扫描入池并登记）；
-3. 已部署 AIStudio2API 的，配置 `auth_states` 指向其 auth 目录，或改用
-   `mode: upstream` 直接转发。
+2. 把已有的 `auth/<邮箱>/` 目录整个放到 web2api 目录下，启动时自动扫描入池并登记；
+3. 配置 `auth_states` 指向已有的 auth 目录，或改用 `mode: upstream` 直接转发。
 
 ## 存储
 
@@ -335,16 +358,16 @@ chmod +x build.sh
 `npm ci --prefix web && npm run typecheck --prefix web && npm run build --prefix web` 更新 `internal/webui/dist`。
 
 ```powershell
-go test ./...     # 存储层 + 协议解析 + 网关/管理台集成 + 动态号池装配
 go vet ./...
 go build -o web2api.exe .
 ```
+
+测试用例不随仓库分发，本地开发时自建 `test/` 目录跑 `go test ./...` 即可（该目录已在 `.gitignore` 中）。
 
 ## 目录结构
 
 ```
 main.go                     入口（go run . / go build .）
-test/                       全部测试与测试服务（go test ./...）
 internal/geminiapi/          官方 Gemini 后端（全参数 / SSE / 上传）
 internal/store/              SQLite：账号 / Key / 用量 / 用户 / 余额流水 / 兑换码
 internal/config/             YAML 配置 + 环境变量
@@ -352,14 +375,16 @@ internal/model/              OpenAI 协议数据结构
 internal/engine/             引擎接口定义
 internal/engine/geminiweb/   引擎A：gemini 网页协议（请求/流式/Cookie/模型）
 internal/engine/upstream/    OpenAI 兼容上游（upstream 模式引擎B）
-internal/provider/           双引擎装配 + 动态号池 + 调度路由（manager.go）
+internal/provider/           多引擎装配 + 动态号池 + 调度路由（manager.go）
 internal/gateway/            OpenAI 网关（动态 Key 鉴权 + 用量埋点）
 internal/session/            Redis 会话通信（支持 ACL、数据库和 TLS）
 internal/admin/              JWT 登录、管理 REST API（/admin/api/*）与用户 API（/api/*）
 internal/webui/              内嵌前端（/admin、/console、/login、/register）
 web/                         前端源码（React + shadcn/ui，构建到 internal/webui/dist）
 internal/limiter/           令牌桶限流
-internal/aistudio2api/      引擎B 协议内核（已合并进主模块，MIT）
+internal/aistudio/          引擎B 协议内核（AI Studio 私有协议 + 纯 Go Worker，MIT）
+internal/aistudio/waa/      BotGuard（WAA）纯 Go VM，内嵌 goja 执行官方解释器
+internal/aistudio/fingerprint/  账户浏览器指纹生成
 ```
 
 > AI生成
