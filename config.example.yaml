@@ -1,5 +1,5 @@
 # ============================================================
-# web2api 配置文件 —— Gemini 双引擎号池管理网关
+# web2api 配置文件 —— 多引擎号池管理网关
 # 复制为 config.yaml 后按需修改；号池账号建议直接在管理台添加
 # ============================================================
 
@@ -38,10 +38,10 @@ engine_a:
 # 引擎B：AI Studio（两种模式）
 #
 # mode=native（推荐，默认）：内置纯 Go 逆向（AI Studio 私有协议 + WAA go 后端），
-#   零浏览器、零外部服务依赖。auth 目录放账号凭据，与 AIStudio2API 兼容；
+#   零浏览器、零外部服务依赖。auth 目录放账号凭据（storage-state.json）；
 #   也可在管理台直接粘贴 storage-state.json 内容添加。
 #
-# mode=upstream：转发到已部署的 AIStudio2API / 任意 OpenAI 兼容服务。
+# mode=upstream：转发到任意 OpenAI 兼容服务。
 # ------------------------------------------------------------
 engine_b:
   enabled: true

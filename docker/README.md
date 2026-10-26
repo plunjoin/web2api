@@ -80,7 +80,7 @@ POST /admin/api/upgrade        启动独立升级任务
 | 卷 | 容器路径 | 内容 |
 |----|----------|------|
 | `web2api-data` | `/app/data` | SQLite 库（号池账号、API Key、用量） |
-| `web2api-auth` | `/app/auth` | 引擎B 账号凭据（AIStudio2API 兼容） |
+| `web2api-auth` | `/app/auth` | 引擎B 账号凭据（storage-state.json） |
 
 > 卷由 Docker 管理，`docker compose down` 不删除；`docker compose down -v` 才清除。
 

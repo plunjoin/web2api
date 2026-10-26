@@ -149,7 +149,7 @@ type AccountConf struct {
 
 // EngineBConfig 引擎B：AI Studio。
 // mode=native（默认）：内置纯 Go 逆向（WAA go 后端，零浏览器依赖），读取 auth 目录账号。
-// mode=upstream：转发到已部署的 OpenAI 兼容服务（如 AIStudio2API）。
+// mode=upstream：转发到已部署的 OpenAI 兼容服务。
 type EngineBConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Mode    string `yaml:"mode"` // native | upstream

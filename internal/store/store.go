@@ -1,5 +1,5 @@
 // Package store 提供号池管理平台的 SQLite 存储：
-// accounts（双引擎账号）、api_keys（对外 Key 分发）、usage_log（用量明细）。
+// accounts（各引擎账号）、api_keys（对外 Key 分发）、usage_log（用量明细）。
 // 使用 modernc.org/sqlite（纯 Go，无 cgo）。
 package store
 

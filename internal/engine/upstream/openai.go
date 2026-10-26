@@ -1,5 +1,5 @@
 // Package upstream 实现「OpenAI 兼容上游」适配器：
-// 引擎B（AIStudio2API / 任意 OpenAI 兼容服务）以及引擎A 的远程模式都基于它。
+// 引擎B upstream 模式（任意 OpenAI 兼容服务）以及引擎A 的远程模式都基于它。
 package upstream
 
 import (

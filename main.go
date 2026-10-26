@@ -1,4 +1,4 @@
-// web2api：Gemini 双引擎号池管理网关（Go 实现）
+// web2api：多引擎号池管理网关（Go 实现）
 //
 // 引擎A：gemini.google.com 网页版原生逆向（Cookie 会话）
 // 引擎B：aistudio.google.com 原生逆向（WAA go 后端）或 OpenAI 兼容上游

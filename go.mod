@@ -13,7 +13,6 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0

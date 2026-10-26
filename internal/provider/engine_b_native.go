@@ -16,8 +16,7 @@ import (
 	"sync"
 	"time"
 
-	aistudio "web2api/internal/aistudio2api/aistudio"
-	camoufox "web2api/internal/aistudio2api/camoufoxnative"
+	aistudio "web2api/internal/aistudio"
 
 	"web2api/internal/config"
 	"web2api/internal/engine"
@@ -941,7 +940,7 @@ func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, mode
 	if proxy == "" {
 		proxy = strings.TrimSpace(m.cfg.Proxy)
 	}
-	options := camoufox.Options{
+	options := aistudio.Options{
 		StorageStatePath: account.StoragePath,
 		Model:            modelID,
 		Locale:           account.Config.Locale,

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	aistudio "web2api/internal/aistudio2api/aistudio"
+	aistudio "web2api/internal/aistudio"
 	"web2api/internal/store"
 )
 
