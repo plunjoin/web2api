@@ -687,7 +687,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 			continue
 		}
 		out.Messages = append(out.Messages, antigravity.Message{
-			Role:      m.Role,
+			Role:      m.PlainRole(),
 			Text:      m.Text(),
 			ImageURLs: subImageURLs(m.Content),
 		})

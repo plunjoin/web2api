@@ -276,7 +276,7 @@ func toWorkBuddyRequest(req model.ChatRequest) *workbuddy.Request {
 		Temperature: req.Temperature,
 	}
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, workbuddy.Message{Role: m.Role, Text: m.Text()})
+		out.Messages = append(out.Messages, workbuddy.Message{Role: m.PlainRole(), Text: m.Text()})
 	}
 	return out
 }

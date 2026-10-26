@@ -320,12 +320,69 @@ func buildContents(messages []model.ChatMessage) (string, []aistudio.Content) {
 		case "system":
 			system = append(system, text)
 		case "assistant":
-			contents = append(contents, aistudio.Content{Role: aistudio.RoleAssistant, Parts: []aistudio.Part{{Text: text}}})
+			parts := make([]aistudio.Part, 0, len(m.ToolCalls)+1)
+			if text != "" {
+				parts = append(parts, aistudio.Part{Text: text})
+			}
+			for _, call := range m.ToolCalls {
+				arguments := json.RawMessage(call.Function.Arguments)
+				if !json.Valid(arguments) || len(arguments) == 0 {
+					arguments = json.RawMessage(`{}`)
+				}
+				parts = append(parts, aistudio.Part{FunctionCall: &aistudio.FunctionCall{
+					ID:        call.ID,
+					Name:      call.Function.Name,
+					Arguments: arguments,
+				}})
+			}
+			if len(parts) == 0 {
+				continue
+			}
+			contents = append(contents, aistudio.Content{Role: aistudio.RoleAssistant, Parts: parts})
+		case "tool":
+			// 工具结果必须以 function_response 形式回给上游，否则模型
+			// 看不到执行结果，会反复发起同一个调用。
+			response, err := json.Marshal(map[string]string{"result": text})
+			if err != nil {
+				response = json.RawMessage(`{"result":""}`)
+			}
+			contents = append(contents, aistudio.Content{
+				Role: aistudio.RoleUser,
+				Parts: []aistudio.Part{{FunctionResult: &aistudio.FunctionResult{
+					ID:      m.ToolCallID,
+					Name:    m.Name,
+					Content: response,
+				}}},
+			})
 		default:
 			contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: text}}})
 		}
 	}
 	return strings.Join(system, "\n"), contents
+}
+
+// buildNativeTools 把 OpenAI 工具定义转成 AI Studio 的 function declarations。
+//
+// AI Studio 的 JSON Schema 子集比 OpenAI 窄（例如不认识 $defs / const /
+// title）。单个工具的参数编码失败不该让整个请求 400，降级成「无参数函数」，
+// 至少保留函数名与说明，模型仍能发起调用。
+func buildNativeTools(tools []model.Tool) aistudio.Tools {
+	out := aistudio.Tools{}
+	for _, tool := range tools {
+		if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
+			continue
+		}
+		decl := aistudio.FunctionDeclaration{
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
+		}
+		if len(decl.Parameters) == 0 || string(decl.Parameters) == "null" {
+			decl.Parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		out.Functions = append(out.Functions, decl)
+	}
+	return out
 }
 
 // buildGenerateRequest 组装协议请求。
@@ -336,6 +393,7 @@ func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) (aist
 		Model:    req.Model,
 		System:   system,
 		Contents: contents,
+		Tools:    buildNativeTools(req.Tools),
 	}
 	if req.Temperature != nil {
 		gen.Config.Temperature = req.Temperature
@@ -367,9 +425,12 @@ func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) (aist
 }
 
 // generate 执行一次生成并消费事件流。
-func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
+func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if e.service == nil {
 		return nil, errors.New("引擎B 未初始化")
+	}
+	if sink == nil {
+		sink = model.TextSink(nil)
 	}
 	genReq, err := e.buildGenerateRequest(req)
 	if err != nil {
@@ -387,9 +448,13 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 		e.setErr(err)
 		return nil, err
 	}
-	var full strings.Builder
-	var usage *model.TokenUsage
-	finished := false
+	var (
+		full         strings.Builder
+		usage        *model.TokenUsage
+		toolCalls    []model.ToolCall
+		finishReason string
+		finished     bool
+	)
 	for event := range events {
 		if event.Err != nil {
 			e.setErr(event.Err)
@@ -398,11 +463,41 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 		switch event.Kind {
 		case aistudio.EventText:
 			full.WriteString(event.Text)
-			if onDelta != nil {
-				if err := onDelta(event.Text); err != nil {
-					e.setErr(err)
-					return nil, err
-				}
+			if err := sink.Text(event.Text); err != nil {
+				e.setErr(err)
+				return nil, err
+			}
+		case aistudio.EventToolCall:
+			// AI Studio 的 function call 是一次性给全的（不像 OpenAI 那样
+			// 分块），所以这里直接发一个完整增量。
+			if event.ToolCall == nil || strings.TrimSpace(event.ToolCall.Name) == "" {
+				break
+			}
+			call := model.ToolCall{
+				ID:   strings.TrimSpace(event.ToolCall.ID),
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      event.ToolCall.Name,
+					Arguments: string(event.ToolCall.Arguments),
+				},
+			}
+			if call.ID == "" {
+				call.ID = "call_" + model.NewID(16)
+			}
+			if call.Function.Arguments == "" {
+				call.Function.Arguments = "{}"
+			}
+			index := len(toolCalls)
+			toolCalls = append(toolCalls, call)
+			if err := sink.ToolCall(model.ToolCallDelta{
+				Index: index, ID: call.ID, Type: "function",
+				Function: model.ToolFunctionDelta{
+					Name:      call.Function.Name,
+					Arguments: call.Function.Arguments,
+				},
+			}); err != nil {
+				e.setErr(err)
+				return nil, err
 			}
 		case aistudio.EventMedia:
 			// 图片/音媒体：以 Markdown 形式附加。AI Studio 原生协议通常
@@ -422,11 +517,9 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 				}
 				segment := "\n![media](" + mediaURL + ")\n"
 				full.WriteString(segment)
-				if onDelta != nil {
-					if err := onDelta(segment); err != nil {
-						e.setErr(err)
-						return nil, err
-					}
+				if err := sink.Text(segment); err != nil {
+					e.setErr(err)
+					return nil, err
 				}
 			}
 		case aistudio.EventUsage:
@@ -436,6 +529,13 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 			}
 		case aistudio.EventFinish:
 			finished = true
+			switch strings.ToUpper(event.FinishReason) {
+			case "MAX_TOKENS":
+				finishReason = "length"
+			case "", "STOP":
+			default:
+				finishReason = "stop"
+			}
 		case aistudio.EventError:
 			if event.Err != nil {
 				e.setErr(event.Err)
@@ -447,7 +547,19 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 		}
 	}
 	_ = finished
-	return &model.ChatResult{Text: full.String(), Engine: "b", Model: req.Model, Usage: usage}, nil
+	// 有工具调用时结束原因必须是 tool_calls：客户端据此决定是继续
+	// 生成还是执行工具。
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+	return &model.ChatResult{
+		Text:         full.String(),
+		Engine:       "b",
+		Model:        req.Model,
+		Usage:        usage,
+		ToolCalls:    toolCalls,
+		FinishReason: finishReason,
+	}, nil
 }
 
 // nativeTokenUsage 把 AI Studio usage metadata 映射为 OpenAI 口径：
@@ -470,7 +582,12 @@ func (e *NativeAIStudioEngine) Chat(ctx context.Context, req model.ChatRequest) 
 
 // ChatStream 流式对话。
 func (e *NativeAIStudioEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	return e.generate(ctx, req, onDelta)
+	return e.generate(ctx, req, model.TextSink(onDelta))
+}
+
+// ChatStreamSink 流式对话（支持工具调用增量）。
+func (e *NativeAIStudioEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	return e.generate(ctx, req, sink)
 }
 
 // GenerateVideo 创建 Veo 长任务。视频协议与聊天 GenerateContent 是两套

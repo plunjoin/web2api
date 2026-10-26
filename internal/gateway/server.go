@@ -93,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	// Codex 模型目录（model_catalog_url 拉取，Bearer 或 ?key= 鉴权）
 	mux.HandleFunc("GET /v1/codex/catalog", s.handleCodexCatalog)
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChat))
+	// OpenAI Responses 协议兼容端点：供 Codex 等只讲 Responses 的客户端直连，
+	// 避免再经本地路由做协议转换。
+	mux.HandleFunc("POST /v1/responses", s.withAuth(s.handleResponses))
 	// Veo 视频长任务：创建、轮询和下载结果。
 	mux.HandleFunc("POST /v1/videos", s.withAuth(s.handleCreateVideo))
 	mux.HandleFunc("GET /v1/videos/{id}/content", s.withAuth(s.handleVideoContent))
@@ -343,6 +346,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET  /v1/videos/{id}/content",
 			"GET  /v1/models",
 			"GET  /v1/codex/catalog (Codex model_catalog_url)",
+			"POST /v1/responses (OpenAI Responses 兼容)",
 			"GET  /v1/accounts",
 			"GET  /admin        (管理台)",
 			"GET  /console      (用户控制台)",

@@ -71,6 +71,11 @@ func (b *AIStudioEngine) ChatStream(ctx context.Context, req model.ChatRequest, 
 	return b.up.ChatStream(ctx, req, onDelta)
 }
 
+// ChatStreamSink 流式（支持工具调用增量）。
+func (b *AIStudioEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	return b.up.ChatStreamSink(ctx, req, sink)
+}
+
 // Passthrough 是否透传多模态。
 func (b *AIStudioEngine) Passthrough() bool { return b.up.Passthrough() }
 

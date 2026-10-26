@@ -332,27 +332,56 @@ func (e *CodexEngine) markCooldown(acc *codexAccount, reason string, d time.Dura
 // toCodexRequest ChatRequest → codex.Request。
 func toCodexRequest(req model.ChatRequest) *codex.Request {
 	out := &codex.Request{
-		Model:    req.Model,
-		MaxTokens: derefInt(req.MaxTokens),
+		Model:      req.Model,
+		MaxTokens:  derefInt(req.MaxTokens),
+		Tools:      toCodexTools(req.Tools),
+		ToolChoice: req.ToolChoice,
 	}
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, codex.Message{
-			Role:      m.Role,
-			Text:      m.Text(),
-			ImageURLs: subImageURLs(m.Content),
+		msg := codex.Message{
+			Role:       m.Role,
+			Text:       m.Text(),
+			ImageURLs:  subImageURLs(m.Content),
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
+		}
+		for _, call := range m.ToolCalls {
+			msg.ToolCalls = append(msg.ToolCalls, codex.ToolCall{
+				ID:        call.ID,
+				Name:      call.Function.Name,
+				Arguments: call.Function.Arguments,
+			})
+		}
+		out.Messages = append(out.Messages, msg)
+	}
+	return out
+}
+
+// toCodexTools 把 OpenAI 工具定义转成 Responses 格式（name 等字段平铺）。
+func toCodexTools(tools []model.Tool) []codex.Tool {
+	out := make([]codex.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
+			continue
+		}
+		out = append(out, codex.Tool{
+			Type:        "function",
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
 		})
 	}
 	return out
 }
 
 // chatOnce 单账号一次请求（401 时刷新重试一次）。
-func (e *CodexEngine) chatOnce(ctx context.Context, acc *codexAccount, req *codex.Request, onDelta func(string) error) (*codex.Result, error) {
+func (e *CodexEngine) chatOnce(ctx context.Context, acc *codexAccount, req *codex.Request, onDelta func(string) error, onTool func(codex.ToolCallDelta) error) (*codex.Result, error) {
 	attempt := func() (*codex.Result, error) {
 		accessToken, accountID, err := e.token(acc)
 		if err != nil {
 			return nil, err
 		}
-		return codex.Stream(ctx, acc.proxy(e.proxy), accessToken, accountID, req, onDelta)
+		return codex.StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, accountID, req, onDelta, onTool)
 	}
 	res, err := attempt()
 	if err != nil && codex.IsUnauthorized(err) {
@@ -380,9 +409,12 @@ func (e *CodexEngine) chatOnce(ctx context.Context, acc *codexAccount, req *code
 }
 
 // chatLoop 轮询账号直到成功或池耗尽。
-func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
+func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engineUnavailableError(e)
+	}
+	if sink == nil {
+		sink = model.TextSink(nil)
 	}
 	cReq := toCodexRequest(req)
 	var lastErr error
@@ -391,14 +423,38 @@ func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDel
 		if acc == nil {
 			break
 		}
-		res, err := e.chatOnce(ctx, acc, cReq, onDelta)
+		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta codex.ToolCallDelta) error {
+			return sink.ToolCall(model.ToolCallDelta{
+				Index: delta.Index,
+				ID:    delta.ID,
+				Type:  "function",
+				Function: model.ToolFunctionDelta{
+					Name:      delta.Name,
+					Arguments: delta.Arguments,
+				},
+			})
+		})
 		if err == nil {
-			return &model.ChatResult{
+			result := &model.ChatResult{
 				Text:   res.Text,
 				Engine: e.name,
 				Model:  req.Model,
 				Usage:  subResultUsage(res.PromptTokens, res.CompletionTokens, res.ReasoningTokens),
-			}, nil
+			}
+			for _, call := range res.ToolCalls {
+				result.ToolCalls = append(result.ToolCalls, model.ToolCall{
+					ID:   call.ID,
+					Type: "function",
+					Function: model.ToolFunction{
+						Name:      call.Name,
+						Arguments: call.Arguments,
+					},
+				})
+			}
+			if len(result.ToolCalls) > 0 {
+				result.FinishReason = "tool_calls"
+			}
+			return result, nil
 		}
 		lastErr = err
 		if ctx.Err() != nil {
@@ -444,12 +500,12 @@ func (e *CodexEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.C
 
 // ChatStream 流式对话。
 func (e *CodexEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	return e.chatLoop(ctx, req, func(delta string) error {
-		if onDelta != nil {
-			return onDelta(delta)
-		}
-		return nil
-	})
+	return e.chatLoop(ctx, req, model.TextSink(onDelta))
+}
+
+// ChatStreamSink 流式对话（支持工具调用增量）。
+func (e *CodexEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	return e.chatLoop(ctx, req, sink)
 }
 
 func (e *CodexEngine) setErr(err error) {

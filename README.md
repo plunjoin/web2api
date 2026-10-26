@@ -16,15 +16,15 @@ OpenAI 兼容 API。路由只有一条原则——**谁声明谁接**：模型�
 （错误里写明当前号池缺哪个模型）。不猜、不兜底、不跨引擎乱试。
 详见[号池调度](#号池调度)。
 
-- **引擎A（Gemini 网页号）**：`gemini.google.com` 网页版纯 Go 原生逆向
+- **Gemini Web（gemini.google.com 网页号）**：`gemini.google.com` 网页版纯 Go 原生逆向
   （Cookie 会话 + `__Secure-1PSIDTS` 自动轮换续命）
-- **引擎B（AI Studio 号）**：`aistudio.google.com` 纯 Go 原生逆向
+- **AI Studio（aistudio.google.com 号）**：`aistudio.google.com` 纯 Go 原生逆向
   ——私有协议 + **WAA（BotGuard）纯 Go VM**（内嵌 goja JS 引擎执行官方解释器
   生成 proof，零浏览器依赖）。native 模式会把上游返回的 inline data 转成 data URI
   随 chat 响应带回，图片/音频类输出不需要额外端点；upstream 模式与第三方 Key 只能出文本
-- **订阅引擎（codex / antigravity / kiro / workbuddy）**：把订阅制 AI 编程工具的
+- **订阅引擎（GPT / Antigravity / Kiro / WorkBuddy）**：把订阅制 AI 编程工具的
   账号接入同一号池，每个引擎独立账号池与凭据管理：
-  - **Codex**：OpenAI ChatGPT 订阅号（OAuth 授权或 `~/.codex/auth.json` 导入，
+  - **GPT（codex）**：OpenAI ChatGPT 订阅号（OAuth 授权或 `~/.codex/auth.json` 导入，
     Responses 协议，gpt-5.x / gpt-6 系列）
   - **Antigravity**：Google Cloud AI Companion 订阅号（Google OAuth 授权，
     v1internal 协议，Claude + Gemini 双模型通道，project_id 自动 onboard）
@@ -46,6 +46,18 @@ OpenAI 兼容 API。路由只有一条原则——**谁声明谁接**：模型�
 账号上游不提供该路径时会原样返回上游的 404。音乐和视频模型误发到 chat 端点、
 又没有能出媒体的引擎接单时，返回 `400 unsupported_endpoint` 并提示正确入口。
 
+只讲 Responses 协议的客户端（如 Codex）可以直连 `POST /v1/responses`：网关把
+`input` / `instructions` / `tools` 转成内部 Chat 请求执行，流式返回
+`response.created` / `output_text.delta` / `response.completed` 事件并带 usage。
+
+function calling 在 chat 与 responses 两个端点都可用：`tools` 与 `tool_choice` 会
+下发给支持工具调用的上游（custom / AI Studio / GPT），模型发起的调用以
+`delta.tool_calls`（chat）或 `function_call` 输出项（responses）返回，历史
+`function_call` / `function_call_output` 也会还原成 `assistant.tool_calls` 与
+`role=tool` 消息。Gemini Web 逆向、Antigravity、Kiro、WorkBuddy 这类没有函数调用
+通道的上游会忽略 `tools`，仍以纯文本回答；非 function 类型的内置工具
+（`local_shell`、`web_search`）由客户端自行执行，网关不下发。
+
 ```
                   浏览器打开 http://localhost:8800/admin
                           │ 管理台（邮箱密码登录 → JWT）
@@ -59,9 +71,9 @@ OpenAI 兼容 API。路由只有一条原则——**谁声明谁接**：模型�
                            │ 调度（轮询/粘性/冷却/双额度通道）
 客户端 ── /v1 ──────────────▼
 (Base URL + sk-xxx)   web2api.exe 单二进制
-                          ├── 引擎A：gemini.google.com（Cookie 号池）
-                          ├── 引擎B：aistudio.google.com（WAA 号池）
-                          ├── 订阅引擎：codex / antigravity / kiro / workbuddy
+                          ├── Gemini Web：gemini.google.com（Cookie 号池）
+                          ├── AI Studio：aistudio.google.com（WAA 号池）
+                          ├── 订阅引擎：GPT / Antigravity / Kiro / WorkBuddy
                           └── 第三方 Key：custom（base_url + api_key）
 ```
 
@@ -113,31 +125,31 @@ go build -o web2api.exe .
 全局 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> 打开命令面板（跳转页面、新建用户/Key/兑换码），表格行可点击查看详情，行尾菜单收纳所有操作，危险操作有确认弹窗。
 用户、余额、兑换码的完整说明见 [docs/guide/platform.md](docs/guide/platform.md)。
 
-**账号状态实时回报**：引擎A Cookie 校验/失效/配额；引擎B 登录态、冷却、模型资格、
+**账号状态实时回报**：Gemini Web Cookie 校验/失效/配额；AI Studio 登录态、冷却、模型资格、
 额度 Tier 均由上游协议实时同步到管理台。
 
 ## 号池调度
 
-- **引擎A**：多号轮询 + 配额/认证异常自动切换下一个号
-- **引擎B**：轮询（`round-robin`）或会话粘性（`account-sticky`），单号并发槽位，
+- **Gemini Web**：多号轮询 + 配额/认证异常自动切换下一个号
+- **AI Studio**：轮询（`round-robin`）或会话粘性（`account-sticky`），单号并发槽位，
   Playground+Build 双额度通道自动降级，模型资格与冷却由池管理
 - **模型路由**：`routing.engine_a/b_models` 显式指定 > 订阅/custom 目录按模型 id 精确命中 >
-  引擎A/B 实时目录精确命中（裸名模型归属拥有它的引擎，如 `gemini-argon` → 引擎A）>
-  多模态关键词（image/veo/lyria…）走引擎B > `default_engine` > `auto`（引擎B 优先，
-  不可用自动降级引擎A）。除 `default_engine` 与 `auto` 外，命中即「专属」：引擎不可用时
-  直接返回该引擎的具体错误，不会被换到别的引擎；引擎B 收到目录外模型时也不再静默换用
+  Gemini Web / AI Studio 实时目录精确命中（裸名模型归属拥有它的引擎，如 `gemini-argon` → Gemini Web）>
+  多模态关键词（image/veo/lyria…）走 AI Studio > `default_engine` > `auto`（AI Studio 优先，
+  不可用自动降级 Gemini Web）。除 `default_engine` 与 `auto` 外，命中即「专属」：引擎不可用时
+  直接返回该引擎的具体错误，不会被换到别的引擎；AI Studio 收到目录外模型时也不再静默换用
   目录第一个模型
 - **按声明接单（不猜、不兜底）**：第三方 Key 号池只把请求交给目录里明确声明了该模型的
   账号；没有账号声明就返回 `404 model_not_found`（错误里写明当前号池缺哪个模型），
   不会再「随便抓一个就绪号」顶替。没拉到模型目录的账号不再对任意模型开放，
   需在管理台获取模型列表或手填 `models`
-- **多模态不跨引擎**：音乐/视频/生图/语音模型即使目录里暂时没有，也只交给引擎B，
-  引擎B 不可用时返回它自己的真实错误（账号与 Worker 状态），不会改投第三方 Key
+- **多模态不跨引擎**：音乐/视频/生图/语音模型即使目录里暂时没有，也只交给 AI Studio，
+  AI Studio 不可用时返回它自己的真实错误（账号与 Worker 状态），不会改投第三方 Key
 - **按用途选入口**：音乐/视频模型发到 `/v1/chat/completions` 时先过用途闸门——
-  能出媒体的引擎（目前只有引擎B native）接单，否则直接 `400 unsupported_endpoint`
+  能出媒体的引擎（目前只有 AI Studio native）接单，否则直接 `400 unsupported_endpoint`
   并提示改用 `/v1/music/generations` 或 `/v1/videos`，不把上游的原始 400 透给下游
 - **就绪口径**：`/v1/models` 的 `available` 要求「至少一个可用账号的目录里有它」且
-  「归属引擎能接单」；引擎B 的 `Ready()` 还会看 WAA Worker 是否真的起得来，
+  「归属引擎能接单」；AI Studio 的 `Ready()` 还会看 WAA Worker 是否真的起得来，
   账号 ready 但工人为 0 时不再谎报可用
 
 ## REST 管理 API（供脚本/二次开发）
@@ -196,7 +208,7 @@ GET/PUT             /admin/api/settings                  平台设置（开放�
 ### Token 额度与倍率
 
 - 每次 `/v1/chat/completions` 请求记录一条明细：`prompt_tokens`、`completion_tokens`、`total_tokens`。
-  引擎B（AI Studio）和 upstream 引擎返回的真实用量直接采用；拿不到时（引擎A、流式响应等）按文本长度估算，
+  AI Studio 和 upstream 引擎返回的真实用量直接采用；拿不到时（Gemini Web、流式响应等）按文本长度估算，
   明细中 `estimated: true`，管理台显示「估算」。
 - 计费：`charged_tokens = ⌈total_tokens × 模型倍率 × Key 倍率 × 用户倍率⌉`。模型倍率按「精确模型 → `*` 默认 → 1」查找；
   Key 倍率即分组默认倍率（默认 1）；用户倍率只对用户自己创建的 Key 生效（管理员 Key 恒为 1）。失败请求不计费。
@@ -279,21 +291,21 @@ curl -X PATCH http://localhost:8800/admin/api/keys/1 \
 |---|---|
 | Base URL | `http://localhost:8800/v1` |
 | API Key | 管理台创建的任意 `sk-` Key |
-| 文本模型 | `gemini-flash` / `gemini-pro`（引擎A），`/v1/models` 实时聚合所有引擎与账号目录 |
+| 文本模型 | `gemini-flash` / `gemini-pro`（Gemini Web），`/v1/models` 实时聚合所有引擎与账号目录 |
 
 完整对外接口文档：`GET /v1/docs`（OpenAPI 3.1，可导入 Postman/Insomnia）。
 
 Gemini 官方参数审计（2026-10-07）：[参数映射与实现遗漏](docs/api/gemini.md)、[官方全部字段对照](docs/api/gemini-schema.md)、[中文参考详解](docs/api/gemini-reference.md)。完整表由保存的官方 OpenAPI 自动生成，包含请求、响应、工具、agent、沙箱和 SSE 的深层字段。新增[官方 Gemini 后端](docs/api/gemini-official.md)，启用后官方 Interactions 参数和 SSE 完整转发；网页登录态聊天的字段限制单独标注。
 
-生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接。图片尺寸是顶层 `image_size`（`4K`，K 大写），Omni 视频分辨率是顶层 `resolution`（`4k`，k 小写）。Veo 用 `POST /v1/videos` 的 `size`，`veo-3.1-fast-generate-preview` 的 4K 需要 `seconds: 8`。`/v1/images/generations`、`/v1/audio/speech` 与 `/v1/music/generations` 走透传，由上游实现。**音乐/视频模型不能走 `/v1/chat/completions`**（引擎B native 除外，它能把媒体塞进 chat 响应），误发会返回 `400 unsupported_endpoint`。
+生成接口的模式选择、参数、cURL 与响应读取示例见[视频生成](docs/api/videos.md)、[图片生成](docs/api/images.md)、[音频生成](docs/api/audio.md)。默认 native 模式中，图片和音频通过 `/v1/chat/completions` 返回媒体链接。图片尺寸是顶层 `image_size`（`4K`，K 大写），Omni 视频分辨率是顶层 `resolution`（`4k`，k 小写）。Veo 用 `POST /v1/videos` 的 `size`，`veo-3.1-fast-generate-preview` 的 4K 需要 `seconds: 8`。`/v1/images/generations`、`/v1/audio/speech` 与 `/v1/music/generations` 走透传，由上游实现。**音乐/视频模型不能走 `/v1/chat/completions`**（AI Studio native 除外，它能把媒体塞进 chat 响应），误发会返回 `400 unsupported_endpoint`。
 端点：`POST /v1/chat/completions`（SSE 流式 + 非流式）、`GET /v1/models`、
 `GET /health`、`GET /v1/accounts`。Veo 使用独立长任务接口：
 `POST /v1/videos` 创建、`GET /v1/videos/{id}` 轮询、
-`GET /v1/videos/{id}/content` 下载完成的视频；请求会走引擎B的
+`GET /v1/videos/{id}/content` 下载完成的视频；请求会走 AI Studio 的
 `GenerateVideo` / `GetGenerateVideoOperation` 协议。多模态透传
 （`/v1/images|videos|audio|music|files|embeddings`）按模型路由：请求体模型命中
 custom（第三方 Key）目录时转发对应上游（native 模式即可用，如 Google
-OpenAI 兼容端的 `gemini-embedding-*` 向量模型）；未命中时回退引擎B
+OpenAI 兼容端的 `gemini-embedding-*` 向量模型）；未命中时回退 AI Studio
 upstream 模式透传。音乐模型（如 `lyria-3.5`）请走 `POST /v1/music/generations`。
 
 ### 一键导入 CC Switch（Codex / Claude Code）
@@ -301,12 +313,19 @@ upstream 模式透传。音乐模型（如 `lyria-3.5`）请走 `POST /v1/music/
 管理台/控制台的 API 密钥页提供「导入 CC Switch」：生成 `ccswitch://` Deep Link
 （CC Switch v4+），一键把该密钥导入为 Codex 或 Claude Code 供应商。配置要点：
 
-- `wire_api = "chat"` / `apiFormat = openai_chat`：网关只实现 Chat Completions，
-  CC Switch 会自动开启本地路由做协议转换（Codex 的 Responses、Claude Code 的
-  Anthropic Messages 都在本地代理翻译成 Chat Completions 后再进网关）
+- **模型列表随导入写入**：Deep Link 的 `config` 载荷里带 `modelCatalog`
+  （取自 `GET /v1/codex/catalog`，已按该 Key 的白名单与上下架过滤），
+  导入后 CC Switch 供应商的模型列表就是这些模型。`ccswitch://` 协议本身
+  只有单数 `model` 参数，没有模型数组字段，列表只能这样带过去
+- `wire_api = "chat"` / `apiFormat = openai_chat`：CC Switch 会自动开启本地路由，
+  把 Codex 的 Responses、Claude Code 的 Anthropic Messages 在本地翻译成
+  Chat Completions 再进网关
+- **也可以直连，不走本地路由**：网关已提供 `POST /v1/responses`，Codex 直接填
+  `base_url = "<网关>/v1"` + `wire_api = "responses"` 即可，链路里少一层转换。
+  直连同样支持工具调用，Codex 的 shell / apply_patch 能正常跑；前提是该模型
+  落到支持 function calling 的上游（custom、AI Studio、GPT）
 - `model_catalog_url` 指向 `GET /v1/codex/catalog`（`Bearer` 或 `?key=` 鉴权）：
-  Codex 从该 URL 动态拉取模型目录，输出该 Key 当前可用的 chat 模型
-  （白名单与上下架过滤在网关侧生效），号池变化后无需重改配置
+  Codex 从该 URL 动态拉取模型目录，号池变化后无需重改配置
 - 目录条目与 `cc-switch-model-catalog.json` / 官方 `models_cache.json` 同构
   （`visibility` 枚举只有 `list/hide/none`，`support_verbosity` 等为必填字段）
 - Claude Code 注意：网关没有 Anthropic `/v1/messages` 端点，不能把
@@ -333,12 +352,12 @@ Docker 部署可启用 `docker-compose.upgrade.yml`，之后在管理台「系�
 
 ## 账号从哪来
 
-**统一账号协议**：所有新账号都提交引擎B协议的 `storage-state.json` 到
+**统一账号协议**：所有新账号都提交 AI Studio 协议的 `storage-state.json` 到
 `POST /admin/api/accounts`。`engine=b` 直接进入 AI Studio 号池；`engine=a` 会从同一份
 状态中提取 `__Secure-1PSID` / `__Secure-1PSIDTS`，进入 Gemini 号池。旧的两个子路径仍可用，
 会自动转换后走统一流程。
 
-**AI Studio 号（引擎B）**：三选一——
+**AI Studio 号**：三选一——
 1. 管理台粘贴 `storage-state.json` 内容（浏览器插件导出）；
 2. 把已有的 `auth/<邮箱>/` 目录整个放到 web2api 目录下，启动时自动扫描入池并登记；
 3. 配置 `auth_states` 指向已有的 auth 目录，或改用 `mode: upstream` 直接转发。
@@ -389,8 +408,8 @@ internal/store/              SQLite：账号 / Key / 用量 / 用户 / 余额流
 internal/config/             YAML 配置 + 环境变量
 internal/model/              OpenAI 协议数据结构
 internal/engine/             引擎接口定义
-internal/engine/geminiweb/   引擎A：gemini 网页协议（请求/流式/Cookie/模型）
-internal/engine/upstream/    OpenAI 兼容上游（upstream 模式引擎B）
+internal/engine/geminiweb/   Gemini Web：gemini 网页协议（请求/流式/Cookie/模型）
+internal/engine/upstream/    OpenAI 兼容上游（upstream 模式 AI Studio）
 internal/provider/           多引擎装配 + 动态号池 + 调度路由（manager.go）
 internal/gateway/            OpenAI 网关（动态 Key 鉴权 + 用量埋点）
 internal/session/            Redis 会话通信（支持 ACL、数据库和 TLS）
@@ -398,7 +417,7 @@ internal/admin/              JWT 登录、管理 REST API（/admin/api/*）与�
 internal/webui/              内嵌前端（/admin、/console、/login、/register）
 web/                         前端源码（React + shadcn/ui，构建到 internal/webui/dist）
 internal/limiter/           令牌桶限流
-internal/aistudio/          引擎B 协议内核（AI Studio 私有协议 + 纯 Go Worker，MIT）
+internal/aistudio/          AI Studio 协议内核（AI Studio 私有协议 + 纯 Go Worker，MIT）
 internal/aistudio/waa/      BotGuard（WAA）纯 Go VM，内嵌 goja 执行官方解释器
 internal/aistudio/fingerprint/  账户浏览器指纹生成
 ```

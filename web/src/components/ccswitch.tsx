@@ -7,12 +7,45 @@ import { MiniSelect } from '@/components/fields'
 import { cn } from '@/lib/utils'
 import type { ApiKey } from '@/lib/types'
 
-/** 网关 /v1/models 的条目（只关心对话模型）。 */
-interface GatewayModel {
-  id: string
+/** 网关 /v1/codex/catalog 的条目（Codex 模型目录格式，snake_case）。 */
+interface CatalogEntry {
+  slug: string
   display_name?: string
-  available: boolean
-  kind?: string
+  description?: string
+  context_window?: number
+  input_modalities?: string[]
+  base_instructions?: string
+  supports_parallel_tool_calls?: boolean
+  supported_reasoning_levels?: { effort: string; description?: string }[]
+}
+
+/** CC Switch 供应商里保存的模型目录条目（camelCase，见 cc-switch 的 settings_config.modelCatalog）。 */
+interface CcSwitchCatalogModel {
+  model: string
+  displayName: string
+  contextWindow: number
+  supportsParallelToolCalls: boolean
+  inputModalities: string[]
+  baseInstructions: string
+  reasoningLevels: string[]
+}
+
+/** 把网关目录条目映射成 CC Switch 的 modelCatalog 结构。 */
+export function toCatalogModel(entry: CatalogEntry): CcSwitchCatalogModel {
+  const name = entry.display_name || entry.slug
+  return {
+    model: entry.slug,
+    displayName: name,
+    contextWindow: entry.context_window || 1000000,
+    supportsParallelToolCalls: entry.supports_parallel_tool_calls ?? true,
+    inputModalities: entry.input_modalities?.length ? entry.input_modalities : ['text'],
+    baseInstructions:
+      entry.base_instructions ||
+      `You are Codex, a coding agent based on ${name}. You and the user share the same workspace and collaborate to achieve the user's goals.`,
+    reasoningLevels: entry.supported_reasoning_levels?.length
+      ? entry.supported_reasoning_levels.map((l) => l.effort)
+      : ['none', 'medium', 'high'],
+  }
 }
 
 /** 导入目标应用。 */
@@ -40,11 +73,22 @@ export function buildCcSwitchTOML(baseURL: string, apiKey: string, model: string
 
 /**
  * 生成 ccswitch:// Deep Link（V1 协议），CC Switch v4+ 支持一键导入。
- * - codex：内嵌 {"auth","config"} 配置（wire_api=chat + model_catalog_url）
+ * - codex：内嵌 {"auth","config","modelCatalog"} 配置（wire_api=chat +
+ *   model_catalog_url，模型列表随导入写入 CC Switch）
  * - claude：Claude Code 原生说 Anthropic Messages，web2api 只输出 OpenAI Chat，
  *   apiFormat=openai_chat 让 CC Switch 自动开启本地路由做协议转换
+ *
+ * 协议本身只有单数 model 参数，没有模型数组字段；模型列表只能通过 config
+ * 载荷里的 modelCatalog 带过去，否则 CC Switch 的模型列表是空的。
  */
-export function buildCcSwitchLink(baseURL: string, apiKey: string, model: string, app: CcSwitchApp = 'codex', name = 'web2api'): string {
+export function buildCcSwitchLink(
+  baseURL: string,
+  apiKey: string,
+  model: string,
+  app: CcSwitchApp = 'codex',
+  name = 'web2api',
+  catalog: CcSwitchCatalogModel[] = [],
+): string {
   const params = new URLSearchParams({
     resource: 'provider',
     app,
@@ -55,22 +99,27 @@ export function buildCcSwitchLink(baseURL: string, apiKey: string, model: string
     apiFormat: 'openai_chat',
   })
   if (app === 'codex') {
-    const configPayload = JSON.stringify({ auth: { OPENAI_API_KEY: apiKey }, config: buildCcSwitchTOML(baseURL, apiKey, model) })
+    const payload: Record<string, unknown> = {
+      auth: { OPENAI_API_KEY: apiKey },
+      config: buildCcSwitchTOML(baseURL, apiKey, model),
+    }
+    if (catalog.length) payload.modelCatalog = { models: catalog }
     params.set('configFormat', 'json')
-    params.set('config', utf8Base64(configPayload))
+    params.set('config', utf8Base64(JSON.stringify(payload)))
   }
   return `ccswitch://v1/import?${params.toString()}`
 }
 
 /**
  * 「导入 CC Switch」弹窗：为单个密钥生成 Codex / Claude Code 供应商导入配置。
- * 模型列表实时取 /v1/models（该 Key 的白名单与上下架过滤在网关侧生效）。
- * Codex 导入后通过 model_catalog_url 动态拉取模型目录，号池变化无需重新导入；
- * Claude Code 经 CC Switch 本地路由把 Anthropic Messages 转成 Chat Completions。
+ * 模型列表实时取 /v1/codex/catalog（该 Key 的白名单与上下架过滤在网关侧生效），
+ * 同时写进 Deep Link 的 modelCatalog，导入后 CC Switch 的模型列表就是这些模型。
+ * Codex 另可用 model_catalog_url 动态刷新；Claude Code 经 CC Switch 本地路由
+ * 把 Anthropic Messages 转成 Chat Completions。
  */
 export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKey | null; onOpenChange: (o: boolean) => void }) {
   const [app, setApp] = useState<CcSwitchApp>('codex')
-  const [models, setModels] = useState<GatewayModel[]>([])
+  const [entries, setEntries] = useState<CatalogEntry[]>([])
   const [model, setModel] = useState('')
   const [err, setErr] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -78,20 +127,23 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
   useEffect(() => {
     if (!keyItem) return
     setApp('codex')
-    setModels([])
+    setEntries([])
     setModel('')
     setErr('')
     setLoaded(false)
-    fetch('/v1/models', { headers: { Authorization: `Bearer ${keyItem.key}` } })
+    fetch('/v1/codex/catalog', { headers: { Authorization: `Bearer ${keyItem.key}` } })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => {
-        const chat = ((d.data || []) as GatewayModel[]).filter((m) => m.kind === 'chat' && m.available && !m.id.includes('/'))
-        setModels(chat)
-        if (chat.length) setModel(chat[0].id)
+        const list = ((d.models || []) as CatalogEntry[]).filter((m) => m.slug)
+        setEntries(list)
+        if (list.length) setModel(list[0].slug)
       })
       .catch((e) => setErr(String((e as Error).message || e)))
       .finally(() => setLoaded(true))
   }, [keyItem])
+
+  const models = useMemo(() => entries.map((m) => ({ id: m.slug, name: m.display_name || m.slug })), [entries])
+  const catalog = useMemo(() => entries.map(toCatalogModel), [entries])
 
   // 切到 Claude Code 时优先选号池里的 claude-* 模型（Claude Code 对模型名有惯例）
   const switchApp = (next: CcSwitchApp) => {
@@ -104,7 +156,10 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
 
   const baseURL = typeof window !== 'undefined' ? window.location.origin : ''
   const toml = useMemo(() => (keyItem && model ? buildCcSwitchTOML(baseURL, keyItem.key, model) : ''), [keyItem, model, baseURL])
-  const link = useMemo(() => (keyItem && model ? buildCcSwitchLink(baseURL, keyItem.key, model, app) : ''), [keyItem, model, baseURL, app])
+  const link = useMemo(
+    () => (keyItem && model ? buildCcSwitchLink(baseURL, keyItem.key, model, app, 'web2api', catalog) : ''),
+    [keyItem, model, baseURL, app, catalog],
+  )
 
   return (
     <Dialog open={!!keyItem} onOpenChange={onOpenChange}>
@@ -114,7 +169,7 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
             <PlugZap className="size-4" /> 导入 CC Switch
           </DialogTitle>
           <DialogDescription className="text-[13px]">
-            把这个密钥一键导入 CC Switch。web2api 网关只输出 OpenAI Chat 协议，CC Switch 会自动开启本地路由做协议转换；模型列表实时取自该密钥可用的模型。
+            把这个密钥一键导入 CC Switch。web2api 网关只输出 OpenAI Chat 协议，CC Switch 会自动开启本地路由做协议转换；该密钥可用的模型会随导入一起写入 CC Switch 的模型列表。
           </DialogDescription>
         </DialogHeader>
         {keyItem && (
@@ -148,7 +203,7 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
                     value={model}
                     onChange={setModel}
                     className="flex-1"
-                    options={models.map((m) => ({ value: m.id, label: m.display_name || m.id }))}
+                    options={models.map((m) => ({ value: m.id, label: m.name }))}
                   />
                   <span className="shrink-0 text-xs text-muted-foreground">{models.length} 个对话模型</span>
                 </div>

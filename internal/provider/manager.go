@@ -1430,13 +1430,20 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 	return eng.Chat(ctx, req)
 }
 
-// ChatStream 流式对话。
-func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+// ChatStream 流式对话。sink 同时承接文本与工具调用增量：引擎实现
+// engine.ToolEngine 时工具调用会被透传，否则工具定义被忽略、只走文本。
+func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	if sink == nil {
+		sink = model.TextSink(nil)
+	}
 	eng, req, err := m.resolveChatEngine(req)
 	if err != nil {
 		return nil, err
 	}
-	return eng.ChatStream(ctx, req, onDelta)
+	if toolEng, ok := eng.(engine.ToolEngine); ok {
+		return toolEng.ChatStreamSink(ctx, req, sink)
+	}
+	return eng.ChatStream(ctx, req, sink.Text)
 }
 
 // resolveChatEngine 选定引擎。目录命中的模型归属其引擎：引擎不可用时直接返回
@@ -1756,10 +1763,10 @@ func (m *Manager) Status() map[string]any {
 // EngineMetaList 管理台引擎元数据列表。
 func (m *Manager) EngineMetaList() []EngineMeta {
 	metas := []EngineMeta{
-		{Name: "a", Describe: "gemini.google.com 网页版（Cookie 会话）", Enabled: m.engines["a"] != nil, AccountPool: true, Credential: "psid/psidts Cookie"},
+		{Name: "a", Describe: "Gemini Web（gemini.google.com 网页号，Cookie 会话）", Enabled: m.engines["a"] != nil, AccountPool: true, Credential: "psid/psidts Cookie"},
 		{Name: "b", Describe: "AI Studio（原生逆向 / OpenAI 兼容上游）", Enabled: m.engines["b"] != nil, AccountPool: true, Credential: "storage-state.json"},
-		{Name: "codex", Describe: "OpenAI Codex（ChatGPT 订阅号）", Enabled: m.engines["codex"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（OAuth 授权或 Codex CLI auth.json 导入）"},
-		{Name: "antigravity", Describe: "Google Antigravity（Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
+		{Name: "codex", Describe: "GPT（ChatGPT 订阅号）", Enabled: m.engines["codex"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（OAuth 授权或 Codex CLI auth.json 导入）"},
+		{Name: "antigravity", Describe: "Antigravity（Google Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
 		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},
 		{Name: "workbuddy", Describe: "腾讯 CodeBuddy/WorkBuddy（SaaS 订阅）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token（OAuth 扫码授权）"},
 		{Name: "custom", Describe: "第三方 OpenAI 兼容 Key（支持常见供应商余额查询）", Enabled: m.engines["custom"] != nil, AccountPool: true, Credential: "base_url + api_key；余额：MiniMax/OpenRouter/硅基流动/DeepSeek/Sub2API/NewAPI 等"},

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,13 +42,25 @@ type OpenAI struct {
 
 // New 创建上游。
 func New(name, baseURL, apiKey string, passthrough bool, timeout time.Duration) *OpenAI {
-	return NewWithClient(name, baseURL, apiKey, passthrough, &http.Client{Timeout: timeout})
+	return NewWithClient(name, baseURL, apiKey, passthrough, newHTTPClient(timeout))
+}
+
+// newHTTPClient 构造只约束「响应头到达时间」的客户端。
+//
+// 不能用 http.Client.Timeout：它覆盖整个响应体读取，长回答的 SSE 会在
+// 到达该时长时被硬切断（表现为流式截断）。响应体读取交给请求 ctx 控制。
+func newHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if timeout > 0 {
+		transport.ResponseHeaderTimeout = timeout
+	}
+	return &http.Client{Transport: transport}
 }
 
 // NewWithClient 使用自定义 HTTP 客户端创建上游（可带代理）。
 func NewWithClient(name, baseURL, apiKey string, passthrough bool, client *http.Client) *OpenAI {
 	if client == nil {
-		client = &http.Client{Timeout: 300 * time.Second}
+		client = newHTTPClient(300 * time.Second)
 	}
 	return &OpenAI{
 		name:        name,
@@ -178,12 +191,13 @@ func (o *OpenAI) Models() []model.ModelInfo {
 // BaseURL 上游地址。
 func (o *OpenAI) BaseURL() string { return o.baseURL }
 
-// Chat 非流式对话。
-func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+// chatPayload 组装 /v1/chat/completions 请求体。工具定义只在非空时下发：
+// 部分第三方上游看到空的 tools 数组会直接 400。
+func (o *OpenAI) chatPayload(req model.ChatRequest, stream bool) map[string]any {
 	payload := map[string]any{
 		"model":    req.Model,
 		"messages": req.Messages,
-		"stream":   false,
+		"stream":   stream,
 	}
 	if req.Temperature != nil {
 		payload["temperature"] = *req.Temperature
@@ -194,6 +208,26 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 	if req.TopP != nil {
 		payload["top_p"] = *req.TopP
 	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = req.Tools
+		if choice := bytes.TrimSpace(req.ToolChoice); len(choice) > 0 && string(choice) != "null" {
+			payload["tool_choice"] = choice
+		}
+		if req.ParallelToolCalls != nil {
+			payload["parallel_tool_calls"] = *req.ParallelToolCalls
+		}
+	}
+	// include_usage 只按客户端要求透传：少数第三方上游不认识该字段，
+	// 无条件下发会让整条流式请求失败。网关自己的用量回退到估算。
+	if stream && req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
+		payload["stream_options"] = req.StreamOptions
+	}
+	return payload
+}
+
+// Chat 非流式对话。
+func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+	payload := o.chatPayload(req, false)
 	data, status, err := o.do(ctx, http.MethodPost, "/v1/chat/completions", payload)
 	if err != nil {
 		o.MarkDown(err)
@@ -207,12 +241,13 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("解析上游响应失败: %w", err)
 	}
-	text := ""
+	result := &model.ChatResult{Engine: o.name, Model: req.Model}
 	if len(resp.Choices) > 0 {
-		text = resp.Choices[0].Message.Content
+		result.Text = resp.Choices[0].Message.Content
+		result.ToolCalls = resp.Choices[0].Message.ToolCalls
+		result.FinishReason = resp.Choices[0].FinishReason
 	}
 	o.MarkReady()
-	result := &model.ChatResult{Text: text, Engine: o.name, Model: req.Model}
 	if resp.Usage.TotalTokens > 0 || resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
 		// 上游 OpenAI 兼容接口返回的权威 usage。
 		usage := model.TokenUsage{
@@ -227,21 +262,15 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 
 // ChatStream 流式对话（SSE 解析）。
 func (o *OpenAI) ChatStream(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
-	payload := map[string]any{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   true,
+	return o.ChatStreamSink(ctx, req, model.TextSink(onDelta))
+}
+
+// ChatStreamSink 流式对话，同时回传文本与工具调用增量。
+func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	if sink == nil {
+		sink = model.TextSink(nil)
 	}
-	if req.Temperature != nil {
-		payload["temperature"] = *req.Temperature
-	}
-	if req.MaxTokens != nil {
-		payload["max_tokens"] = *req.MaxTokens
-	}
-	if req.TopP != nil {
-		payload["top_p"] = *req.TopP
-	}
-	data, err := json.Marshal(payload)
+	data, err := json.Marshal(o.chatPayload(req, true))
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +280,7 @@ func (o *OpenAI) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
 	if o.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
 	}
@@ -267,6 +297,13 @@ func (o *OpenAI) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 	}
 
 	var full strings.Builder
+	var usage *model.TokenUsage
+	finishReason := ""
+	// 工具调用分块按 index 归并：上游会把 id/name 放在首块，
+	// 参数按 JSON 片段逐块下发，必须拼完才能得到完整 arguments。
+	accs := map[int]*model.ToolCall{}
+	var indices []int
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
@@ -282,16 +319,41 @@ func (o *OpenAI) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
+		// 上游用量可能挂在结束分片上，也可能单独一个 choices 为空的分片
+		// （stream_options.include_usage）。两种都要收，否则网关只能估算。
+		if chunk.Usage != nil {
+			u := chunk.Usage.Normalize()
+			usage = &u
+		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		delta := chunk.Choices[0].Delta.Content
-		if delta == "" {
-			continue
+		choice := chunk.Choices[0]
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			finishReason = *choice.FinishReason
 		}
-		full.WriteString(delta)
-		if onDelta != nil {
-			if err := onDelta(delta); err != nil {
+		if delta := choice.Delta.Content; delta != "" {
+			full.WriteString(delta)
+			if err := sink.Text(delta); err != nil {
+				return nil, err
+			}
+		}
+		for _, tc := range choice.Delta.ToolCalls {
+			acc := accs[tc.Index]
+			if acc == nil {
+				acc = &model.ToolCall{Type: "function"}
+				accs[tc.Index] = acc
+				indices = append(indices, tc.Index)
+			}
+			if tc.ID != "" {
+				acc.ID = tc.ID
+			}
+			if tc.Type != "" {
+				acc.Type = tc.Type
+			}
+			acc.Function.Name += tc.Function.Name
+			acc.Function.Arguments += tc.Function.Arguments
+			if err := sink.ToolCall(tc); err != nil {
 				return nil, err
 			}
 		}
@@ -300,7 +362,23 @@ func (o *OpenAI) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 		return nil, err
 	}
 	o.MarkReady()
-	return &model.ChatResult{Text: full.String(), Engine: o.name, Model: req.Model}, nil
+	result := &model.ChatResult{Text: full.String(), Engine: o.name, Model: req.Model, Usage: usage, FinishReason: finishReason}
+	sort.Ints(indices)
+	for _, index := range indices {
+		call := *accs[index]
+		if call.ID == "" {
+			// 少数上游不给 id，补一个稳定的本地 id，否则客户端无法回填结果。
+			call.ID = "call_" + model.NewID(16)
+		}
+		if call.Type == "" {
+			call.Type = "function"
+		}
+		result.ToolCalls = append(result.ToolCalls, call)
+	}
+	if len(result.ToolCalls) > 0 && result.FinishReason == "" {
+		result.FinishReason = "tool_calls"
+	}
+	return result, nil
 }
 
 // ProbeImage 探测图片模型：调用 /v1/images/generations（不走 Chat Completions）。

@@ -237,11 +237,39 @@ func DecodeIDToken(idToken string) (*IDTokenClaims, error) {
 
 // ==================== 推理（Responses 协议） ====================
 
-// Message 输入消息（role: system/user/assistant；ImageURL 为 data URL 或 http URL）。
+// Message 输入消息（role: system/user/assistant/tool；ImageURL 为 data URL 或 http URL）。
 type Message struct {
 	Role      string
 	Text      string
 	ImageURLs []string
+	// ToolCalls 是 assistant 回合发起的工具调用。
+	ToolCalls []ToolCall
+	// ToolCallID / Name 仅 role=tool 使用：应答哪一次调用、对应哪个函数。
+	ToolCallID string
+	Name       string
+}
+
+// Tool 工具定义（Responses 格式：name/description/parameters 平铺在对象上）。
+type Tool struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// ToolCall 模型发起的一次工具调用。
+type ToolCall struct {
+	ID        string // 上游的 call_id
+	Name      string
+	Arguments string
+}
+
+// ToolCallDelta 流式工具调用增量。
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Name      string
+	Arguments string
 }
 
 // Request Responses 推理请求。
@@ -250,11 +278,15 @@ type Request struct {
 	Instructions string
 	Messages     []Message
 	MaxTokens    int
+	// Tools / ToolChoice 为 function calling 工具定义与选择策略。
+	Tools      []Tool
+	ToolChoice json.RawMessage
 }
 
 // Result 推理结果与用量。
 type Result struct {
 	Text             string
+	ToolCalls        []ToolCall
 	PromptTokens     int64
 	CompletionTokens int64
 	ReasoningTokens  int64
@@ -264,9 +296,13 @@ type Result struct {
 }
 
 type responsesItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content []responsesPart `json:"content"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role,omitempty"`
+	Content   []responsesPart `json:"content,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Arguments string          `json:"arguments,omitempty"`
+	Output    string          `json:"output,omitempty"`
 }
 
 type responsesPart struct {
@@ -284,6 +320,8 @@ type responsesBody struct {
 	Reasoning       *reasoning      `json:"reasoning,omitempty"`
 	Include         []string        `json:"include,omitempty"`
 	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	Tools           []Tool          `json:"tools,omitempty"`
+	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 type reasoning struct {
@@ -304,11 +342,13 @@ func buildResponsesBody(req *Request) (*responsesBody, error) {
 		return nil, errors.New("消息为空")
 	}
 	body := &responsesBody{
-		Store:     false,
-		Stream:    true,
-		Model:     MapModel(req.Model),
-		Include:   []string{"reasoning.encrypted_content"},
-		Reasoning: &reasoning{Effort: "medium", Summary: "auto"},
+		Store:      false,
+		Stream:     true,
+		Model:      MapModel(req.Model),
+		Include:    []string{"reasoning.encrypted_content"},
+		Reasoning:  &reasoning{Effort: "medium", Summary: "auto"},
+		Tools:      req.Tools,
+		ToolChoice: req.ToolChoice,
 	}
 	if req.MaxTokens > 0 {
 		body.MaxOutputTokens = req.MaxTokens
@@ -321,10 +361,19 @@ func buildResponsesBody(req *Request) (*responsesBody, error) {
 			} else {
 				body.Instructions += "\n\n" + msg.Text
 			}
+		case "tool":
+			// 工具执行结果必须以 function_call_output 回给上游，
+			// 否则模型看不到结果会重复发起同一个调用。
+			body.Input = append(body.Input, responsesItem{
+				Type:   "function_call_output",
+				CallID: msg.ToolCallID,
+				Output: msg.Text,
+			})
 		case "user", "assistant":
-			item := responsesItem{Type: "message", Role: strings.ToLower(msg.Role)}
+			role := strings.ToLower(msg.Role)
+			item := responsesItem{Type: "message", Role: role}
 			partType := "input_text"
-			if item.Role == "assistant" {
+			if role == "assistant" {
 				partType = "output_text"
 			}
 			if strings.TrimSpace(msg.Text) != "" {
@@ -336,10 +385,18 @@ func buildResponsesBody(req *Request) (*responsesBody, error) {
 				}
 				item.Content = append(item.Content, responsesPart{Type: "input_image", ImageURL: img})
 			}
-			if len(item.Content) == 0 {
-				continue
+			if len(item.Content) > 0 {
+				body.Input = append(body.Input, item)
 			}
-			body.Input = append(body.Input, item)
+			// 历史工具调用紧跟在 assistant 消息之后，保持与产生它们时一致的顺序。
+			for _, call := range msg.ToolCalls {
+				body.Input = append(body.Input, responsesItem{
+					Type:      "function_call",
+					CallID:    call.ID,
+					Name:      call.Name,
+					Arguments: call.Arguments,
+				})
+			}
 		}
 	}
 	if len(body.Input) == 0 {
@@ -354,6 +411,11 @@ func buildResponsesBody(req *Request) (*responsesBody, error) {
 // Stream 发起 Responses 推理并流式回调增量文本。
 // chatGPTAccountID 为 ID token 中的 chatgpt_account_id（可能为空）。
 func Stream(ctx context.Context, proxy, accessToken, chatGPTAccountID string, req *Request, onDelta func(string) error) (*Result, error) {
+	return StreamWithTools(ctx, proxy, accessToken, chatGPTAccountID, req, onDelta, nil)
+}
+
+// StreamWithTools 与 Stream 相同，额外把 function_call 的参数增量回调出去。
+func StreamWithTools(ctx context.Context, proxy, accessToken, chatGPTAccountID string, req *Request, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
 	body, err := buildResponsesBody(req)
 	if err != nil {
 		return nil, err
@@ -390,7 +452,7 @@ func Stream(ctx context.Context, proxy, accessToken, chatGPTAccountID string, re
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, &UpstreamError{Status: resp.StatusCode, Body: string(b)}
 	}
-	result, err := parseResponsesSSE(resp.Body, onDelta)
+	result, err := parseResponsesSSE(resp.Body, onDelta, onTool)
 	if err == nil && result != nil {
 		// 用量百分比快照（5 小时窗口），账号余额展示用
 		if v := resp.Header.Get("x-codex-primary-used-percent"); v != "" {
@@ -448,8 +510,16 @@ func IsRateLimited(err error) bool {
 }
 
 // parseResponsesSSE 逐行解析 Responses SSE 事件流。
-func parseResponsesSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
+func parseResponsesSSE(r io.Reader, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
 	result := &Result{}
+	// 工具调用按 item_id 归并：added 给出 call_id/name，arguments 以增量下发，
+	// done 给出完整值（以上游最终值为准）。
+	type pendingCall struct {
+		index int
+		call  ToolCall
+	}
+	pending := map[string]*pendingCall{}
+	var callOrder []string
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	for scanner.Scan() {
@@ -481,6 +551,79 @@ func parseResponsesSSE(r io.Reader, onDelta func(string) error) (*Result, error)
 						return nil, err
 					}
 				}
+			}
+		case "response.output_item.added":
+			var ev struct {
+				Item struct {
+					ID        string `json:"id"`
+					Type      string `json:"type"`
+					CallID    string `json:"call_id"`
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"item"`
+			}
+			if json.Unmarshal(raw, &ev) != nil || ev.Item.Type != "function_call" || ev.Item.ID == "" {
+				continue
+			}
+			call := &pendingCall{
+				index: len(callOrder),
+				call: ToolCall{
+					ID:        ev.Item.CallID,
+					Name:      ev.Item.Name,
+					Arguments: ev.Item.Arguments,
+				},
+			}
+			pending[ev.Item.ID] = call
+			callOrder = append(callOrder, ev.Item.ID)
+			if onTool != nil {
+				if err := onTool(ToolCallDelta{Index: call.index, ID: call.call.ID, Name: call.call.Name}); err != nil {
+					return nil, err
+				}
+			}
+		case "response.function_call_arguments.delta":
+			var ev struct {
+				ItemID string `json:"item_id"`
+				Delta  string `json:"delta"`
+			}
+			if json.Unmarshal(raw, &ev) != nil || ev.Delta == "" {
+				continue
+			}
+			call := pending[ev.ItemID]
+			if call == nil {
+				continue
+			}
+			call.call.Arguments += ev.Delta
+			if onTool != nil {
+				if err := onTool(ToolCallDelta{Index: call.index, ID: call.call.ID, Arguments: ev.Delta}); err != nil {
+					return nil, err
+				}
+			}
+		case "response.output_item.done":
+			var ev struct {
+				Item struct {
+					ID        string `json:"id"`
+					Type      string `json:"type"`
+					CallID    string `json:"call_id"`
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"item"`
+			}
+			if json.Unmarshal(raw, &ev) != nil || ev.Item.Type != "function_call" {
+				continue
+			}
+			call := pending[ev.Item.ID]
+			if call == nil {
+				continue
+			}
+			// 上游在 done 里给的是完整 arguments，覆盖增量拼接结果。
+			if ev.Item.Arguments != "" {
+				call.call.Arguments = ev.Item.Arguments
+			}
+			if ev.Item.CallID != "" {
+				call.call.ID = ev.Item.CallID
+			}
+			if ev.Item.Name != "" {
+				call.call.Name = ev.Item.Name
 			}
 		case "response.completed":
 			var ev struct {
@@ -520,13 +663,23 @@ func parseResponsesSSE(r io.Reader, onDelta func(string) error) (*Result, error)
 			}
 		}
 	}
+	for _, id := range callOrder {
+		call := pending[id].call
+		if call.ID == "" {
+			call.ID = "call_" + randomHex(12)
+		}
+		if call.Arguments == "" {
+			call.Arguments = "{}"
+		}
+		result.ToolCalls = append(result.ToolCalls, call)
+	}
 	if err := scanner.Err(); err != nil {
-		if result.Text != "" {
+		if result.Text != "" || len(result.ToolCalls) > 0 {
 			return result, nil // 已有部分输出，返回可用结果
 		}
 		return nil, err
 	}
-	if result.Text == "" && result.CompletionTokens == 0 {
+	if result.Text == "" && result.CompletionTokens == 0 && len(result.ToolCalls) == 0 {
 		return nil, errors.New("上游没有返回任何内容")
 	}
 	return result, nil
@@ -537,6 +690,24 @@ func parseResponsesSSE(r io.Reader, onDelta func(string) error) (*Result, error)
 // NewProxyHTTPClient 构造支持 http(s)/socks5 代理的客户端。
 func NewProxyHTTPClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
 	return newHTTPClient(proxyURL, timeout)
+}
+
+// NewStreamHTTPClient 创建用于流式请求的客户端：timeout 只作用于「响应头到达
+// 时间」，不限制响应体读取时长。
+//
+// http.Client.Timeout 覆盖整个响应体读取，用它约束 SSE 长连接会在长回答中途
+// 切断连接（客户端看到的就是流式截断）。响应体读取交给请求 ctx 控制。
+func NewStreamHTTPClient(proxyURL string, headerTimeout time.Duration) (*http.Client, error) {
+	client, err := newHTTPClient(proxyURL, 0)
+	if err != nil {
+		return nil, err
+	}
+	if headerTimeout > 0 {
+		if tr, ok := client.Transport.(*http.Transport); ok {
+			tr.ResponseHeaderTimeout = headerTimeout
+		}
+	}
+	return client, nil
 }
 
 // newHTTPClient timeout<=0 表示不限时（流式长连接）。

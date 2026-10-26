@@ -362,7 +362,7 @@ func (e *KiroEngine) markCooldown(acc *kiroAccount, reason string, d time.Durati
 func toKiroRequest(req model.ChatRequest) (*kiro.Request, error) {
 	out := &kiro.Request{Model: req.Model}
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, kiro.Message{Role: m.Role, Text: m.Text()})
+		out.Messages = append(out.Messages, kiro.Message{Role: m.PlainRole(), Text: m.Text()})
 	}
 	return out, nil
 }

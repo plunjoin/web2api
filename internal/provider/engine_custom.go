@@ -119,7 +119,8 @@ func (e *CustomEngine) buildUpstream(creds CustomCredentials) (*upstream.OpenAI,
 	if proxy == "" {
 		proxy = e.proxy
 	}
-	client, err := codex.NewProxyHTTPClient(proxy, 300*time.Second)
+	// 300s 只约束「响应头到达时间」：长回答的 SSE 不能被总时长硬切断。
+	client, err := codex.NewStreamHTTPClient(proxy, 300*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +574,7 @@ func (e *CustomEngine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
 	return up, nil
 }
 
-func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	// 严格按模型选号：只有目录里声明了该模型的账号才有资格接单。
 	// 没有任何账号声明 → 直接 model_not_found，绝不换号改投别的供应商。
 	usable, _, _ := e.candidates(req.Model)
@@ -600,8 +601,8 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDe
 			res *model.ChatResult
 			err error
 		)
-		if onDelta != nil {
-			res, err = up.ChatStream(ctx, req, onDelta)
+		if sink != nil {
+			res, err = up.ChatStreamSink(ctx, req, sink)
 		} else {
 			res, err = up.Chat(ctx, req)
 		}
@@ -643,7 +644,15 @@ func (e *CustomEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.
 }
 
 func (e *CustomEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	return e.chatLoop(ctx, req, onDelta)
+	if onDelta == nil {
+		return e.chatLoop(ctx, req, nil)
+	}
+	return e.chatLoop(ctx, req, model.TextSink(onDelta))
+}
+
+// ChatStreamSink 流式对话（支持工具调用增量）。
+func (e *CustomEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	return e.chatLoop(ctx, req, sink)
 }
 
 func (e *CustomEngine) Status() map[string]any {
