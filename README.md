@@ -317,13 +317,12 @@ upstream 模式透传。音乐模型（如 `lyria-3.5`）请走 `POST /v1/music/
   （取自 `GET /v1/codex/catalog`，已按该 Key 的白名单与上下架过滤），
   导入后 CC Switch 供应商的模型列表就是这些模型。`ccswitch://` 协议本身
   只有单数 `model` 参数，没有模型数组字段，列表只能这样带过去
-- `wire_api = "chat"` / `apiFormat = openai_chat`：CC Switch 会自动开启本地路由，
-  把 Codex 的 Responses、Claude Code 的 Anthropic Messages 在本地翻译成
-  Chat Completions 再进网关
-- **也可以直连，不走本地路由**：网关已提供 `POST /v1/responses`，Codex 直接填
-  `base_url = "<网关>/v1"` + `wire_api = "responses"` 即可，链路里少一层转换。
-  直连同样支持工具调用，Codex 的 shell / apply_patch 能正常跑；前提是该模型
-  落到支持 function calling 的上游（custom、AI Studio、GPT）
+- Codex：`wire_api = "responses"` / `apiFormat = openai_responses` 直连网关
+  `POST /v1/responses`（Codex 已移除 `wire_api = "chat"`，旧值会导致无法启动）。
+  直连支持工具调用，Codex 的 shell / apply_patch 能正常跑；前提是该模型落到
+  支持 function calling 的上游（custom、AI Studio、GPT）
+- Claude Code：`apiFormat = openai_chat`，CC Switch 开启本地路由，把 Anthropic
+  Messages 翻译成 Chat Completions 再进网关
 - `model_catalog_url` 指向 `GET /v1/codex/catalog`（`Bearer` 或 `?key=` 鉴权）：
   Codex 从该 URL 动态拉取模型目录，号池变化后无需重改配置
 - 目录条目与 `cc-switch-model-catalog.json` / 官方 `models_cache.json` 同构

@@ -56,7 +56,7 @@ function utf8Base64(s: string): string {
   return btoa(String.fromCharCode(...new TextEncoder().encode(s)))
 }
 
-/** 生成 Codex 的 config.toml：wire_api=chat，model_catalog_url 让 Codex 动态拉取该 Key 可用的模型。 */
+/** 生成 Codex 的 config.toml：wire_api=responses（Codex 已移除 chat），model_catalog_url 动态拉模型。 */
 export function buildCcSwitchTOML(baseURL: string, apiKey: string, model: string): string {
   return [
     `model = "${model}"`,
@@ -64,8 +64,9 @@ export function buildCcSwitchTOML(baseURL: string, apiKey: string, model: string
     '[model_providers.custom]',
     'name = "web2api"',
     `base_url = "${baseURL}/v1"`,
-    'wire_api = "chat"',
-    'requires_openai_auth = false',
+    'wire_api = "responses"',
+    // 直连 /v1/responses 时 Codex 需带 Bearer；false 时不会发 Key，网关会 401。
+    'requires_openai_auth = true',
     `model_catalog_url = "${baseURL}/v1/codex/catalog?key=${apiKey}"`,
     '',
   ].join('\n')
@@ -73,8 +74,8 @@ export function buildCcSwitchTOML(baseURL: string, apiKey: string, model: string
 
 /**
  * 生成 ccswitch:// Deep Link（V1 协议），CC Switch v4+ 支持一键导入。
- * - codex：内嵌 {"auth","config","modelCatalog"} 配置（wire_api=chat +
- *   model_catalog_url，模型列表随导入写入 CC Switch）
+ * - codex：内嵌 {"auth","config","modelCatalog"} 配置（wire_api=responses +
+ *   model_catalog_url；apiFormat=openai_responses 直连网关 /v1/responses，无需本地路由）
  * - claude：Claude Code 原生说 Anthropic Messages，web2api 只输出 OpenAI Chat，
  *   apiFormat=openai_chat 让 CC Switch 自动开启本地路由做协议转换
  *
@@ -96,7 +97,8 @@ export function buildCcSwitchLink(
     endpoint: `${baseURL}/v1`,
     apiKey,
     model,
-    apiFormat: 'openai_chat',
+    // Codex 只认 Responses；Claude Code 仍需本地路由把 Anthropic Messages 翻成 Chat。
+    apiFormat: app === 'codex' ? 'openai_responses' : 'openai_chat',
   })
   if (app === 'codex') {
     const payload: Record<string, unknown> = {
@@ -169,7 +171,7 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
             <PlugZap className="size-4" /> 导入 CC Switch
           </DialogTitle>
           <DialogDescription className="text-[13px]">
-            把这个密钥一键导入 CC Switch。web2api 网关只输出 OpenAI Chat 协议，CC Switch 会自动开启本地路由做协议转换；该密钥可用的模型会随导入一起写入 CC Switch 的模型列表。
+            把这个密钥一键导入 CC Switch。Codex 直连网关的 Responses 协议（wire_api=responses）；Claude Code 经本地路由把 Anthropic Messages 转成 Chat Completions。该密钥可用的模型会随导入一起写入 CC Switch 的模型列表。
           </DialogDescription>
         </DialogHeader>
         {keyItem && (
@@ -212,7 +214,7 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
                 </Button>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
                   {app === 'codex'
-                    ? <>点击后浏览器会请求打开 CC Switch，确认导入即完成。Codex 会通过 model_catalog_url 动态拉取模型目录，号池变化无需重新导入。需 CC Switch v4+。</>
+                    ? <>点击后浏览器会请求打开 CC Switch，确认导入即完成。配置使用 wire_api=responses 直连网关 /v1/responses；Codex 经 model_catalog_url 动态拉取模型目录，号池变化无需重新导入。需 CC Switch v4+。</>
                     : <>Claude Code 原生使用 Anthropic Messages 协议，CC Switch 导入时会开启本地路由，自动把它转换成 web2api 的 Chat Completions 接口。需 CC Switch v4+。</>}
                 </p>
                 <details className="group min-w-0">

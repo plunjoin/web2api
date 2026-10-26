@@ -85,15 +85,17 @@ gemini_api:
 # 也可用上面的 routing.engine_models 或 routing.default_engine 显式指定。
 # ------------------------------------------------------------
 engines:
-  # OpenAI Codex（ChatGPT 订阅号，模型 gpt-5.x / gpt-6 系列）
+  # 以下引擎默认启用：管理台可直接加号，无需改配置重启。
+  # 空号池时不接单；访问上游通常仍需 proxy。
+  # OpenAI GPT / Codex（ChatGPT 订阅号，模型 gpt-5.x / gpt-6 系列）
   codex:
-    enabled: false
+    enabled: true
     proxy: ""                      # 访问 chatgpt.com 需代理，如 http://127.0.0.1:7890
     accounts: []                   # 种子：- name: ""  refresh_token: ""  email: ""
 
   # Google Antigravity（Cloud AI Companion，Claude + Gemini 双模型通道）
   antigravity:
-    enabled: false
+    enabled: true
     proxy: ""                      # 访问 googleapis.com 需代理
     accounts: []                   # 种子：- name: ""  refresh_token: ""  project_id: ""
 
@@ -101,13 +103,13 @@ engines:
   # Kiro IDE 的 ~/.aws/sso/cache/kiro-auth-token.json 提取）
   # 注意：Kiro 上游风控较严，建议少量账号自用
   kiro:
-    enabled: false
+    enabled: true
     proxy: ""
     accounts: []
 
   # 腾讯 CodeBuddy / WorkBuddy（SaaS 订阅；管理台扫码授权或粘贴 accessToken）
   workbuddy:
-    enabled: false
+    enabled: true
     base_url: "https://www.codebuddy.ai"
     proxy: ""
     accounts: []

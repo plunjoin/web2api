@@ -183,8 +183,13 @@ func Default() *Config {
 		Routing:   RoutingConfig{DefaultEngine: "auto"},
 		GeminiAPI: GeminiAPIConfig{BaseURL: "https://generativelanguage.googleapis.com"},
 		Engines: EnginesConfig{
-			// 第三方 Key 默认启用：管理台可直接添加 base_url + api_key，无需改配置重启。
-			Custom: CustomConfig{Enabled: true},
+			// 订阅引擎 + 第三方 Key 默认启用：管理台可直接加号，无需改 YAML 重启。
+			// 没有账号时引擎空转不接单；真正发请求仍需号池里有可用账号。
+			Codex:       CodexConfig{Enabled: true},
+			Antigravity: AntigravityConfig{Enabled: true},
+			Kiro:        KiroConfig{Enabled: true},
+			WorkBuddy:   WorkBuddyConfig{Enabled: true, BaseURL: "https://www.codebuddy.ai"},
+			Custom:      CustomConfig{Enabled: true},
 		},
 		EngineA: EngineAConfig{
 			Enabled:        true,
