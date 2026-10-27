@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -40,8 +41,13 @@ func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 		}},
 		{Type: "web_search"},
 		{Type: "local_shell"},
+		{Type: "apply_patch"},
 	}}
-	tools := req.toChatTools(nil)
+	var logs []string
+	logf := func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	tools := req.toChatTools(logf)
 	names := map[string]bool{}
 	for _, tool := range tools {
 		if tool.Function == nil {
@@ -49,31 +55,20 @@ func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 		}
 		names[tool.Function.Name] = true
 	}
-	for _, want := range []string{"exec_command", "spawn_agent", "local_shell"} {
+	for _, want := range []string{"exec_command", "spawn_agent"} {
 		if !names[want] {
 			t.Fatalf("missing %s in %#v", want, names)
 		}
 	}
-	if names["web_search"] || names["multi_agent_v1"] {
-		t.Fatalf("should drop web_search/namespace wrapper, got %#v", names)
+	for _, gone := range []string{"web_search", "local_shell", "apply_patch", "multi_agent_v1"} {
+		if names[gone] {
+			t.Fatalf("non-function tool %s must not enter upstream payload, got %#v", gone, names)
+		}
 	}
-}
-
-func TestToChatToolsLocalShellGetsCommandSchema(t *testing.T) {
-	req := responsesRequest{Tools: []responsesTool{{Type: "local_shell"}}}
-	tools := req.toChatTools(nil)
-	if len(tools) != 1 || tools[0].Function == nil {
-		t.Fatalf("tools=%+v", tools)
-	}
-	if tools[0].Function.Name != "local_shell" {
-		t.Fatalf("name=%q", tools[0].Function.Name)
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(tools[0].Function.Parameters, &schema); err != nil {
-		t.Fatal(err)
-	}
-	props, _ := schema["properties"].(map[string]any)
-	if _, ok := props["command"]; !ok {
-		t.Fatalf("expected command property, got %#v", schema)
+	joined := strings.Join(logs, "\n")
+	for _, gone := range []string{"web_search", "local_shell", "apply_patch"} {
+		if !strings.Contains(joined, gone) {
+			t.Fatalf("dropped tool %s should be logged, got %v", gone, logs)
+		}
 	}
 }

@@ -23,7 +23,8 @@ import (
 // temperature/top_p/max_output_tokens、usage、response.* 事件流，
 // 以及 function calling（tools / tool_choice / function_call 输出项）。
 // 未支持：previous_response_id 等有状态字段。
-// local_shell / apply_patch 等内置工具会降级成同名 function 下发；web_search 仍忽略。
+// local_shell / apply_patch / web_search 等非 function 工具在入口丢弃并记日志，
+// 不进入任何上游报文。
 
 // responsesRequest 是 Responses 请求体（网关支持的子集）。
 type responsesRequest struct {
@@ -372,14 +373,14 @@ func (req responsesRequest) toChat(logf ir.Logf) (model.ChatRequest, error) {
 	return out, nil
 }
 
-// toChatTools 把 Responses 格式的工具定义转成 Chat 格式。
+// toChatTools 把 Responses 格式的工具定义转成 Chat（IR）格式。
 //
-// Codex 0.16x 起 shell 类工具已是 type=function（exec_command 等），可直接透传。
-// 更老的客户端仍可能发 local_shell / apply_patch 等内置类型；它们在 Chat/Gemini
-// 协议里没有同名形态，这里降级成同名 function，让非 OpenAI 上游也能发起调用，
-// 客户端再按 function_call 执行本地工具。web_search 等不明类型丢弃并记日志
-// （需服务端检索能力，非 OpenAI 上游无法执行）。
-// namespace 嵌套工具会被拍平为独立 function。
+// 只保留 type=function（namespace 嵌套拍平为独立 function）。local_shell /
+// apply_patch / web_search 等内置工具在入口丢弃并记日志：它们依赖 OpenAI
+// 服务端或客户端专用执行环境，任何上游报文里都不该出现（计划 §5.2）；
+// 降级成同名 function 只会把「模型发起了调用但客户端执行不了」的困惑
+// 从网关挪到上游。Codex 0.16x 起的 shell 工具本就是 type=function
+// （exec_command 等），不受影响。
 func (req responsesRequest) toChatTools(logf ir.Logf) []model.Tool {
 	out := make([]model.Tool, 0, len(req.Tools))
 	var dropped []string
@@ -395,6 +396,7 @@ func (req responsesRequest) toChatTools(logf ir.Logf) []model.Tool {
 		case "", "function":
 			name := strings.TrimSpace(tool.Name)
 			if name == "" {
+				drop("function(name缺失)")
 				return
 			}
 			params := tool.Parameters
@@ -413,38 +415,8 @@ func (req responsesRequest) toChatTools(logf ir.Logf) []model.Tool {
 			for _, nested := range tool.Tools {
 				appendTool(nested)
 			}
-		case "local_shell", "shell", "apply_patch", "shell_command":
-			name := strings.TrimSpace(tool.Name)
-			if name == "" {
-				name = typ
-			}
-			desc := strings.TrimSpace(tool.Description)
-			if desc == "" {
-				switch typ {
-				case "local_shell", "shell", "shell_command":
-					desc = "Run a shell command in the local session and return its output."
-				case "apply_patch":
-					desc = "Apply a patch to local files."
-				}
-			}
-			params := tool.Parameters
-			if len(params) == 0 || string(params) == "null" {
-				if typ == "apply_patch" {
-					params = json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"]}`)
-				} else {
-					params = json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"workdir":{"type":"string"}},"required":["command"]}`)
-				}
-			}
-			out = append(out, model.Tool{
-				Type: "function",
-				Function: &model.ToolFunc{
-					Name:        name,
-					Description: desc,
-					Parameters:  params,
-				},
-			})
 		default:
-			// web_search 等服务端内置工具：非 OpenAI 上游无法执行，丢弃并记日志。
+			// local_shell / web_search 等内置工具：入口丢弃。
 			drop(tool.Type)
 		}
 	}
@@ -452,7 +424,7 @@ func (req responsesRequest) toChatTools(logf ir.Logf) []model.Tool {
 		appendTool(tool)
 	}
 	if len(dropped) > 0 && logf != nil {
-		logf("[responses] 丢弃不明工具类型: %s", strings.Join(dropped, ", "))
+		logf("[responses] 丢弃非 function 工具（不进入上游报文）: %s", strings.Join(dropped, ", "))
 	}
 	return out
 }

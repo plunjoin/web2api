@@ -574,6 +574,50 @@ func (e *CustomEngine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
 	return up, nil
 }
 
+// stripChatTools 去掉 tools / tool_choice，并把 tool 历史折成普通文本。
+// custom 适配器专属的 400 降级路径：上游（MiniMax 等）拒收 Codex 自带工具
+// schema 时，按能力表 RetryNoToolsOn400 用纯文本重试一次。
+func stripChatTools(req model.ChatRequest) model.ChatRequest {
+	out := req
+	out.Tools = nil
+	out.ToolChoice = nil
+	out.ParallelToolCalls = nil
+	msgs := make([]model.ChatMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		switch strings.ToLower(m.Role) {
+		case "tool":
+			text := m.Text()
+			if name := strings.TrimSpace(m.Name); name != "" {
+				text = "[" + name + "] " + text
+			}
+			msgs = append(msgs, model.ChatMessage{Role: "user", Content: text})
+		case "assistant":
+			msg := m
+			msg.ToolCalls = nil
+			if msg.Content == nil {
+				msg.Content = ""
+			}
+			if strings.TrimSpace(msg.Text()) == "" && len(m.ToolCalls) > 0 {
+				continue
+			}
+			msgs = append(msgs, msg)
+		default:
+			msgs = append(msgs, m)
+		}
+	}
+	out.Messages = msgs
+	return out
+}
+
+// isHTTPStatus 判断错误文案是否含「HTTP <code>」（上游 OpenAI 兼容客户端惯用格式）。
+func isHTTPStatus(err error, code int) bool {
+	if err == nil {
+		return false
+	}
+	needle := strings.ToLower(fmt.Sprintf("http %d", code))
+	return strings.Contains(strings.ToLower(err.Error()), needle)
+}
+
 func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	// 严格按模型选号：只有目录里声明了该模型的账号才有资格接单。
 	// 没有任何账号声明 → 直接 model_not_found，绝不换号改投别的供应商。
