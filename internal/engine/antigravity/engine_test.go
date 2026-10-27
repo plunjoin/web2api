@@ -1,4 +1,4 @@
-package provider
+package antigravity
 
 import (
 	"encoding/json"

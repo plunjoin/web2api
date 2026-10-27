@@ -1,6 +1,6 @@
-// engine_antigravity.go 引擎 antigravity：Google Antigravity（Cloud AI Companion）
+// engine_go 引擎 antigravity：Google Antigravity（Cloud AI Companion）
 // 订阅号池。凭据为 Google OAuth refresh_token，project_id 自动 onboard。
-package provider
+package antigravity
 
 import (
 	"context"
@@ -20,11 +20,10 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/engine/antigravity"
 )
 
-// AntigravityCredentials antigravity 引擎凭据（accounts.credentials JSON）。
-type AntigravityCredentials struct {
+// Credentials antigravity 引擎凭据（accounts.credentials JSON）。
+type Credentials struct {
 	RefreshToken string `json:"refresh_token"`
 	Email        string `json:"email,omitempty"`
 	ProjectID    string `json:"project_id,omitempty"` // cloudaicompanion 项目，留空自动 onboard
@@ -35,7 +34,7 @@ type AntigravityCredentials struct {
 type antigravityAccount struct {
 	id, label string
 	mu        sync.Mutex
-	creds     AntigravityCredentials
+	creds     Credentials
 	enabled   bool
 
 	accessToken string
@@ -44,9 +43,9 @@ type antigravityAccount struct {
 	lastErr     string
 	planType    string                   // 订阅档位
 	credits     string                   // AI Credits 余额描述
-	models      []antigravity.ModelMeta  // 上游真实模型目录（网关可路由的全量）
+	models      []ModelMeta  // 上游真实模型目录（网关可路由的全量）
 	selector    []string                 // 官方下拉模型（agentModelSorts ∩ 目录）
-	quotaGroups []antigravity.QuotaGroup // 官方用量分组（weekly + 5h 窗口）
+	quotaGroups []QuotaGroup // 官方用量分组（weekly + 5h 窗口）
 
 	cooldownUntil  time.Time
 	cooldownReason string
@@ -59,8 +58,8 @@ func (a *antigravityAccount) proxy(engineProxy string) string {
 	return engineProxy
 }
 
-// AntigravityEngine antigravity 引擎。
-type AntigravityEngine struct {
+// Engine antigravity 引擎。
+type Engine struct {
 	name  string
 	proxy string
 	st    *store.Store
@@ -75,8 +74,8 @@ type AntigravityEngine struct {
 }
 
 // NewAntigravity 构建 antigravity 引擎。
-func NewAntigravity(cfg config.AntigravityConfig, st *store.Store) *AntigravityEngine {
-	return &AntigravityEngine{
+func New(cfg config.AntigravityConfig, st *store.Store) *Engine {
+	return &Engine{
 		name:  "antigravity",
 		proxy: strings.TrimSpace(cfg.Proxy),
 		st:    st,
@@ -85,7 +84,7 @@ func NewAntigravity(cfg config.AntigravityConfig, st *store.Store) *AntigravityE
 }
 
 // AddAccount 添加账号并异步初始化（刷新 token + 获取 project_id）。
-func (e *AntigravityEngine) AddAccount(id, label string, creds AntigravityCredentials) error {
+func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	if strings.TrimSpace(creds.RefreshToken) == "" {
 		return errors.New("refresh_token 不能为空")
 	}
@@ -103,7 +102,7 @@ func (e *AntigravityEngine) AddAccount(id, label string, creds AntigravityCreden
 }
 
 // initialize 首次初始化：刷新 token → 确保 project_id。
-func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
+func (e *Engine) initialize(acc *antigravityAccount) {
 	acc.mu.Lock()
 	refreshToken := acc.creds.RefreshToken
 	proxy := acc.proxy(e.proxy)
@@ -111,7 +110,7 @@ func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	tok, err := antigravity.Refresh(ctx, proxy, refreshToken)
+	tok, err := Refresh(ctx, proxy, refreshToken)
 	if err != nil {
 		acc.mu.Lock()
 		acc.ready = false
@@ -134,7 +133,7 @@ func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
 	acc.mu.Unlock()
 
 	// 先查账号信息（套餐 + AI Credits + project 兜底）
-	if info, lerr := antigravity.LoadCodeAssist(ctx, proxy, tok.AccessToken); lerr == nil && info != nil {
+	if info, lerr := LoadCodeAssist(ctx, proxy, tok.AccessToken); lerr == nil && info != nil {
 		planType = info.PlanType
 		credits = info.Credits
 		if projectID == "" && info.ProjectID != "" {
@@ -142,7 +141,7 @@ func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
 		}
 	}
 	if projectID == "" {
-		info, err := antigravity.EnsureProject(ctx, proxy, tok.AccessToken)
+		info, err := EnsureProject(ctx, proxy, tok.AccessToken)
 		if err != nil {
 			acc.mu.Lock()
 			acc.ready = false
@@ -195,7 +194,7 @@ func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
 }
 
 // refreshCatalog 拉取账号的真实模型目录与官方下拉模型列表。
-func (e *AntigravityEngine) refreshCatalog(acc *antigravityAccount) {
+func (e *Engine) refreshCatalog(acc *antigravityAccount) {
 	acc.mu.Lock()
 	proxy := acc.proxy(e.proxy)
 	accessToken := acc.accessToken
@@ -204,7 +203,7 @@ func (e *AntigravityEngine) refreshCatalog(acc *antigravityAccount) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	catalog, err := antigravity.FetchCatalog(ctx, proxy, accessToken, projectID)
+	catalog, err := FetchCatalog(ctx, proxy, accessToken, projectID)
 	if err != nil {
 		return // 目录拉取失败时继续用已有目录
 	}
@@ -217,7 +216,7 @@ func (e *AntigravityEngine) refreshCatalog(acc *antigravityAccount) {
 // assembleQuota 组合权益展示（对齐官方 IDE "View Usage"）：
 // AI Credits 余额 + 各模型分组的周/5 小时剩余比例（含重置倒计时）。
 // 官方分组数据缺失时回退为模型 5h 剩余比例的最小值摘要。
-func assembleQuota(credits string, groups []antigravity.QuotaGroup, models []antigravity.ModelMeta) string {
+func assembleQuota(credits string, groups []QuotaGroup, models []ModelMeta) string {
 	var parts []string
 	if s := strings.TrimSpace(credits); s != "" {
 		parts = append(parts, s)
@@ -260,7 +259,7 @@ func assembleQuota(credits string, groups []antigravity.QuotaGroup, models []ant
 }
 
 // formatQuotaGroup 格式化一个官方分组："Gemini 周69%(5d3h) · 5h100%"。
-func formatQuotaGroup(g antigravity.QuotaGroup) string {
+func formatQuotaGroup(g QuotaGroup) string {
 	var buckets []string
 	for _, b := range g.Buckets {
 		if s := formatQuotaBucket(b); s != "" {
@@ -287,7 +286,7 @@ func shortGroupName(display string) string {
 
 // formatQuotaBucket 格式化单个配额窗口："周69%(5d3h)" / "5h100%"。
 // 剩余 100% 或无重置时间时不带倒计时。
-func formatQuotaBucket(b antigravity.QuotaBucket) string {
+func formatQuotaBucket(b QuotaBucket) string {
 	window := quotaWindow(b)
 	if window == "" {
 		return ""
@@ -307,7 +306,7 @@ func formatQuotaBucket(b antigravity.QuotaBucket) string {
 }
 
 // quotaWindow 判定配额窗口类型（优先 Window 字段，回退解析 ID）。
-func quotaWindow(b antigravity.QuotaBucket) string {
+func quotaWindow(b QuotaBucket) string {
 	if w := strings.ToLower(strings.TrimSpace(b.Window)); w == "weekly" || w == "5h" {
 		return w
 	}
@@ -345,7 +344,7 @@ func formatCountdown(t time.Time) string {
 }
 
 // RemoveAccount 移除账号。
-func (e *AntigravityEngine) RemoveAccount(id string) error {
+func (e *Engine) RemoveAccount(id string) error {
 	e.mu.Lock()
 	idx, ok := e.ids[id]
 	if !ok {
@@ -364,7 +363,7 @@ func (e *AntigravityEngine) RemoveAccount(id string) error {
 }
 
 // SetEnabled 启停账号。
-func (e *AntigravityEngine) SetEnabled(id string, enabled bool) error {
+func (e *Engine) SetEnabled(id string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -378,7 +377,7 @@ func (e *AntigravityEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // ReplaceCredentials 更新凭据（重建账号）。
-func (e *AntigravityEngine) ReplaceCredentials(id string, creds AntigravityCredentials) error {
+func (e *Engine) ReplaceCredentials(id string, creds Credentials) error {
 	e.mu.RLock()
 	idx, ok := e.ids[id]
 	label := id
@@ -396,17 +395,17 @@ func (e *AntigravityEngine) ReplaceCredentials(id string, creds AntigravityCrede
 }
 
 // AccountStates 全部账号状态（管理台）。
-func (e *AntigravityEngine) AccountStates() []AccountState {
+func (e *Engine) AccountStates() []engine.AccountState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]AccountState, 0, len(e.accounts))
+	out := make([]engine.AccountState, 0, len(e.accounts))
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		models := len(acc.models)
 		if len(acc.selector) > 0 {
 			models = len(acc.selector) // 对齐官方下拉的模型数量
 		}
-		state := AccountState{
+		state := engine.AccountState{
 			ID:      acc.id,
 			Label:   acc.label,
 			Enabled: acc.enabled,
@@ -440,7 +439,7 @@ func (e *AntigravityEngine) AccountStates() []AccountState {
 }
 
 // ensureToken 刷新账号 token。
-func (e *AntigravityEngine) ensureToken(acc *antigravityAccount) error {
+func (e *Engine) ensureToken(acc *antigravityAccount) error {
 	acc.mu.Lock()
 	refreshToken := acc.creds.RefreshToken
 	proxy := acc.proxy(e.proxy)
@@ -448,7 +447,7 @@ func (e *AntigravityEngine) ensureToken(acc *antigravityAccount) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	tok, err := antigravity.Refresh(ctx, proxy, refreshToken)
+	tok, err := Refresh(ctx, proxy, refreshToken)
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
 	if err != nil {
@@ -478,10 +477,10 @@ func (e *AntigravityEngine) ensureToken(acc *antigravityAccount) error {
 }
 
 // refreshEntitlement 刷新账号套餐与 AI Credits 余额（best-effort，失败不影响 ready）。
-func (e *AntigravityEngine) refreshEntitlement(acc *antigravityAccount, proxy, accessToken string) {
+func (e *Engine) refreshEntitlement(acc *antigravityAccount, proxy, accessToken string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	info, err := antigravity.LoadCodeAssist(ctx, proxy, accessToken)
+	info, err := LoadCodeAssist(ctx, proxy, accessToken)
 	if err != nil || info == nil {
 		return
 	}
@@ -498,7 +497,7 @@ func (e *AntigravityEngine) refreshEntitlement(acc *antigravityAccount, proxy, a
 
 // refreshQuotaSummary 拉取官方用量分组（weekly + 5h 剩余，对齐 IDE "View Usage"）。
 // best-effort，失败不影响 ready；注意 RetrieveQuotaSummary 走直连 HTTP/2，不经过代理。
-func (e *AntigravityEngine) refreshQuotaSummary(acc *antigravityAccount) {
+func (e *Engine) refreshQuotaSummary(acc *antigravityAccount) {
 	acc.mu.Lock()
 	accessToken := acc.accessToken
 	acc.mu.Unlock()
@@ -507,7 +506,7 @@ func (e *AntigravityEngine) refreshQuotaSummary(acc *antigravityAccount) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	groups, err := antigravity.RetrieveQuotaSummary(ctx, accessToken)
+	groups, err := RetrieveQuotaSummary(ctx, accessToken)
 	if err != nil || len(groups) == 0 {
 		return
 	}
@@ -517,7 +516,7 @@ func (e *AntigravityEngine) refreshQuotaSummary(acc *antigravityAccount) {
 }
 
 // token 返回有效 access_token + project_id。
-func (e *AntigravityEngine) token(acc *antigravityAccount) (string, string, error) {
+func (e *Engine) token(acc *antigravityAccount) (string, string, error) {
 	acc.mu.Lock()
 	needRefresh := acc.accessToken == "" || (acc.expiresAt.After(time.Time{}) && time.Until(acc.expiresAt) < 3*time.Minute)
 	tok := acc.accessToken
@@ -543,14 +542,14 @@ func (e *AntigravityEngine) token(acc *antigravityAccount) (string, string, erro
 
 // ---- Engine 接口 ----
 
-func (e *AntigravityEngine) Name() string { return e.name }
+func (e *Engine) Name() string { return e.name }
 
-func (e *AntigravityEngine) Describe() string {
+func (e *Engine) Describe() string {
 	return "Google Antigravity（Cloud AI Companion 订阅号池，v1internal 协议）"
 }
 
 // Ready 至少一个账号可用。
-func (e *AntigravityEngine) Ready() bool {
+func (e *Engine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
@@ -566,7 +565,7 @@ func (e *AntigravityEngine) Ready() bool {
 
 // ListModels antigravity 模型目录：优先上游真实目录（fetchAvailableModels），
 // 拉取失败时回落内置默认目录。
-func (e *AntigravityEngine) ListModels() []model.ModelInfo {
+func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	enabled := 0
 	real := map[string]bool{}
@@ -605,7 +604,7 @@ func (e *AntigravityEngine) ListModels() []model.ModelInfo {
 		}
 		return out
 	}
-	for _, id := range antigravity.DefaultModels {
+	for _, id := range DefaultModels {
 		add(id)
 	}
 	return out
@@ -614,7 +613,7 @@ func (e *AntigravityEngine) ListModels() []model.ModelInfo {
 // resolveModel 请求模型名 → 上游真实模型 ID。
 // 顺序：真实目录精确命中 → 内置目录精确命中 → 裸名变体解析（gemini-3-pro →
 // gemini-3-pro-preview/-high/-low/-tiered 中存在的一个）→ 原样直传。
-func (e *AntigravityEngine) resolveModel(acc *antigravityAccount, name string) string {
+func (e *Engine) resolveModel(acc *antigravityAccount, name string) string {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	// 收集该账号可见的真实目录
 	acc.mu.Lock()
@@ -641,14 +640,14 @@ func (e *AntigravityEngine) resolveModel(acc *antigravityAccount, name string) s
 		return lower // 真实目录存在但未命中：透传（让上游给出明确错误）
 	}
 	// 无真实目录：内置目录兼容映射
-	if mapped, ok := antigravity.DefaultModelVariants[lower]; ok {
+	if mapped, ok := DefaultModelVariants[lower]; ok {
 		return mapped
 	}
 	return lower
 }
 
 // pick 轮询选择可用账号。
-func (e *AntigravityEngine) pick() *antigravityAccount {
+func (e *Engine) pick() *antigravityAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -668,19 +667,19 @@ func (e *AntigravityEngine) pick() *antigravityAccount {
 	return nil
 }
 
-func (e *AntigravityEngine) markCooldown(acc *antigravityAccount, reason string, d time.Duration) {
+func (e *Engine) markCooldown(acc *antigravityAccount, reason string, d time.Duration) {
 	acc.mu.Lock()
 	acc.cooldownUntil = time.Now().Add(d)
 	acc.cooldownReason = reason
 	acc.mu.Unlock()
 }
 
-// toAntigravityRequest ChatRequest → antigravity.Request。
+// toAntigravityRequest ChatRequest → Request。
 // 是否透传 tools 由能力表决定：Claude 等非 Gemini 模型走同一条 v1internal，
 // 但不接受 Gemini functionDeclarations，v0.3.8 一律透传后 Codex 自带 tools
 // 会让这些模型整请求 400——只有 Gemini 系才开透传（CapsFor）。
-func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.Request {
-	out := &antigravity.Request{
+func toAntigravityRequest(req model.ChatRequest, projectID string) *Request {
+	out := &Request{
 		Model:     req.Model,
 		System:    engine.SubSystemText(req),
 		MaxTokens: engine.DerefInt(req.MaxTokens),
@@ -693,7 +692,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 			if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
 				continue
 			}
-			out.Tools = append(out.Tools, antigravity.Tool{
+			out.Tools = append(out.Tools, Tool{
 				Name:        tool.Function.Name,
 				Description: tool.Function.Description,
 				Parameters:  tool.Function.Parameters,
@@ -707,7 +706,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 			continue
 		case "tool":
 			if withTools {
-				out.Messages = append(out.Messages, antigravity.Message{
+				out.Messages = append(out.Messages, Message{
 					Role:       "tool",
 					Text:       m.Text(),
 					ToolCallID: m.ToolCallID,
@@ -719,17 +718,17 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 				if name := strings.TrimSpace(m.Name); name != "" {
 					text = "[" + name + "] " + text
 				}
-				out.Messages = append(out.Messages, antigravity.Message{Role: "user", Text: text})
+				out.Messages = append(out.Messages, Message{Role: "user", Text: text})
 			}
 		case "assistant":
-			msg := antigravity.Message{
+			msg := Message{
 				Role:      "assistant",
 				Text:      m.Text(),
 				ImageURLs: engine.SubImageURLs(m.Content),
 			}
 			if withTools {
 				for _, call := range m.ToolCalls {
-					msg.ToolCalls = append(msg.ToolCalls, antigravity.ToolCall{
+					msg.ToolCalls = append(msg.ToolCalls, ToolCall{
 						ID:         call.ID,
 						Name:       call.Function.Name,
 						Arguments:  call.Function.Arguments,
@@ -744,7 +743,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 			}
 			out.Messages = append(out.Messages, msg)
 		default:
-			out.Messages = append(out.Messages, antigravity.Message{
+			out.Messages = append(out.Messages, Message{
 				Role:      m.PlainRole(),
 				Text:      m.Text(),
 				ImageURLs: engine.SubImageURLs(m.Content),
@@ -771,18 +770,18 @@ func thoughtSigFromExtra(extra json.RawMessage) string {
 }
 
 // chatOnce 单账号一次请求（401 刷新重试；带 tools 的 400 会无工具再试一次）。
-func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccount, req *antigravity.Request, onDelta func(string) error, onTool func(antigravity.ToolCallDelta) error) (*antigravity.Result, error) {
-	attempt := func(r *antigravity.Request, toolsCB func(antigravity.ToolCallDelta) error) (*antigravity.Result, error) {
+func (e *Engine) chatOnce(ctx context.Context, acc *antigravityAccount, req *Request, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
+	attempt := func(r *Request, toolsCB func(ToolCallDelta) error) (*Result, error) {
 		accessToken, projectID, err := e.token(acc)
 		if err != nil {
 			return nil, err
 		}
 		r.ProjectID = projectID
 		r.Model = e.resolveModel(acc, r.Model)
-		return antigravity.StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, r, onDelta, toolsCB)
+		return StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, r, onDelta, toolsCB)
 	}
 	res, err := attempt(req, onTool)
-	if err != nil && antigravity.IsUnauthorized(err) {
+	if err != nil && IsUnauthorized(err) {
 		if refreshErr := e.ensureToken(acc); refreshErr != nil {
 			return nil, fmt.Errorf("token 已失效且刷新失败: %w", refreshErr)
 		}
@@ -793,11 +792,11 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 	// 仅对开了工具透传的模型（能力表 RetryNoToolsOn400）生效；req.Tools
 	// 非空本身就说明走的是 Gemini 工具通道。
 	// Messages 必须深拷贝：浅拷贝会改坏原 req，换号重试时工具历史会被污染。
-	if err != nil && len(req.Tools) > 0 && engine.CapsFor("antigravity", req.Model).RetryNoToolsOn400 && antigravity.IsBadRequest(err) {
+	if err != nil && len(req.Tools) > 0 && engine.CapsFor("antigravity", req.Model).RetryNoToolsOn400 && IsBadRequest(err) {
 		stripped := *req
 		stripped.Tools = nil
 		stripped.ToolChoice = nil
-		stripped.Messages = make([]antigravity.Message, 0, len(req.Messages))
+		stripped.Messages = make([]Message, 0, len(req.Messages))
 		for _, m := range req.Messages {
 			cp := m
 			cp.ToolCalls = nil
@@ -820,7 +819,7 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 			return retry, nil
 		}
 	}
-	if err != nil && antigravity.IsResourceExhausted(err) {
+	if err != nil && IsResourceExhausted(err) {
 		e.markCooldown(acc, "上游 429 限流", 5*time.Minute)
 		go e.refreshCatalog(acc)
 		go e.refreshQuotaSummary(acc)
@@ -829,7 +828,7 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 }
 
 // chatLoop 轮询账号直到成功或池耗尽。
-func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engine.UnavailableError(e)
 	}
@@ -844,7 +843,7 @@ func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest,
 		if acc == nil {
 			break
 		}
-		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta antigravity.ToolCallDelta) error {
+		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta ToolCallDelta) error {
 			extra := json.RawMessage(nil)
 			if strings.TrimSpace(delta.ThoughtSig) != "" {
 				b, mErr := json.Marshal(map[string]any{
@@ -900,7 +899,7 @@ func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest,
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if antigravity.IsUnauthorized(err) || strings.Contains(err.Error(), "刷新失败") || strings.Contains(err.Error(), "project_id") {
+		if IsUnauthorized(err) || strings.Contains(err.Error(), "刷新失败") || strings.Contains(err.Error(), "project_id") {
 			e.markCooldown(acc, "凭据/项目异常", 10*time.Minute)
 			continue
 		}
@@ -911,7 +910,7 @@ func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest,
 	return nil, errors.New("antigravity 没有可用账号")
 }
 
-func (e *AntigravityEngine) usableCount() int {
+func (e *Engine) usableCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := 0
@@ -929,28 +928,28 @@ func (e *AntigravityEngine) usableCount() int {
 }
 
 // Chat 非流式对话。
-func (e *AntigravityEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, nil)
 }
 
 // ChatStream 流式对话。
-func (e *AntigravityEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, model.TextSink(onDelta))
 }
 
 // ChatStreamSink 流式对话（支持工具调用增量）。
-func (e *AntigravityEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *Engine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, sink)
 }
 
-func (e *AntigravityEngine) setErr(err error) {
+func (e *Engine) setErr(err error) {
 	e.errMu.Lock()
 	e.lastErr = err
 	e.errMu.Unlock()
 }
 
 // Status 引擎运行状态。
-func (e *AntigravityEngine) Status() map[string]any {
+func (e *Engine) Status() map[string]any {
 	accounts := e.AccountStates()
 	ready := 0
 	for _, st := range accounts {
@@ -975,11 +974,11 @@ func (e *AntigravityEngine) Status() map[string]any {
 }
 
 // Passthrough antigravity 不支持多模态端点透传。
-func (e *AntigravityEngine) Passthrough() bool { return false }
+func (e *Engine) Passthrough() bool { return false }
 
-func (e *AntigravityEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("antigravity 引擎不支持透传")
 }
 
 // Close 关闭引擎。
-func (e *AntigravityEngine) Close() {}
+func (e *Engine) Close() {}

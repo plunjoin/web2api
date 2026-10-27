@@ -1,4 +1,4 @@
-package provider
+package geminiweb
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 
 	"web2api/internal/config"
 	"web2api/internal/engine"
-	"web2api/internal/engine/geminiweb"
 	"web2api/internal/model"
 	"web2api/internal/store"
 )
@@ -22,13 +21,13 @@ import (
 type geminiAccount struct {
 	id      string
 	label   string
-	client  *geminiweb.Client
+	client  *Client
 	enabled bool
 	cancel  context.CancelFunc
 }
 
-// GeminiWebEngine 引擎A：gemini.google.com 网页版原生逆向账号池（支持运行时增删启停）。
-type GeminiWebEngine struct {
+// Engine 引擎A：gemini.google.com 网页版原生逆向账号池（支持运行时增删启停）。
+type Engine struct {
 	name    string
 	proxy   string
 	refresh time.Duration
@@ -45,7 +44,7 @@ type GeminiWebEngine struct {
 }
 
 // NewGeminiWeb 构建引擎A（账号通过 AddAccount 动态注入）。
-func NewGeminiWeb(cfg config.EngineAConfig) (*GeminiWebEngine, error) {
+func New(cfg config.EngineAConfig) (*Engine, error) {
 	// 允许测试、嵌入式调用和手写配置省略这些值；避免零值 duration
 	// 让后台初始化立即超时或自动续期循环失效。
 	if cfg.RefreshSeconds <= 0 {
@@ -54,7 +53,7 @@ func NewGeminiWeb(cfg config.EngineAConfig) (*GeminiWebEngine, error) {
 	if cfg.TimeoutSeconds <= 0 {
 		cfg.TimeoutSeconds = 300
 	}
-	return &GeminiWebEngine{
+	return &Engine{
 		name:    "a",
 		proxy:   cfg.Proxy,
 		refresh: time.Duration(cfg.RefreshSeconds) * time.Second,
@@ -63,7 +62,7 @@ func NewGeminiWeb(cfg config.EngineAConfig) (*GeminiWebEngine, error) {
 	}, nil
 }
 
-func (e *GeminiWebEngine) SetStore(st *store.Store) { e.store = st }
+func (e *Engine) SetStore(st *store.Store) { e.store = st }
 
 type accountCookies struct {
 	store        *store.Store
@@ -83,7 +82,7 @@ func (a accountCookies) DeleteCookies() error {
 
 // AddAccount 添加账号并异步初始化（Cookie 校验在后台完成）。
 // id 为外部（数据库）主键；label 仅用于展示。
-func (e *GeminiWebEngine) AddAccount(id, label, psid, psidts string) error {
+func (e *Engine) AddAccount(id, label, psid, psidts string) error {
 	if strings.TrimSpace(psid) == "" {
 		return errors.New("__Secure-1PSID 不能为空")
 	}
@@ -92,7 +91,7 @@ func (e *GeminiWebEngine) AddAccount(id, label, psid, psidts string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("账号 %s 已在池中", id)
 	}
-	client := geminiweb.NewClient(label, psid, psidts, e.proxy, e.timeout)
+	client := NewClient(label, psid, psidts, e.proxy, e.timeout)
 	if e.store != nil {
 		accountID, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
@@ -120,7 +119,7 @@ func (e *GeminiWebEngine) AddAccount(id, label, psid, psidts string) error {
 }
 
 // RemoveAccount 移除账号。
-func (e *GeminiWebEngine) RemoveAccount(id string) error {
+func (e *Engine) RemoveAccount(id string) error {
 	e.mu.Lock()
 	idx, ok := e.ids[id]
 	if !ok {
@@ -141,7 +140,7 @@ func (e *GeminiWebEngine) RemoveAccount(id string) error {
 	return nil
 }
 
-func (e *GeminiWebEngine) Close() {
+func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, account := range e.accounts {
@@ -151,7 +150,7 @@ func (e *GeminiWebEngine) Close() {
 }
 
 // SetEnabled 启停账号。
-func (e *GeminiWebEngine) SetEnabled(id string, enabled bool) error {
+func (e *Engine) SetEnabled(id string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -163,7 +162,7 @@ func (e *GeminiWebEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // ReplaceCredentials 更新凭据（重建客户端）。
-func (e *GeminiWebEngine) ReplaceCredentials(id, psid, psidts string) error {
+func (e *Engine) ReplaceCredentials(id, psid, psidts string) error {
 	e.mu.RLock()
 	label := id
 	if idx, ok := e.ids[id]; ok {
@@ -176,34 +175,13 @@ func (e *GeminiWebEngine) ReplaceCredentials(id, psid, psidts string) error {
 	return e.AddAccount(id, label, psid, psidts)
 }
 
-// AccountCooldown 账号仍在生效的额度冷却。Until 为 Unix 秒。
-type AccountCooldown struct {
-	Scope  string `json:"scope"`
-	Until  int64  `json:"until"`
-	Reason string `json:"reason,omitempty"`
-}
-
-// AccountState 账号实时状态（供管理台）。
-type AccountState struct {
-	ID        string            `json:"id"`
-	Label     string            `json:"label"`
-	Enabled   bool              `json:"enabled"`
-	Ready     bool              `json:"ready"`
-	Status    string            `json:"status"`
-	Detail    string            `json:"detail,omitempty"`
-	Models    int               `json:"models"`
-	Tier      string            `json:"tier,omitempty"`
-	Quota     string            `json:"quota,omitempty"` // 用量/余额描述（订阅引擎）
-	Cooldowns []AccountCooldown `json:"cooldowns,omitempty"`
-}
-
 // AccountStates 全部账号状态。
-func (e *GeminiWebEngine) AccountStates() []AccountState {
+func (e *Engine) AccountStates() []engine.AccountState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]AccountState, 0, len(e.accounts))
+	out := make([]engine.AccountState, 0, len(e.accounts))
 	for _, acc := range e.accounts {
-		state := AccountState{
+		state := engine.AccountState{
 			ID:      acc.id,
 			Label:   acc.label,
 			Enabled: acc.enabled,
@@ -216,13 +194,13 @@ func (e *GeminiWebEngine) AccountStates() []AccountState {
 			state.Detail = "等待 Cookie 初始化"
 		} else {
 			switch acc.client.AccountStatus() {
-			case geminiweb.StatusAvailable:
+			case StatusAvailable:
 				state.Status = "ok"
 				state.Ready = true
-			case geminiweb.StatusUnauthenticated:
+			case StatusUnauthenticated:
 				state.Status = "error"
 				state.Detail = "登录态失效，请重新提取 Cookie"
-			case geminiweb.StatusTempUnavailable:
+			case StatusTempUnavailable:
 				state.Status = "error"
 				state.Detail = "账号临时不可用"
 			default:
@@ -236,7 +214,7 @@ func (e *GeminiWebEngine) AccountStates() []AccountState {
 }
 
 // EnabledLabels 兼容旧接口：启用的账号名列表。
-func (e *GeminiWebEngine) EnabledLabels() []string {
+func (e *Engine) EnabledLabels() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	out := make([]string, 0, len(e.accounts))
@@ -248,32 +226,32 @@ func (e *GeminiWebEngine) EnabledLabels() []string {
 	return out
 }
 
-func (e *GeminiWebEngine) setErr(err error) {
+func (e *Engine) setErr(err error) {
 	e.errMu.Lock()
 	e.lastErr = err
 	e.errMu.Unlock()
 }
 
-func (e *GeminiWebEngine) getErr() error {
+func (e *Engine) getErr() error {
 	e.errMu.Lock()
 	defer e.errMu.Unlock()
 	return e.lastErr
 }
 
 // Name 引擎标识。
-func (e *GeminiWebEngine) Name() string { return e.name }
+func (e *Engine) Name() string { return e.name }
 
 // Describe 引擎说明。
-func (e *GeminiWebEngine) Describe() string {
+func (e *Engine) Describe() string {
 	return "gemini.google.com 网页版（原生 Go 逆向，Cookie 会话）"
 }
 
 // Ready 至少一个账号可用。
-func (e *GeminiWebEngine) Ready() bool {
+func (e *Engine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
-		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == geminiweb.StatusAvailable {
+		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == StatusAvailable {
 			return true
 		}
 	}
@@ -281,7 +259,7 @@ func (e *GeminiWebEngine) Ready() bool {
 }
 
 // ListModels 聚合全部账号的模型（去重）。
-func (e *GeminiWebEngine) ListModels() []model.ModelInfo {
+func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	accounts := append([]*geminiAccount(nil), e.accounts...)
 	e.mu.RUnlock()
@@ -311,7 +289,7 @@ func (e *GeminiWebEngine) ListModels() []model.ModelInfo {
 }
 
 // pick 轮询选择可用账号；返回 nil 表示无可用。
-func (e *GeminiWebEngine) pick() *geminiAccount {
+func (e *Engine) pick() *geminiAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -321,7 +299,7 @@ func (e *GeminiWebEngine) pick() *geminiAccount {
 	start := int(e.next.Add(1))
 	for i := 0; i < n; i++ {
 		acc := e.accounts[(start+i)%n]
-		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == geminiweb.StatusAvailable {
+		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == StatusAvailable {
 			return acc
 		}
 	}
@@ -329,12 +307,12 @@ func (e *GeminiWebEngine) pick() *geminiAccount {
 }
 
 // usableCount 可用账号数。
-func (e *GeminiWebEngine) usableCount() int {
+func (e *Engine) usableCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	count := 0
 	for _, acc := range e.accounts {
-		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == geminiweb.StatusAvailable {
+		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == StatusAvailable {
 			count++
 		}
 	}
@@ -364,7 +342,7 @@ func messagesToPrompt(messages []model.ChatMessage) string {
 }
 
 // Chat 非流式对话（可用账号间故障切换）。
-func (e *GeminiWebEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	prompt := messagesToPrompt(req.Messages)
 	attempts := e.usableCount()
 	var lastErr error
@@ -386,7 +364,7 @@ func (e *GeminiWebEngine) Chat(ctx context.Context, req model.ChatRequest) (*mod
 }
 
 // ChatStream 流式对话（可用账号间故障切换）。
-func (e *GeminiWebEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	prompt := messagesToPrompt(req.Messages)
 	attempts := e.usableCount()
 	var lastErr error
@@ -408,15 +386,15 @@ func (e *GeminiWebEngine) ChatStream(ctx context.Context, req model.ChatRequest,
 }
 
 // Passthrough 引擎A 不支持多模态透传。
-func (e *GeminiWebEngine) Passthrough() bool { return false }
+func (e *Engine) Passthrough() bool { return false }
 
 // ServePassthrough 不适用。
-func (e *GeminiWebEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("引擎A 不支持多模态透传")
 }
 
 // Status 引擎状态（旧接口保留）。
-func (e *GeminiWebEngine) Status() map[string]any {
+func (e *Engine) Status() map[string]any {
 	states := e.AccountStates()
 	accounts := make([]map[string]any, 0, len(states))
 	for _, st := range states {
@@ -443,11 +421,11 @@ func (e *GeminiWebEngine) Status() map[string]any {
 
 func statusText(code int) string {
 	switch code {
-	case geminiweb.StatusAvailable:
+	case StatusAvailable:
 		return "available"
-	case geminiweb.StatusUnauthenticated:
+	case StatusUnauthenticated:
 		return "unauthenticated"
-	case geminiweb.StatusTempUnavailable:
+	case StatusTempUnavailable:
 		return "temporarily_unavailable"
 	default:
 		return fmt.Sprintf("status_%d", code)

@@ -1,6 +1,6 @@
 // engine_custom.go 第三方 Key 引擎：
 // 管理台填写 base_url + api_key，按 OpenAI 兼容协议转发 /v1/chat/completions。
-package provider
+package custom
 
 import (
 	"context"
@@ -21,8 +21,8 @@ import (
 	"web2api/internal/engine/custombalance"
 )
 
-// CustomCredentials 第三方 Key 凭据（accounts.credentials JSON）。
-type CustomCredentials struct {
+// Credentials 第三方 Key 凭据（accounts.credentials JSON）。
+type Credentials struct {
 	BaseURL string   `json:"base_url"`         // OpenAI 兼容根地址，可带或不带 /v1
 	APIKey  string   `json:"api_key"`          // 上游 API Key
 	Models  []string `json:"models,omitempty"` // 可选静态模型列表（上游无 /v1/models 时用）
@@ -33,7 +33,7 @@ type CustomCredentials struct {
 type customAccount struct {
 	id, label string
 	mu        sync.Mutex
-	creds     CustomCredentials
+	creds     Credentials
 	enabled   bool
 	ready     bool
 	lastErr   string
@@ -82,8 +82,8 @@ func normalizeModelID(id string) string {
 	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "models/"))
 }
 
-// CustomEngine 第三方 OpenAI 兼容 Key 号池。
-type CustomEngine struct {
+// Engine 第三方 OpenAI 兼容 Key 号池。
+type Engine struct {
 	name  string
 	proxy string
 	st    *store.Store
@@ -98,8 +98,8 @@ type CustomEngine struct {
 }
 
 // NewCustom 构建第三方 Key 引擎。
-func NewCustom(cfg config.CustomConfig, st *store.Store) *CustomEngine {
-	return &CustomEngine{
+func New(cfg config.CustomConfig, st *store.Store) *Engine {
+	return &Engine{
 		name:  "custom",
 		proxy: strings.TrimSpace(cfg.Proxy),
 		st:    st,
@@ -107,7 +107,7 @@ func NewCustom(cfg config.CustomConfig, st *store.Store) *CustomEngine {
 	}
 }
 
-func (e *CustomEngine) buildUpstream(creds CustomCredentials) (*upstream.OpenAI, error) {
+func (e *Engine) buildUpstream(creds Credentials) (*upstream.OpenAI, error) {
 	baseURL := upstream.NormalizeBaseURL(creds.BaseURL)
 	if baseURL == "" {
 		return nil, errors.New("base_url 不能为空")
@@ -149,7 +149,7 @@ func staticModels(ids []string, engineName string, available bool) []model.Model
 }
 
 // AddAccount 添加第三方供应商账号。
-func (e *CustomEngine) AddAccount(id, label string, creds CustomCredentials) error {
+func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	up, err := e.buildUpstream(creds)
 	if err != nil {
 		return err
@@ -177,7 +177,7 @@ func (e *CustomEngine) AddAccount(id, label string, creds CustomCredentials) err
 	return nil
 }
 
-func (e *CustomEngine) refreshAccount(ctx context.Context, acc *customAccount) {
+func (e *Engine) refreshAccount(ctx context.Context, acc *customAccount) {
 	acc.mu.Lock()
 	up := acc.up
 	static := append([]string{}, acc.creds.Models...)
@@ -222,7 +222,7 @@ func (e *CustomEngine) refreshAccount(ctx context.Context, acc *customAccount) {
 }
 
 // refreshBalance 查询余额（best-effort）：先官方供应商，再 Sub2API /v1/usage → /user/balance → NewAPI。
-func (e *CustomEngine) refreshBalance(acc *customAccount) {
+func (e *Engine) refreshBalance(acc *customAccount) {
 	acc.mu.Lock()
 	baseURL := acc.creds.BaseURL
 	apiKey := acc.creds.APIKey
@@ -261,7 +261,7 @@ func (e *CustomEngine) refreshBalance(acc *customAccount) {
 }
 
 // RemoveAccount 移除账号。
-func (e *CustomEngine) RemoveAccount(id string) error {
+func (e *Engine) RemoveAccount(id string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -279,7 +279,7 @@ func (e *CustomEngine) RemoveAccount(id string) error {
 }
 
 // SetEnabled 启停账号。
-func (e *CustomEngine) SetEnabled(id string, enabled bool) error {
+func (e *Engine) SetEnabled(id string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -293,7 +293,7 @@ func (e *CustomEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // ReplaceCredentials 更新凭据（重建上游客户端）。
-func (e *CustomEngine) ReplaceCredentials(id string, creds CustomCredentials) error {
+func (e *Engine) ReplaceCredentials(id string, creds Credentials) error {
 	e.mu.RLock()
 	idx, ok := e.ids[id]
 	label := id
@@ -311,17 +311,17 @@ func (e *CustomEngine) ReplaceCredentials(id string, creds CustomCredentials) er
 }
 
 // AccountStates 管理台账号状态。
-func (e *CustomEngine) AccountStates() []AccountState {
+func (e *Engine) AccountStates() []engine.AccountState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]AccountState, 0, len(e.accounts))
+	out := make([]engine.AccountState, 0, len(e.accounts))
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		tier := acc.provider
 		if tier == "" {
 			tier = upstream.NormalizeBaseURL(acc.creds.BaseURL)
 		}
-		state := AccountState{
+		state := engine.AccountState{
 			ID:      acc.id,
 			Label:   acc.label,
 			Enabled: acc.enabled,
@@ -361,15 +361,15 @@ func (e *CustomEngine) AccountStates() []AccountState {
 
 // ---- Engine 接口 ----
 
-func (e *CustomEngine) Name() string { return e.name }
+func (e *Engine) Name() string { return e.name }
 
-func (e *CustomEngine) Describe() string {
+func (e *Engine) Describe() string {
 	return "第三方 OpenAI 兼容 Key（base_url + api_key，常见供应商余额查询）"
 }
 
 // Ready 是否至少有一个「能真正接单」的账号：启用、就绪、未冷却，且目录非空。
 // 目录为空的账号已经不能承接任何模型（不再兜底），计入就绪只会误导管理台与 /health。
-func (e *CustomEngine) Ready() bool {
+func (e *Engine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
@@ -385,7 +385,7 @@ func (e *CustomEngine) Ready() bool {
 
 // ListModels 合并各供应商模型目录（去重）。
 // available 的口径：该模型至少出现在一个可用账号（启用、就绪、未冷却）的目录里。
-func (e *CustomEngine) ListModels() []model.ModelInfo {
+func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	seen := map[string]model.ModelInfo{}
@@ -421,7 +421,7 @@ func (e *CustomEngine) ListModels() []model.ModelInfo {
 // 返回值：usable 为「声明了该模型且当前可用」的账号（按轮转起点排序）；
 // declared 为声明了该模型的账号总数（不看可用态）；total 为号池账号总数。
 // 关键约束：没有声明该模型的账号一律不入选，目录为空的账号也不再兜底。
-func (e *CustomEngine) candidates(modelName string) (usable []*customAccount, declared int, total int) {
+func (e *Engine) candidates(modelName string) (usable []*customAccount, declared int, total int) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -450,7 +450,7 @@ func (e *CustomEngine) candidates(modelName string) (usable []*customAccount, de
 // pick 按模型精确选号：只返回目录里明确声明了该模型的可用账号。
 // 这里刻意不再保留「找不到就随便抓一个就绪号」的兜底——那会把 lyria / veo
 // 这类模型打到完全不相干的第三方供应商上，最后以误导性的上游 404 收场。
-func (e *CustomEngine) pick(modelName string) (*customAccount, error) {
+func (e *Engine) pick(modelName string) (*customAccount, error) {
 	usable, declared, total := e.candidates(modelName)
 	if len(usable) > 0 {
 		return usable[0], nil
@@ -467,7 +467,7 @@ func (e *CustomEngine) pick(modelName string) (*customAccount, error) {
 }
 
 // missError 生成「没有账号声明该模型」的明确错误，附带号池现状便于排查。
-func (e *CustomEngine) missError(modelName string) error {
+func (e *Engine) missError(modelName string) error {
 	want := normalizeModelID(modelName)
 	if want == "" {
 		return engine.NewModelNotFound("", "请求未指定模型，custom 号池无法选号")
@@ -523,7 +523,7 @@ func isMediaMimeRejection(msg string) bool {
 	return strings.Contains(msg, "audio/") || strings.Contains(msg, "video/") || strings.Contains(msg, "image/")
 }
 
-func (e *CustomEngine) markCooldown(acc *customAccount, reason string, d time.Duration) {
+func (e *Engine) markCooldown(acc *customAccount, reason string, d time.Duration) {
 	acc.mu.Lock()
 	acc.cooldownUntil = time.Now().Add(d)
 	acc.cooldownReason = reason
@@ -534,7 +534,7 @@ func (e *CustomEngine) markCooldown(acc *customAccount, reason string, d time.Du
 // ServeModelPassthrough 按模型把 OpenAI 兼容端点请求原样转发到拥有该模型的账号上游
 // （/v1/embeddings、/v1/images/generations 等）。与 ServePassthrough 的区别：先解析
 // 模型归属的账号再转发；解析失败（引擎不可用/无可用账号）时返回错误且未写出响应。
-func (e *CustomEngine) ServeModelPassthrough(ctx context.Context, modelID, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServeModelPassthrough(ctx context.Context, modelID, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	up, err := e.upstreamFor(modelID)
 	if err != nil {
 		return err
@@ -543,7 +543,7 @@ func (e *CustomEngine) ServeModelPassthrough(ctx context.Context, modelID, metho
 }
 
 // ProbeImage 用账号上游探测图片模型（/v1/images/generations）。
-func (e *CustomEngine) ProbeImage(ctx context.Context, modelID string) (string, error) {
+func (e *Engine) ProbeImage(ctx context.Context, modelID string) (string, error) {
 	up, err := e.upstreamFor(modelID)
 	if err != nil {
 		return "", err
@@ -552,7 +552,7 @@ func (e *CustomEngine) ProbeImage(ctx context.Context, modelID string) (string, 
 }
 
 // ProbeEmbedding 用账号上游探测向量模型（/v1/embeddings）。
-func (e *CustomEngine) ProbeEmbedding(ctx context.Context, modelID string) (string, error) {
+func (e *Engine) ProbeEmbedding(ctx context.Context, modelID string) (string, error) {
 	up, err := e.upstreamFor(modelID)
 	if err != nil {
 		return "", err
@@ -560,7 +560,7 @@ func (e *CustomEngine) ProbeEmbedding(ctx context.Context, modelID string) (stri
 	return up.ProbeEmbedding(ctx, modelID)
 }
 
-func (e *CustomEngine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
+func (e *Engine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
 	acc, err := e.pick(modelID)
 	if err != nil {
 		return nil, err
@@ -618,7 +618,7 @@ func isHTTPStatus(err error, code int) bool {
 	return strings.Contains(strings.ToLower(err.Error()), needle)
 }
 
-func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	// 严格按模型选号：只有目录里声明了该模型的账号才有资格接单。
 	// 没有任何账号声明 → 直接 model_not_found，绝不换号改投别的供应商。
 	usable, _, _ := e.candidates(req.Model)
@@ -692,11 +692,11 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink
 	return nil, errors.New("custom 没有可用账号")
 }
 
-func (e *CustomEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, nil)
 }
 
-func (e *CustomEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	if onDelta == nil {
 		return e.chatLoop(ctx, req, nil)
 	}
@@ -704,11 +704,11 @@ func (e *CustomEngine) ChatStream(ctx context.Context, req model.ChatRequest, on
 }
 
 // ChatStreamSink 流式对话（支持工具调用增量）。
-func (e *CustomEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *Engine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, sink)
 }
 
-func (e *CustomEngine) Status() map[string]any {
+func (e *Engine) Status() map[string]any {
 	accounts := e.AccountStates()
 	ready := 0
 	for _, st := range accounts {
@@ -732,16 +732,16 @@ func (e *CustomEngine) Status() map[string]any {
 	return out
 }
 
-func (e *CustomEngine) Passthrough() bool { return false }
+func (e *Engine) Passthrough() bool { return false }
 
-func (e *CustomEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("custom 引擎不支持透传")
 }
 
-func (e *CustomEngine) Close() {}
+func (e *Engine) Close() {}
 
 // ProbeCustomModels 管理台「获取模型列表」：用临时凭据探测上游 /v1/models。
-func ProbeCustomModels(ctx context.Context, engineProxy string, creds CustomCredentials) ([]string, error) {
+func ProbeCustomModels(ctx context.Context, engineProxy string, creds Credentials) ([]string, error) {
 	baseURL := upstream.NormalizeBaseURL(creds.BaseURL)
 	if baseURL == "" {
 		return nil, errors.New("base_url 不能为空")

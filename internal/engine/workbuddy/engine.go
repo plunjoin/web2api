@@ -1,6 +1,6 @@
-// engine_workbuddy.go 引擎 workbuddy：腾讯 CodeBuddy/WorkBuddy 订阅号池。
+// engine_go 引擎 workbuddy：腾讯 CodeBuddy/WorkBuddy 订阅号池。
 // 凭据为 www.codebuddy.ai 的 Bearer token（OAuth 设备授权流程获取，暂无刷新接口）。
-package provider
+package workbuddy
 
 import (
 	"context"
@@ -16,11 +16,10 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/engine/workbuddy"
 )
 
-// WorkBuddyCredentials workbuddy 引擎凭据（accounts.credentials JSON）。
-type WorkBuddyCredentials struct {
+// Credentials workbuddy 引擎凭据（accounts.credentials JSON）。
+type Credentials struct {
 	Token        string `json:"token"`           // Bearer accessToken
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Email        string `json:"email,omitempty"`
@@ -32,7 +31,7 @@ type WorkBuddyCredentials struct {
 type workbuddyAccount struct {
 	id, label string
 	mu        sync.Mutex
-	creds     WorkBuddyCredentials
+	creds     Credentials
 	enabled   bool
 
 	ready   bool
@@ -57,8 +56,8 @@ func (a *workbuddyAccount) tokenExpired() bool {
 	return time.Now().Unix() > a.creds.ExpiresAt
 }
 
-// WorkBuddyEngine workbuddy 引擎。
-type WorkBuddyEngine struct {
+// Engine workbuddy 引擎。
+type Engine struct {
 	name    string
 	proxy   string
 	baseURL string
@@ -74,12 +73,12 @@ type WorkBuddyEngine struct {
 }
 
 // NewWorkBuddy 构建 workbuddy 引擎。
-func NewWorkBuddy(cfg config.WorkBuddyConfig, st *store.Store) *WorkBuddyEngine {
+func New(cfg config.WorkBuddyConfig, st *store.Store) *Engine {
 	baseURL := strings.TrimSpace(cfg.BaseURL)
 	if baseURL == "" {
-		baseURL = workbuddy.DefaultBaseURL
+		baseURL = DefaultBaseURL
 	}
-	return &WorkBuddyEngine{
+	return &Engine{
 		name:    "workbuddy",
 		proxy:   strings.TrimSpace(cfg.Proxy),
 		baseURL: baseURL,
@@ -89,7 +88,7 @@ func NewWorkBuddy(cfg config.WorkBuddyConfig, st *store.Store) *WorkBuddyEngine 
 }
 
 // AddAccount 添加账号（token 即时校验延后到首次请求）。
-func (e *WorkBuddyEngine) AddAccount(id, label string, creds WorkBuddyCredentials) error {
+func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	if strings.TrimSpace(creds.Token) == "" {
 		return errors.New("token 不能为空")
 	}
@@ -106,7 +105,7 @@ func (e *WorkBuddyEngine) AddAccount(id, label string, creds WorkBuddyCredential
 }
 
 // RemoveAccount 移除账号。
-func (e *WorkBuddyEngine) RemoveAccount(id string) error {
+func (e *Engine) RemoveAccount(id string) error {
 	e.mu.Lock()
 	idx, ok := e.ids[id]
 	if !ok {
@@ -125,7 +124,7 @@ func (e *WorkBuddyEngine) RemoveAccount(id string) error {
 }
 
 // SetEnabled 启停账号。
-func (e *WorkBuddyEngine) SetEnabled(id string, enabled bool) error {
+func (e *Engine) SetEnabled(id string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -139,7 +138,7 @@ func (e *WorkBuddyEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // ReplaceCredentials 更新凭据（重建账号）。
-func (e *WorkBuddyEngine) ReplaceCredentials(id string, creds WorkBuddyCredentials) error {
+func (e *Engine) ReplaceCredentials(id string, creds Credentials) error {
 	e.mu.RLock()
 	idx, ok := e.ids[id]
 	label := id
@@ -157,19 +156,19 @@ func (e *WorkBuddyEngine) ReplaceCredentials(id string, creds WorkBuddyCredentia
 }
 
 // AccountStates 全部账号状态（管理台）。
-func (e *WorkBuddyEngine) AccountStates() []AccountState {
+func (e *Engine) AccountStates() []engine.AccountState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]AccountState, 0, len(e.accounts))
+	out := make([]engine.AccountState, 0, len(e.accounts))
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
-		state := AccountState{
+		state := engine.AccountState{
 			ID:      acc.id,
 			Label:   acc.label,
 			Enabled: acc.enabled,
 			Detail:  acc.lastErr,
 			Tier:    acc.creds.Email,
-			Models:  len(workbuddy.DefaultModels),
+			Models:  len(DefaultModels),
 		}
 		switch {
 		case !acc.enabled:
@@ -194,14 +193,14 @@ func (e *WorkBuddyEngine) AccountStates() []AccountState {
 
 // ---- Engine 接口 ----
 
-func (e *WorkBuddyEngine) Name() string { return e.name }
+func (e *Engine) Name() string { return e.name }
 
-func (e *WorkBuddyEngine) Describe() string {
+func (e *Engine) Describe() string {
 	return "腾讯 CodeBuddy/WorkBuddy（SaaS 订阅号池）"
 }
 
 // Ready 至少一个账号可用。
-func (e *WorkBuddyEngine) Ready() bool {
+func (e *Engine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
@@ -216,7 +215,7 @@ func (e *WorkBuddyEngine) Ready() bool {
 }
 
 // ListModels workbuddy 模型目录。
-func (e *WorkBuddyEngine) ListModels() []model.ModelInfo {
+func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	enabled := 0
 	for _, acc := range e.accounts {
@@ -227,8 +226,8 @@ func (e *WorkBuddyEngine) ListModels() []model.ModelInfo {
 		acc.mu.Unlock()
 	}
 	e.mu.RUnlock()
-	out := make([]model.ModelInfo, 0, len(workbuddy.DefaultModels))
-	for _, id := range workbuddy.DefaultModels {
+	out := make([]model.ModelInfo, 0, len(DefaultModels))
+	for _, id := range DefaultModels {
 		out = append(out, model.ModelInfo{
 			ID:          id,
 			Object:      "model",
@@ -241,7 +240,7 @@ func (e *WorkBuddyEngine) ListModels() []model.ModelInfo {
 }
 
 // pick 轮询选择可用账号。
-func (e *WorkBuddyEngine) pick() *workbuddyAccount {
+func (e *Engine) pick() *workbuddyAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -261,28 +260,28 @@ func (e *WorkBuddyEngine) pick() *workbuddyAccount {
 	return nil
 }
 
-func (e *WorkBuddyEngine) markCooldown(acc *workbuddyAccount, reason string, d time.Duration) {
+func (e *Engine) markCooldown(acc *workbuddyAccount, reason string, d time.Duration) {
 	acc.mu.Lock()
 	acc.cooldownUntil = time.Now().Add(d)
 	acc.cooldownReason = reason
 	acc.mu.Unlock()
 }
 
-// toWorkBuddyRequest ChatRequest → workbuddy.Request。
-func toWorkBuddyRequest(req model.ChatRequest) *workbuddy.Request {
-	out := &workbuddy.Request{
+// toWorkBuddyRequest ChatRequest → Request。
+func toWorkBuddyRequest(req model.ChatRequest) *Request {
+	out := &Request{
 		Model:       req.Model,
 		MaxTokens:   engine.DerefInt(req.MaxTokens),
 		Temperature: req.Temperature,
 	}
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, workbuddy.Message{Role: m.PlainRole(), Text: m.Text()})
+		out.Messages = append(out.Messages, Message{Role: m.PlainRole(), Text: m.Text()})
 	}
 	return out
 }
 
 // chatLoop 轮询账号直到成功或池耗尽。
-func (e *WorkBuddyEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
+func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engine.UnavailableError(e)
 	}
@@ -298,7 +297,7 @@ func (e *WorkBuddyEngine) chatLoop(ctx context.Context, req model.ChatRequest, o
 		userID := acc.creds.Email
 		proxy := acc.proxy(e.proxy)
 		acc.mu.Unlock()
-		res, err := workbuddy.Stream(ctx, proxy, e.baseURL, token, userID, cReq, onDelta)
+		res, err := Stream(ctx, proxy, e.baseURL, token, userID, cReq, onDelta)
 		if err == nil {
 			return &model.ChatResult{
 				Text:   res.Text,
@@ -311,14 +310,14 @@ func (e *WorkBuddyEngine) chatLoop(ctx context.Context, req model.ChatRequest, o
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if workbuddy.IsUnauthorized(err) {
+		if IsUnauthorized(err) {
 			e.markCooldown(acc, "token 失效，请重新授权", 30*time.Minute)
 			acc.mu.Lock()
 			acc.lastErr = "token 失效，请重新授权"
 			acc.mu.Unlock()
 			continue
 		}
-		if workbuddy.IsRateLimited(err) {
+		if IsRateLimited(err) {
 			e.markCooldown(acc, "上游限流", 3*time.Minute)
 			continue
 		}
@@ -329,7 +328,7 @@ func (e *WorkBuddyEngine) chatLoop(ctx context.Context, req model.ChatRequest, o
 	return nil, errors.New("workbuddy 没有可用账号")
 }
 
-func (e *WorkBuddyEngine) usableCount() int {
+func (e *Engine) usableCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := 0
@@ -347,12 +346,12 @@ func (e *WorkBuddyEngine) usableCount() int {
 }
 
 // Chat 非流式对话。
-func (e *WorkBuddyEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, nil)
 }
 
 // ChatStream 流式对话。
-func (e *WorkBuddyEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, func(delta string) error {
 		if onDelta != nil {
 			return onDelta(delta)
@@ -361,14 +360,14 @@ func (e *WorkBuddyEngine) ChatStream(ctx context.Context, req model.ChatRequest,
 	})
 }
 
-func (e *WorkBuddyEngine) setErr(err error) {
+func (e *Engine) setErr(err error) {
 	e.errMu.Lock()
 	e.lastErr = err
 	e.errMu.Unlock()
 }
 
 // Status 引擎运行状态。
-func (e *WorkBuddyEngine) Status() map[string]any {
+func (e *Engine) Status() map[string]any {
 	accounts := e.AccountStates()
 	ready := 0
 	for _, st := range accounts {
@@ -393,11 +392,11 @@ func (e *WorkBuddyEngine) Status() map[string]any {
 }
 
 // Passthrough workbuddy 不支持多模态端点透传。
-func (e *WorkBuddyEngine) Passthrough() bool { return false }
+func (e *Engine) Passthrough() bool { return false }
 
-func (e *WorkBuddyEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("workbuddy 引擎不支持透传")
 }
 
 // Close 关闭引擎。
-func (e *WorkBuddyEngine) Close() {}
+func (e *Engine) Close() {}

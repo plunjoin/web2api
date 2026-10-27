@@ -19,6 +19,7 @@ import (
 	"web2api/internal/upgrade"
 	"web2api/internal/engine/antigravity"
 	"web2api/internal/engine/codex"
+	"web2api/internal/engine/custom"
 	"web2api/internal/engine/workbuddy"
 	"web2api/internal/version"
 )
@@ -555,14 +556,14 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 
 // handleProbeCustomModels 探测第三方供应商 /v1/models（添加前预览）。
 func (a *API) handleProbeCustomModels(w http.ResponseWriter, r *http.Request) {
-	var req provider.CustomCredentials
+	var req custom.Credentials
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体无效"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	models, err := provider.ProbeCustomModels(ctx, a.mgr.EngineProxy("custom"), req)
+	models, err := custom.ProbeCustomModels(ctx, a.mgr.EngineProxy("custom"), req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -659,7 +660,7 @@ func (a *API) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
 		}
 		acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
 			Engine: "codex", Label: req.Label, Email: email,
-			Credentials: json.RawMessage(mustJSON(provider.CodexCredentials{
+			Credentials: json.RawMessage(mustJSON(codex.Credentials{
 				RefreshToken: tok.RefreshToken, Email: email, ChatGPTAccountID: tok.ChatGPTAccount,
 			})),
 		})
@@ -680,7 +681,7 @@ func (a *API) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
 		}
 		acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
 			Engine: "antigravity", Label: req.Label, Email: email,
-			Credentials: json.RawMessage(mustJSON(provider.AntigravityCredentials{
+			Credentials: json.RawMessage(mustJSON(antigravity.Credentials{
 				RefreshToken: tok.RefreshToken, Email: email,
 			})),
 		})
@@ -734,7 +735,7 @@ func (a *API) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
 		Engine: "workbuddy", Label: req.Label, Email: email,
-		Credentials: json.RawMessage(mustJSON(provider.WorkBuddyCredentials{
+		Credentials: json.RawMessage(mustJSON(workbuddy.Credentials{
 			Token: tok.AccessToken, RefreshToken: tok.RefreshToken, Email: email, ExpiresAt: expiresAt,
 		})),
 	})

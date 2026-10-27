@@ -1,4 +1,4 @@
-package provider
+package aistudio
 
 import (
 	"context"
@@ -16,36 +16,35 @@ import (
 	"sync"
 	"time"
 
-	aistudio "web2api/internal/engine/aistudio"
 
 	"web2api/internal/config"
 	"web2api/internal/engine"
 	"web2api/internal/model"
 )
 
-// NativeAIStudioEngine 引擎B：内置纯 Go 逆向（AI Studio 私有协议 + WAA go 后端）。
+// NativeEngine 引擎B：内置纯 Go 逆向（AI Studio 私有协议 + WAA go 后端）。
 // 组装链：AccountStore → AccountPool → 固定出口头 → MakerSuiteHTTPTransport
 // → 每账号懒启动 WAA Go Worker → WorkerProtectedTransport → Client → PooledService
-type NativeAIStudioEngine struct {
+type NativeEngine struct {
 	name string
 	cfg  config.EngineBConfig
 
-	store     *aistudio.AccountStore
+	store     *AccountStore
 	rootDir   string // 新账号创建根目录（auth_states 首路径）
-	accounts  []*aistudio.Account
-	pool      *aistudio.AccountPool
+	accounts  []*Account
+	pool      *AccountPool
 	headers   *nativeHeaderProvider
-	transport *aistudio.MakerSuiteHTTPTransport
+	transport *MakerSuiteHTTPTransport
 	workers   *nativeWorkerManager
-	protected *aistudio.WorkerProtectedTransport
-	client    *aistudio.Client
-	service   *aistudio.PooledService
+	protected *WorkerProtectedTransport
+	client    *Client
+	service   *PooledService
 
 	idMu  sync.RWMutex
 	idMap map[string]string // 管理层 ID → aistudio 账号 ID（邮箱）
 
 	mu       sync.RWMutex
-	models   []aistudio.Model
+	models   []Model
 	ready    bool
 	lastErr  error
 	stopCh   chan struct{}
@@ -58,7 +57,7 @@ type NativeAIStudioEngine struct {
 }
 
 // NewNativeAIStudio 构建原生引擎B（不发起网络请求，Init 时才装配）。
-func NewNativeAIStudio(cfg config.EngineBConfig) (*NativeAIStudioEngine, error) {
+func NewNative(cfg config.EngineBConfig) (*NativeEngine, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -83,15 +82,15 @@ func NewNativeAIStudio(cfg config.EngineBConfig) (*NativeAIStudioEngine, error) 
 	if cfg.RoutingStrategy == "" {
 		cfg.RoutingStrategy = "round-robin"
 	}
-	return &NativeAIStudioEngine{name: "b", cfg: cfg, stopCh: make(chan struct{}),
+	return &NativeEngine{name: "b", cfg: cfg, stopCh: make(chan struct{}),
 		idMap: map[string]string{}}, nil
 }
 
 // Init 装配运行时并拉取模型目录。
 // 零账号时同样完成装配（空池），保证管理台加号可即时入池。
-func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
+func (e *NativeEngine) Init(ctx context.Context) error {
 	paths := splitAndTrim(e.cfg.AuthStates, ",")
-	e.store = aistudio.NewAccountStore(paths...)
+	e.store = NewAccountStore(paths...)
 	if len(paths) > 0 {
 		e.rootDir = paths[0]
 	}
@@ -104,11 +103,11 @@ func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
 	if emptyAccounts {
 		// 空目录不算致命：记录提示，继续构建空池
 		e.setErr(errors.New("AI Studio 账号目录为空（auth_states 未找到 storage-state.json，可在管理台添加）"))
-		accounts = []*aistudio.Account{}
+		accounts = []*Account{}
 	}
 	e.accounts = accounts
 
-	e.pool = aistudio.NewAccountPool(accounts, e.cfg.PerAccountConcurrency)
+	e.pool = NewAccountPool(accounts, e.cfg.PerAccountConcurrency)
 	e.pool.SetRoutingStrategy(e.cfg.RoutingStrategy)
 	e.pool.SetUpstreamChannels(parseChannels(e.cfg.UpstreamChannels))
 
@@ -117,8 +116,8 @@ func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
 		e.setErr(err)
 		return err
 	}
-	e.transport, err = aistudio.NewMakerSuiteHTTPTransport(aistudio.HTTPTransportOptions{
-		Pool: e.pool, Signer: aistudio.NewSigner(), Headers: e.headers, GlobalProxy: e.cfg.Proxy,
+	e.transport, err = NewMakerSuiteHTTPTransport(HTTPTransportOptions{
+		Pool: e.pool, Signer: NewSigner(), Headers: e.headers, GlobalProxy: e.cfg.Proxy,
 	})
 	if err != nil {
 		e.headers.Close()
@@ -126,7 +125,7 @@ func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
 		return err
 	}
 	e.workers = newNativeWorkerManager(e.pool, e.cfg)
-	e.protected, err = aistudio.NewWorkerProtectedTransport(aistudio.WorkerProtectedTransportOptions{
+	e.protected, err = NewWorkerProtectedTransport(WorkerProtectedTransportOptions{
 		Transport: e.transport, Workers: e.workers, SetupTimeout: time.Duration(e.cfg.InitTimeoutSeconds) * time.Second,
 	})
 	if err != nil {
@@ -135,14 +134,14 @@ func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
 		e.setErr(err)
 		return err
 	}
-	requestContext, err := aistudio.NewPoolRequestContextProvider(e.pool)
+	requestContext, err := NewPoolRequestContextProvider(e.pool)
 	if err != nil {
 		e.headers.Close()
 		e.transport.CloseIdleConnections()
 		e.setErr(err)
 		return err
 	}
-	e.client, err = aistudio.NewClient(aistudio.ClientOptions{
+	e.client, err = NewClient(ClientOptions{
 		Transport:       e.transport,
 		Protected:       e.protected,
 		ContextProvider: requestContext,
@@ -153,7 +152,7 @@ func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
 		e.setErr(err)
 		return err
 	}
-	e.service, err = aistudio.NewPooledService(e.pool, e.client)
+	e.service, err = NewPooledService(e.pool, e.client)
 	if err != nil {
 		e.headers.Close()
 		e.transport.CloseIdleConnections()
@@ -177,7 +176,7 @@ func (e *NativeAIStudioEngine) Init(ctx context.Context) error {
 }
 
 // refreshModels 拉取并缓存模型目录。
-func (e *NativeAIStudioEngine) refreshModels(ctx context.Context) {
+func (e *NativeEngine) refreshModels(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, time.Duration(e.cfg.InitTimeoutSeconds)*time.Second)
 	defer cancel()
 	models, err := e.service.Models(cctx)
@@ -192,7 +191,7 @@ func (e *NativeAIStudioEngine) refreshModels(ctx context.Context) {
 }
 
 // modelRefreshLoop 后台定期刷新模型目录。
-func (e *NativeAIStudioEngine) modelRefreshLoop() {
+func (e *NativeEngine) modelRefreshLoop() {
 	interval := time.Duration(e.cfg.RefreshSeconds) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -207,7 +206,7 @@ func (e *NativeAIStudioEngine) modelRefreshLoop() {
 }
 
 // Close 释放运行时资源。
-func (e *NativeAIStudioEngine) Close() {
+func (e *NativeEngine) Close() {
 	e.stopOnce.Do(func() { close(e.stopCh) })
 	if e.workers != nil {
 		e.workers.Close()
@@ -220,18 +219,18 @@ func (e *NativeAIStudioEngine) Close() {
 	}
 }
 
-func (e *NativeAIStudioEngine) setErr(err error) {
+func (e *NativeEngine) setErr(err error) {
 	e.mu.Lock()
 	e.lastErr = err
 	e.mu.Unlock()
 }
 
 // Name 引擎标识。
-func (e *NativeAIStudioEngine) Name() string { return e.name }
+func (e *NativeEngine) Name() string { return e.name }
 
 // Describe 引擎说明。
-func (e *NativeAIStudioEngine) Describe() string {
-	return "aistudio.google.com（内置纯 Go 逆向：WAA go 后端 + 私有协议，零浏览器依赖）"
+func (e *NativeEngine) Describe() string {
+	return "google.com（内置纯 Go 逆向：WAA go 后端 + 私有协议，零浏览器依赖）"
 }
 
 // Ready 引擎是否真的能接单。
@@ -239,7 +238,7 @@ func (e *NativeAIStudioEngine) Describe() string {
 // 都会卡在 Worker 启动上，对外只表现为莫名其妙的失败。
 // Worker 是懒启动的，所以「还没试过」允许接单（首个请求触发启动），
 // 只有「试过且全部失败」才判为不可用。
-func (e *NativeAIStudioEngine) Ready() bool {
+func (e *NativeEngine) Ready() bool {
 	e.mu.RLock()
 	inited, accounts := e.ready, len(e.accounts)
 	e.mu.RUnlock()
@@ -258,12 +257,12 @@ func (e *NativeAIStudioEngine) Ready() bool {
 
 // ChatSupportsMedia 原生协议可以在 chat 响应里直接带回音频/图片（转 data URI），
 // 所以音乐（Lyria）、生图这类模型可以走 /v1/chat/completions。
-func (e *NativeAIStudioEngine) ChatSupportsMedia() bool { return true }
+func (e *NativeEngine) ChatSupportsMedia() bool { return true }
 
 // ListModels 模型列表。
 // available 的口径：该模型至少出现在一个可用账号的目录里，且引擎当前可接单。
 // 目录是各账号目录的并集，光「在并集里」不代表真有人能出这个模型。
-func (e *NativeAIStudioEngine) ListModels() []model.ModelInfo {
+func (e *NativeEngine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	models := e.models
 	e.mu.RUnlock()
@@ -287,7 +286,7 @@ func (e *NativeAIStudioEngine) ListModels() []model.ModelInfo {
 // declaredModels 汇总「可用账号」（启用且未停用）目录里的模型 ID。
 // 带 3 秒缓存：ListModels 在每次请求的路由判定里都会被调用，
 // 而账号目录本身变化很慢，没必要每次重算。
-func (e *NativeAIStudioEngine) declaredModels() map[string]bool {
+func (e *NativeEngine) declaredModels() map[string]bool {
 	if e.pool == nil {
 		return nil
 	}
@@ -298,7 +297,7 @@ func (e *NativeAIStudioEngine) declaredModels() map[string]bool {
 	}
 	out := map[string]bool{}
 	for _, st := range e.pool.Status() {
-		if !st.Enabled || st.State == aistudio.AccountDisabled {
+		if !st.Enabled || st.State == AccountDisabled {
 			continue
 		}
 		for _, id := range st.Models {
@@ -311,25 +310,25 @@ func (e *NativeAIStudioEngine) declaredModels() map[string]bool {
 }
 
 // buildContents 将 OpenAI messages 转为 AI Studio contents + system。
-func buildContents(messages []model.ChatMessage) (string, []aistudio.Content) {
+func buildContents(messages []model.ChatMessage) (string, []Content) {
 	var system []string
-	contents := make([]aistudio.Content, 0, len(messages))
+	contents := make([]Content, 0, len(messages))
 	for _, m := range messages {
 		text := m.Text()
 		switch m.Role {
 		case "system":
 			system = append(system, text)
 		case "assistant":
-			parts := make([]aistudio.Part, 0, len(m.ToolCalls)+1)
+			parts := make([]Part, 0, len(m.ToolCalls)+1)
 			if text != "" {
-				parts = append(parts, aistudio.Part{Text: text})
+				parts = append(parts, Part{Text: text})
 			}
 			for _, call := range m.ToolCalls {
 				arguments := json.RawMessage(call.Function.Arguments)
 				if !json.Valid(arguments) || len(arguments) == 0 {
 					arguments = json.RawMessage(`{}`)
 				}
-				parts = append(parts, aistudio.Part{FunctionCall: &aistudio.FunctionCall{
+				parts = append(parts, Part{FunctionCall: &FunctionCall{
 					ID:        call.ID,
 					Name:      call.Function.Name,
 					Arguments: arguments,
@@ -338,7 +337,7 @@ func buildContents(messages []model.ChatMessage) (string, []aistudio.Content) {
 			if len(parts) == 0 {
 				continue
 			}
-			contents = append(contents, aistudio.Content{Role: aistudio.RoleAssistant, Parts: parts})
+			contents = append(contents, Content{Role: RoleAssistant, Parts: parts})
 		case "tool":
 			// 工具结果必须以 function_response 形式回给上游，否则模型
 			// 看不到执行结果，会反复发起同一个调用。
@@ -346,16 +345,16 @@ func buildContents(messages []model.ChatMessage) (string, []aistudio.Content) {
 			if err != nil {
 				response = json.RawMessage(`{"result":""}`)
 			}
-			contents = append(contents, aistudio.Content{
-				Role: aistudio.RoleUser,
-				Parts: []aistudio.Part{{FunctionResult: &aistudio.FunctionResult{
+			contents = append(contents, Content{
+				Role: RoleUser,
+				Parts: []Part{{FunctionResult: &FunctionResult{
 					ID:      m.ToolCallID,
 					Name:    m.Name,
 					Content: response,
 				}}},
 			})
 		default:
-			contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: []aistudio.Part{{Text: text}}})
+			contents = append(contents, Content{Role: RoleUser, Parts: []Part{{Text: text}}})
 		}
 	}
 	return strings.Join(system, "\n"), contents
@@ -366,13 +365,13 @@ func buildContents(messages []model.ChatMessage) (string, []aistudio.Content) {
 // AI Studio 的 JSON Schema 子集比 OpenAI 窄（例如不认识 $defs / const /
 // title）。单个工具的参数编码失败不该让整个请求 400，降级成「无参数函数」，
 // 至少保留函数名与说明，模型仍能发起调用。
-func buildNativeTools(tools []model.Tool) aistudio.Tools {
-	out := aistudio.Tools{}
+func buildNativeTools(tools []model.Tool) Tools {
+	out := Tools{}
 	for _, tool := range tools {
 		if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
 			continue
 		}
-		decl := aistudio.FunctionDeclaration{
+		decl := FunctionDeclaration{
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
 			Parameters:  tool.Function.Parameters,
@@ -386,9 +385,9 @@ func buildNativeTools(tools []model.Tool) aistudio.Tools {
 }
 
 // buildGenerateRequest 组装协议请求。
-func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) (aistudio.GenerateRequest, error) {
+func (e *NativeEngine) buildGenerateRequest(req model.ChatRequest) (GenerateRequest, error) {
 	system, contents := buildContents(req.Messages)
-	gen := aistudio.GenerateRequest{
+	gen := GenerateRequest{
 		ID:       "web2api-" + model.NewID(8),
 		Model:    req.Model,
 		System:   system,
@@ -408,9 +407,9 @@ func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) (aist
 	if size := strings.TrimSpace(req.ImageSize); size != "" {
 		switch size {
 		case "512", "1K", "2K", "4K":
-			gen.Config.ImageConfig = &aistudio.ImageConfig{ImageSize: size}
+			gen.Config.ImageConfig = &ImageConfig{ImageSize: size}
 		default:
-			return aistudio.GenerateRequest{}, fmt.Errorf("image_size 必须是 512、1K、2K 或 4K")
+			return GenerateRequest{}, fmt.Errorf("image_size 必须是 512、1K、2K 或 4K")
 		}
 	}
 	if resolution := strings.ToLower(strings.TrimSpace(req.Resolution)); resolution != "" {
@@ -418,14 +417,14 @@ func (e *NativeAIStudioEngine) buildGenerateRequest(req model.ChatRequest) (aist
 		case "360p", "720p", "1080p", "4k":
 			gen.Config.VideoResolution = resolution
 		default:
-			return aistudio.GenerateRequest{}, fmt.Errorf("resolution 必须是 360p、720p、1080p 或 4k")
+			return GenerateRequest{}, fmt.Errorf("resolution 必须是 360p、720p、1080p 或 4k")
 		}
 	}
 	return gen, nil
 }
 
 // generate 执行一次生成并消费事件流。
-func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *NativeEngine) generate(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if e.service == nil {
 		return nil, errors.New("引擎B 未初始化")
 	}
@@ -461,13 +460,13 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 			return nil, event.Err
 		}
 		switch event.Kind {
-		case aistudio.EventText:
+		case EventText:
 			full.WriteString(event.Text)
 			if err := sink.Text(event.Text); err != nil {
 				e.setErr(err)
 				return nil, err
 			}
-		case aistudio.EventToolCall:
+		case EventToolCall:
 			// AI Studio 的 function call 是一次性给全的（不像 OpenAI 那样
 			// 分块），所以这里直接发一个完整增量。
 			if event.ToolCall == nil || strings.TrimSpace(event.ToolCall.Name) == "" {
@@ -499,7 +498,7 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 				e.setErr(err)
 				return nil, err
 			}
-		case aistudio.EventMedia:
+		case EventMedia:
 			// 图片/音媒体：以 Markdown 形式附加。AI Studio 原生协议通常
 			// 返回 inline data，没有 URL；必须转成 data URI 才能通过
 			// OpenAI 的纯文本 content 传回调用方。
@@ -522,12 +521,12 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 					return nil, err
 				}
 			}
-		case aistudio.EventUsage:
+		case EventUsage:
 			if event.Usage != nil {
 				converted := nativeTokenUsage(*event.Usage)
 				usage = &converted
 			}
-		case aistudio.EventFinish:
+		case EventFinish:
 			finished = true
 			switch strings.ToUpper(event.FinishReason) {
 			case "MAX_TOKENS":
@@ -536,7 +535,7 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 			default:
 				finishReason = "stop"
 			}
-		case aistudio.EventError:
+		case EventError:
 			if event.Err != nil {
 				e.setErr(event.Err)
 				return nil, event.Err
@@ -564,7 +563,7 @@ func (e *NativeAIStudioEngine) generate(ctx context.Context, req model.ChatReque
 
 // nativeTokenUsage 把 AI Studio usage metadata 映射为 OpenAI 口径：
 // prompt = 输入 + 工具输入，completion = 可见输出 + 思考，total 以上游为准。
-func nativeTokenUsage(u aistudio.Usage) model.TokenUsage {
+func nativeTokenUsage(u Usage) model.TokenUsage {
 	out := model.TokenUsage{
 		PromptTokens:     u.InputTokens + u.ToolTokens,
 		CompletionTokens: u.OutputTokens + u.ReasoningTokens,
@@ -576,55 +575,55 @@ func nativeTokenUsage(u aistudio.Usage) model.TokenUsage {
 }
 
 // Chat 非流式对话。
-func (e *NativeAIStudioEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *NativeEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	return e.generate(ctx, req, nil)
 }
 
 // ChatStream 流式对话。
-func (e *NativeAIStudioEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *NativeEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	return e.generate(ctx, req, model.TextSink(onDelta))
 }
 
 // ChatStreamSink 流式对话（支持工具调用增量）。
-func (e *NativeAIStudioEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *NativeEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	return e.generate(ctx, req, sink)
 }
 
 // GenerateVideo 创建 Veo 长任务。视频协议与聊天 GenerateContent 是两套
 // 独立的 AI Studio RPC，必须通过 PooledService 取得账号租约后调用。
-func (e *NativeAIStudioEngine) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
+func (e *NativeEngine) GenerateVideo(ctx context.Context, request VideoRequest) (VideoOperation, error) {
 	if e.service == nil {
-		return aistudio.VideoOperation{}, errors.New("引擎B 未初始化")
+		return VideoOperation{}, errors.New("引擎B 未初始化")
 	}
 	return e.service.GenerateVideo(ctx, request)
 }
 
 // GetGenerateVideoOperation 查询 Veo 长任务状态。
-func (e *NativeAIStudioEngine) GetGenerateVideoOperation(ctx context.Context, operationID string) (aistudio.VideoOperation, error) {
+func (e *NativeEngine) GetGenerateVideoOperation(ctx context.Context, operationID string) (VideoOperation, error) {
 	if e.service == nil {
-		return aistudio.VideoOperation{}, errors.New("引擎B 未初始化")
+		return VideoOperation{}, errors.New("引擎B 未初始化")
 	}
 	return e.service.GetGenerateVideoOperation(ctx, operationID)
 }
 
 // DownloadVideoFile 下载已完成 Veo 任务绑定的媒体文件。
-func (e *NativeAIStudioEngine) DownloadVideoFile(ctx context.Context, fileID string) (aistudio.MediaStream, error) {
+func (e *NativeEngine) DownloadVideoFile(ctx context.Context, fileID string) (MediaStream, error) {
 	if e.service == nil {
-		return aistudio.MediaStream{}, errors.New("引擎B 未初始化")
+		return MediaStream{}, errors.New("引擎B 未初始化")
 	}
 	return e.service.DownloadFile(ctx, fileID)
 }
 
 // Passthrough 原生模式不透传（多模态能力已内置于对话协议）。
-func (e *NativeAIStudioEngine) Passthrough() bool { return false }
+func (e *NativeEngine) Passthrough() bool { return false }
 
 // ServePassthrough 原生模式不支持透传。
-func (e *NativeAIStudioEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *NativeEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("引擎B 原生模式不使用透传：图片模型走 /v1/chat/completions（模型见 /v1/models）")
 }
 
 // Status 引擎与账号状态。
-func (e *NativeAIStudioEngine) Status() map[string]any {
+func (e *NativeEngine) Status() map[string]any {
 	e.mu.RLock()
 	models := len(e.models)
 	errMsg := ""
@@ -682,14 +681,14 @@ func splitAndTrim(s, sep string) []string {
 // ==================== 动态号池管理 ====================
 
 // RegisterAccountID 登记管理 ID ↔ aistudio 账号 ID（邮箱）的映射（启动装配已有账号时用）。
-func (e *NativeAIStudioEngine) RegisterAccountID(managedID, aistudioID string) {
+func (e *NativeEngine) RegisterAccountID(managedID, aistudioID string) {
 	e.idMu.Lock()
 	e.idMap[managedID] = aistudioID
 	e.idMu.Unlock()
 }
 
 // PoolAccountIDs 池内账号 ID（邮箱）列表。
-func (e *NativeAIStudioEngine) PoolAccountIDs() []string {
+func (e *NativeEngine) PoolAccountIDs() []string {
 	statuses := e.pool.Status()
 	ids := make([]string, 0, len(statuses))
 	for _, s := range statuses {
@@ -699,7 +698,7 @@ func (e *NativeAIStudioEngine) PoolAccountIDs() []string {
 }
 
 // AttachOrAdd 池中已有该邮箱则仅登记映射，否则用给定凭据创建并入池。
-func (e *NativeAIStudioEngine) AttachOrAdd(id, email, storageJSON, locale, timezone, proxy string) error {
+func (e *NativeEngine) AttachOrAdd(id, email, storageJSON, locale, timezone, proxy string) error {
 	for _, poolID := range e.PoolAccountIDs() {
 		if strings.EqualFold(poolID, email) {
 			e.RegisterAccountID(id, poolID)
@@ -710,7 +709,7 @@ func (e *NativeAIStudioEngine) AttachOrAdd(id, email, storageJSON, locale, timez
 }
 
 // RefreshAccountModels 刷新指定账号的模型目录（健康检查用）。
-func (e *NativeAIStudioEngine) RefreshAccountModels(ctx context.Context, accountID string) ([]aistudio.Model, error) {
+func (e *NativeEngine) RefreshAccountModels(ctx context.Context, accountID string) ([]Model, error) {
 	if e.service == nil {
 		return nil, errors.New("引擎B 未初始化")
 	}
@@ -725,18 +724,18 @@ func (e *NativeAIStudioEngine) RefreshAccountModels(ctx context.Context, account
 }
 
 // AddAccount 添加 AI Studio 账号（凭据为 storage-state JSON 文本）。
-func (e *NativeAIStudioEngine) AddAccount(id, email, storageJSON, locale, timezone, proxy string) error {
+func (e *NativeEngine) AddAccount(id, email, storageJSON, locale, timezone, proxy string) error {
 	if e.rootDir == "" {
 		return errors.New("engine_b.auth_states 未配置")
 	}
-	var state aistudio.StorageState
+	var state StorageState
 	if err := json.Unmarshal([]byte(storageJSON), &state); err != nil {
 		return fmt.Errorf("storage-state 不是合法 JSON: %w", err)
 	}
 	if err := state.Validate(); err != nil {
 		return fmt.Errorf("storage-state 无效: %w", err)
 	}
-	cfg := aistudio.DefaultAccountConfig(email)
+	cfg := DefaultAccountConfig(email)
 	if locale != "" {
 		cfg.Locale = locale
 	}
@@ -746,7 +745,7 @@ func (e *NativeAIStudioEngine) AddAccount(id, email, storageJSON, locale, timezo
 	if proxy != "" {
 		cfg.Proxy = proxy
 	}
-	createStore := aistudio.NewAccountStore(e.rootDir)
+	createStore := NewAccountStore(e.rootDir)
 	acc, lease, err := createStore.Create(cfg, state)
 	if err != nil {
 		return fmt.Errorf("创建账号目录失败: %w", err)
@@ -760,7 +759,7 @@ func (e *NativeAIStudioEngine) AddAccount(id, email, storageJSON, locale, timezo
 		return fmt.Errorf("账号入池失败: %w", err)
 	}
 	if err := e.headers.Add(acc); err != nil {
-		_, _ = e.pool.Remove(acc.ID, func(*aistudio.Account) error { return nil })
+		_, _ = e.pool.Remove(acc.ID, func(*Account) error { return nil })
 		_ = createStore.Delete(acc)
 		return err
 	}
@@ -779,14 +778,14 @@ func (e *NativeAIStudioEngine) AddAccount(id, email, storageJSON, locale, timezo
 }
 
 // removeWithRetry 从池中移除账号；遇 ErrAccountLeased（活跃请求/后台 auth 刷新占用）时带重试。
-func (e *NativeAIStudioEngine) removeWithRetry(accountID string, wait time.Duration) (*aistudio.Account, error) {
+func (e *NativeEngine) removeWithRetry(accountID string, wait time.Duration) (*Account, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		acc, err := e.pool.Remove(accountID, func(*aistudio.Account) error { return nil })
+		acc, err := e.pool.Remove(accountID, func(*Account) error { return nil })
 		if err == nil {
 			return acc, nil
 		}
-		if !errors.Is(err, aistudio.ErrAccountLeased) {
+		if !errors.Is(err, ErrAccountLeased) {
 			return nil, err
 		}
 		if time.Now().After(deadline) {
@@ -798,7 +797,7 @@ func (e *NativeAIStudioEngine) removeWithRetry(accountID string, wait time.Durat
 
 // RemoveAccount 删除账号（移出池 + 删除目录与凭据文件）。
 // 池原生语义下禁用账号仍在池中，可直接 Remove；占用中则最多等 30 秒重试。
-func (e *NativeAIStudioEngine) RemoveAccount(id string) error {
+func (e *NativeEngine) RemoveAccount(id string) error {
 	e.idMu.Lock()
 	accountID, ok := e.idMap[id]
 	if ok {
@@ -810,7 +809,7 @@ func (e *NativeAIStudioEngine) RemoveAccount(id string) error {
 	}
 
 	acc, removeErr := e.removeWithRetry(accountID, 30*time.Second)
-	if removeErr != nil && !errors.Is(removeErr, aistudio.ErrAccountNotFound) {
+	if removeErr != nil && !errors.Is(removeErr, ErrAccountNotFound) {
 		// 出池失败（被占用）：回滚映射，交还上层提示重试
 		e.idMu.Lock()
 		e.idMap[id] = accountID
@@ -850,7 +849,7 @@ func (e *NativeAIStudioEngine) RemoveAccount(id string) error {
 // SetEnabled 启停账号：池原生管理通道（AcquireAccount 按 ID 取租约、不受 ready 状态限制，
 // 租约内 SaveConfig 持久化 account.json 并迁移状态；账号留在池中，调度自动跳过）。
 // 占用中最多等 3 秒，超时报"稍后重试"。
-func (e *NativeAIStudioEngine) SetEnabled(id string, enabled bool) error {
+func (e *NativeEngine) SetEnabled(id string, enabled bool) error {
 	e.idMu.RLock()
 	accountID, ok := e.idMap[id]
 	e.idMu.RUnlock()
@@ -864,7 +863,7 @@ func (e *NativeAIStudioEngine) SetEnabled(id string, enabled bool) error {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return errors.New("账号正被活跃请求或后台任务占用，请稍后重试")
 		}
-		if errors.Is(err, aistudio.ErrAccountNotFound) {
+		if errors.Is(err, ErrAccountNotFound) {
 			return fmt.Errorf("账号不在池中（可能装配失败，删除后重新添加）: %w", err)
 		}
 		return err
@@ -882,7 +881,7 @@ func (e *NativeAIStudioEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // AccountStates 池内账号实时状态（禁用账号保留在池中，状态由池回报）。
-func (e *NativeAIStudioEngine) AccountStates() []AccountState {
+func (e *NativeEngine) AccountStates() []engine.AccountState {
 	e.idMu.RLock()
 	idByAistudio := make(map[string]string, len(e.idMap))
 	for managed, aistudioID := range e.idMap {
@@ -890,9 +889,9 @@ func (e *NativeAIStudioEngine) AccountStates() []AccountState {
 	}
 	e.idMu.RUnlock()
 
-	var out []AccountState
+	var out []engine.AccountState
 	for _, status := range e.pool.Status() {
-		state := AccountState{
+		state := engine.AccountState{
 			ID:        status.ID,
 			Label:     status.Label,
 			Enabled:   status.Enabled,
@@ -901,18 +900,18 @@ func (e *NativeAIStudioEngine) AccountStates() []AccountState {
 			Cooldowns: activeCooldowns(status.Cooldowns),
 		}
 		switch {
-		case !status.Enabled || status.State == aistudio.AccountDisabled:
+		case !status.Enabled || status.State == AccountDisabled:
 			state.Status = "disabled"
-		case status.State == aistudio.AccountReady:
+		case status.State == AccountReady:
 			state.Status = "ok"
 			state.Ready = true
-		case status.State == aistudio.AccountAuthRequired:
+		case status.State == AccountAuthRequired:
 			state.Status = "error"
 			state.Detail = "登录态失效"
-		case status.State == aistudio.AccountBusy:
+		case status.State == AccountBusy:
 			state.Status = "busy"
 			state.Detail = "有进行中的请求或后台任务"
-		case status.State == aistudio.AccountCooldown:
+		case status.State == AccountCooldown:
 			state.Status = "cooldown"
 			state.Detail = status.Message
 		default:
@@ -928,17 +927,17 @@ func (e *NativeAIStudioEngine) AccountStates() []AccountState {
 }
 
 // activeCooldowns 只保留尚未到期的冷却，并按恢复时间排序。
-func activeCooldowns(cooldowns map[string]aistudio.CooldownState) []AccountCooldown {
+func activeCooldowns(cooldowns map[string]CooldownState) []engine.AccountCooldown {
 	if len(cooldowns) == 0 {
 		return nil
 	}
 	now := time.Now()
-	out := make([]AccountCooldown, 0, len(cooldowns))
+	out := make([]engine.AccountCooldown, 0, len(cooldowns))
 	for scope, cooldown := range cooldowns {
 		if !cooldown.Active(now) {
 			continue
 		}
-		out = append(out, AccountCooldown{
+		out = append(out, engine.AccountCooldown{
 			Scope:  scope,
 			Until:  cooldown.Until.Unix(),
 			Reason: cooldown.Reason,
@@ -953,18 +952,18 @@ func activeCooldowns(cooldowns map[string]aistudio.CooldownState) []AccountCoold
 	return out
 }
 
-func parseChannels(s string) []aistudio.Channel {
-	var out []aistudio.Channel
+func parseChannels(s string) []Channel {
+	var out []Channel
 	for _, name := range splitAndTrim(s, ",") {
 		switch strings.ToLower(name) {
 		case "playground":
-			out = append(out, aistudio.ChannelPlayground)
+			out = append(out, ChannelPlayground)
 		case "build":
-			out = append(out, aistudio.ChannelBuild)
+			out = append(out, ChannelBuild)
 		}
 	}
 	if len(out) == 0 {
-		out = []aistudio.Channel{aistudio.ChannelPlayground, aistudio.ChannelBuild}
+		out = []Channel{ChannelPlayground, ChannelBuild}
 	}
 	return out
 }
@@ -984,7 +983,7 @@ type nativeHeaderProvider struct {
 	states      map[string]*nativeHeaderState
 }
 
-func newNativeHeaderProvider(accounts []*aistudio.Account, globalProxy string) (*nativeHeaderProvider, error) {
+func newNativeHeaderProvider(accounts []*Account, globalProxy string) (*nativeHeaderProvider, error) {
 	provider := &nativeHeaderProvider{
 		globalProxy: strings.TrimSpace(globalProxy),
 		states:      make(map[string]*nativeHeaderState, len(accounts)),
@@ -1002,8 +1001,8 @@ func newNativeHeaderProvider(accounts []*aistudio.Account, globalProxy string) (
 }
 
 // Add 注册账号固定出口。
-func (p *nativeHeaderProvider) Add(account *aistudio.Account) error {
-	client, err := aistudio.NewProxyHTTPClient(account.EffectiveProxy(p.globalProxy))
+func (p *nativeHeaderProvider) Add(account *Account) error {
+	client, err := NewProxyHTTPClient(account.EffectiveProxy(p.globalProxy))
 	if err != nil {
 		return fmt.Errorf("创建账号 %s 的固定出口: %w", account.ID, err)
 	}
@@ -1028,7 +1027,7 @@ func (p *nativeHeaderProvider) ProtocolHeaders(ctx context.Context, accountID st
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if len(state.headers) == 0 {
-		headers, err := aistudio.DiscoverPublicHeaders(ctx, state.client)
+		headers, err := DiscoverPublicHeaders(ctx, state.client)
 		if err != nil {
 			return nil, err
 		}
@@ -1067,20 +1066,20 @@ func (p *nativeHeaderProvider) Close() {
 
 // nativeWorkerManager 每账号懒启动纯 Go WAA Worker。
 type nativeWorkerManager struct {
-	pool *aistudio.AccountPool
+	pool *AccountPool
 	cfg  config.EngineBConfig
 
 	mu      sync.Mutex
-	workers map[string]*aistudio.NativeWorker
+	workers map[string]*NativeWorker
 	booting map[string]struct{}
 	failed  map[string]string // accountID → 最近一次启动失败原因（启动成功后清除）
 }
 
-func newNativeWorkerManager(pool *aistudio.AccountPool, cfg config.EngineBConfig) *nativeWorkerManager {
+func newNativeWorkerManager(pool *AccountPool, cfg config.EngineBConfig) *nativeWorkerManager {
 	return &nativeWorkerManager{
 		pool:    pool,
 		cfg:     cfg,
-		workers: map[string]*aistudio.NativeWorker{},
+		workers: map[string]*NativeWorker{},
 		booting: map[string]struct{}{},
 		failed:  map[string]string{},
 	}
@@ -1096,12 +1095,12 @@ func (m *nativeWorkerManager) noteFailure(accountID string, err error) {
 	m.mu.Unlock()
 }
 
-// Worker 实现 aistudio.ProtectedPreparerProvider：按账号懒启动（复用已就绪实例）。
-func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, modelID string) (aistudio.ProtectedPreparer, error) {
+// Worker 实现 ProtectedPreparerProvider：按账号懒启动（复用已就绪实例）。
+func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, modelID string) (ProtectedPreparer, error) {
 	m.mu.Lock()
 	if worker, ok := m.workers[accountID]; ok {
 		phase := worker.State().Phase
-		if phase == aistudio.WorkerReady || phase == aistudio.WorkerBusy {
+		if phase == WorkerReady || phase == WorkerBusy {
 			m.mu.Unlock()
 			return worker, nil
 		}
@@ -1130,7 +1129,7 @@ func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, mode
 	if proxy == "" {
 		proxy = strings.TrimSpace(m.cfg.Proxy)
 	}
-	options := aistudio.Options{
+	options := Options{
 		StorageStatePath: account.StoragePath,
 		Model:            modelID,
 		Locale:           account.Config.Locale,
@@ -1138,7 +1137,7 @@ func (m *nativeWorkerManager) Worker(ctx context.Context, accountID string, mode
 		Proxy:            proxy,
 		TemporaryChat:    m.cfg.TemporaryChat,
 	}
-	worker, err := aistudio.NewGoWorker(ctx, accountID, options)
+	worker, err := NewGoWorker(ctx, accountID, options)
 	if err != nil {
 		bootErr := fmt.Errorf("启动账号 %s 的 WAA Go Worker 失败: %w", accountID, err)
 		m.noteFailure(accountID, bootErr)
@@ -1159,7 +1158,7 @@ func (m *nativeWorkerManager) Stats() (ready int, failed map[string]string) {
 	ready = 0
 	for _, worker := range m.workers {
 		phase := worker.State().Phase
-		if phase == aistudio.WorkerReady || phase == aistudio.WorkerBusy {
+		if phase == WorkerReady || phase == WorkerBusy {
 			ready++
 		}
 	}
@@ -1188,7 +1187,7 @@ func (m *nativeWorkerManager) CloseAccount(accountID string) {
 func (m *nativeWorkerManager) Close() {
 	m.mu.Lock()
 	workers := m.workers
-	m.workers = map[string]*aistudio.NativeWorker{}
+	m.workers = map[string]*NativeWorker{}
 	m.mu.Unlock()
 	for _, worker := range workers {
 		_ = worker.Close()

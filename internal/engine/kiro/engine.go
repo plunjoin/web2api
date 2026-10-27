@@ -1,6 +1,6 @@
-// engine_kiro.go 引擎 kiro：AWS Kiro（CodeWhisperer 订阅号池）。
+// engine_go 引擎 kiro：AWS Kiro（CodeWhisperer 订阅号池）。
 // 凭据为 Kiro IDE 的 refresh_token（旋转式，刷新后自动回写数据库）。
-package provider
+package kiro
 
 import (
 	"context"
@@ -17,11 +17,10 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/engine/kiro"
 )
 
-// KiroCredentials kiro 引擎凭据（accounts.credentials JSON）。
-type KiroCredentials struct {
+// Credentials kiro 引擎凭据（accounts.credentials JSON）。
+type Credentials struct {
 	RefreshToken string `json:"refresh_token"`
 	Email        string `json:"email,omitempty"`
 	Proxy        string `json:"proxy,omitempty"`
@@ -31,7 +30,7 @@ type KiroCredentials struct {
 type kiroAccount struct {
 	id, label string
 	mu        sync.Mutex
-	creds     KiroCredentials
+	creds     Credentials
 	enabled   bool
 
 	accessToken  string
@@ -54,8 +53,8 @@ func (a *kiroAccount) proxy(engineProxy string) string {
 	return engineProxy
 }
 
-// KiroEngine kiro 引擎。
-type KiroEngine struct {
+// Engine kiro 引擎。
+type Engine struct {
 	name  string
 	proxy string
 	st    *store.Store
@@ -70,8 +69,8 @@ type KiroEngine struct {
 }
 
 // NewKiro 构建 kiro 引擎。
-func NewKiro(cfg config.KiroConfig, st *store.Store) *KiroEngine {
-	return &KiroEngine{
+func New(cfg config.KiroConfig, st *store.Store) *Engine {
+	return &Engine{
 		name:  "kiro",
 		proxy: strings.TrimSpace(cfg.Proxy),
 		st:    st,
@@ -80,7 +79,7 @@ func NewKiro(cfg config.KiroConfig, st *store.Store) *KiroEngine {
 }
 
 // AddAccount 添加账号并异步首刷 token。
-func (e *KiroEngine) AddAccount(id, label string, creds KiroCredentials) error {
+func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	if strings.TrimSpace(creds.RefreshToken) == "" {
 		return errors.New("refresh_token 不能为空")
 	}
@@ -98,7 +97,7 @@ func (e *KiroEngine) AddAccount(id, label string, creds KiroCredentials) error {
 }
 
 // RemoveAccount 移除账号。
-func (e *KiroEngine) RemoveAccount(id string) error {
+func (e *Engine) RemoveAccount(id string) error {
 	e.mu.Lock()
 	idx, ok := e.ids[id]
 	if !ok {
@@ -117,7 +116,7 @@ func (e *KiroEngine) RemoveAccount(id string) error {
 }
 
 // SetEnabled 启停账号。
-func (e *KiroEngine) SetEnabled(id string, enabled bool) error {
+func (e *Engine) SetEnabled(id string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -131,7 +130,7 @@ func (e *KiroEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // ReplaceCredentials 更新凭据（重建账号）。
-func (e *KiroEngine) ReplaceCredentials(id string, creds KiroCredentials) error {
+func (e *Engine) ReplaceCredentials(id string, creds Credentials) error {
 	e.mu.RLock()
 	idx, ok := e.ids[id]
 	label := id
@@ -149,20 +148,20 @@ func (e *KiroEngine) ReplaceCredentials(id string, creds KiroCredentials) error 
 }
 
 // AccountStates 全部账号状态（管理台）。
-func (e *KiroEngine) AccountStates() []AccountState {
+func (e *Engine) AccountStates() []engine.AccountState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]AccountState, 0, len(e.accounts))
+	out := make([]engine.AccountState, 0, len(e.accounts))
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
-		state := AccountState{
+		state := engine.AccountState{
 			ID:      acc.id,
 			Label:   acc.label,
 			Enabled: acc.enabled,
 			Detail:  acc.lastErr,
 			Tier:    acc.creds.Email,
 			Quota:   acc.quota,
-			Models:  len(kiro.DefaultModels),
+			Models:  len(DefaultModels),
 		}
 		if acc.email != "" {
 			state.Tier = acc.email
@@ -192,7 +191,7 @@ func (e *KiroEngine) AccountStates() []AccountState {
 }
 
 // ensureToken 刷新账号 token（Kiro refresh_token 旋转式，必须回写）。
-func (e *KiroEngine) ensureToken(acc *kiroAccount) error {
+func (e *Engine) ensureToken(acc *kiroAccount) error {
 	acc.mu.Lock()
 	refreshToken := acc.refreshToken
 	proxy := acc.proxy(e.proxy)
@@ -200,7 +199,7 @@ func (e *KiroEngine) ensureToken(acc *kiroAccount) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	tok, err := kiro.Refresh(ctx, proxy, refreshToken)
+	tok, err := Refresh(ctx, proxy, refreshToken)
 	acc.mu.Lock()
 	if err != nil {
 		acc.ready = false
@@ -230,10 +229,10 @@ func (e *KiroEngine) ensureToken(acc *kiroAccount) error {
 }
 
 // refreshUsage 拉取账号用量与订阅信息（CREDIT 剩余额度）。
-func (e *KiroEngine) refreshUsage(acc *kiroAccount, proxy, accessToken string) {
+func (e *Engine) refreshUsage(acc *kiroAccount, proxy, accessToken string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	limits, err := kiro.GetUsageLimits(ctx, proxy, accessToken)
+	limits, err := GetUsageLimits(ctx, proxy, accessToken)
 	if err != nil {
 		return // best-effort
 	}
@@ -263,7 +262,7 @@ func (e *KiroEngine) refreshUsage(acc *kiroAccount, proxy, accessToken string) {
 }
 
 // token 返回有效 access_token（提前 5 分钟刷新）。
-func (e *KiroEngine) token(acc *kiroAccount) (string, error) {
+func (e *Engine) token(acc *kiroAccount) (string, error) {
 	acc.mu.Lock()
 	needRefresh := acc.accessToken == "" || (acc.expiresAt.After(time.Time{}) && time.Until(acc.expiresAt) < 5*time.Minute)
 	tok := acc.accessToken
@@ -284,14 +283,14 @@ func (e *KiroEngine) token(acc *kiroAccount) (string, error) {
 
 // ---- Engine 接口 ----
 
-func (e *KiroEngine) Name() string { return e.name }
+func (e *Engine) Name() string { return e.name }
 
-func (e *KiroEngine) Describe() string {
+func (e *Engine) Describe() string {
 	return "AWS Kiro（CodeWhisperer 订阅号池，Claude 模型）"
 }
 
 // Ready 至少一个账号可用。
-func (e *KiroEngine) Ready() bool {
+func (e *Engine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
@@ -306,7 +305,7 @@ func (e *KiroEngine) Ready() bool {
 }
 
 // ListModels kiro 模型目录。
-func (e *KiroEngine) ListModels() []model.ModelInfo {
+func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	enabled := 0
 	for _, acc := range e.accounts {
@@ -317,8 +316,8 @@ func (e *KiroEngine) ListModels() []model.ModelInfo {
 		acc.mu.Unlock()
 	}
 	e.mu.RUnlock()
-	out := make([]model.ModelInfo, 0, len(kiro.DefaultModels))
-	for _, id := range kiro.DefaultModels {
+	out := make([]model.ModelInfo, 0, len(DefaultModels))
+	for _, id := range DefaultModels {
 		out = append(out, model.ModelInfo{
 			ID:          id,
 			Object:      "model",
@@ -331,7 +330,7 @@ func (e *KiroEngine) ListModels() []model.ModelInfo {
 }
 
 // pick 轮询选择可用账号。
-func (e *KiroEngine) pick() *kiroAccount {
+func (e *Engine) pick() *kiroAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -351,51 +350,51 @@ func (e *KiroEngine) pick() *kiroAccount {
 	return nil
 }
 
-func (e *KiroEngine) markCooldown(acc *kiroAccount, reason string, d time.Duration) {
+func (e *Engine) markCooldown(acc *kiroAccount, reason string, d time.Duration) {
 	acc.mu.Lock()
 	acc.cooldownUntil = time.Now().Add(d)
 	acc.cooldownReason = reason
 	acc.mu.Unlock()
 }
 
-// toKiroRequest ChatRequest → kiro.Request。
-func toKiroRequest(req model.ChatRequest) (*kiro.Request, error) {
-	out := &kiro.Request{Model: req.Model}
+// toKiroRequest ChatRequest → Request。
+func toKiroRequest(req model.ChatRequest) (*Request, error) {
+	out := &Request{Model: req.Model}
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, kiro.Message{Role: m.PlainRole(), Text: m.Text()})
+		out.Messages = append(out.Messages, Message{Role: m.PlainRole(), Text: m.Text()})
 	}
 	return out, nil
 }
 
 // chatOnce 单账号一次请求（401/403 刷新重试一次）。
-func (e *KiroEngine) chatOnce(ctx context.Context, acc *kiroAccount, req *kiro.Request, onDelta func(string) error) (*kiro.Result, error) {
-	attempt := func() (*kiro.Result, error) {
+func (e *Engine) chatOnce(ctx context.Context, acc *kiroAccount, req *Request, onDelta func(string) error) (*Result, error) {
+	attempt := func() (*Result, error) {
 		accessToken, err := e.token(acc)
 		if err != nil {
 			return nil, err
 		}
-		return kiro.Stream(ctx, acc.proxy(e.proxy), accessToken, req, onDelta)
+		return Stream(ctx, acc.proxy(e.proxy), accessToken, req, onDelta)
 	}
 	res, err := attempt()
-	if err != nil && kiro.IsSuspended(err) {
+	if err != nil && IsSuspended(err) {
 		// 账号被上游封停（安全锁定）：刷新 token 无效，长冷却并透出恢复方式
-		e.markCooldown(acc, "账号被上游封停（安全锁定），需到 app.kiro.dev/account/usage 验证身份恢复", time.Hour)
+		e.markCooldown(acc, "账号被上游封停（安全锁定），需到 app.dev/account/usage 验证身份恢复", time.Hour)
 		return nil, err
 	}
-	if err != nil && kiro.IsUnauthorized(err) {
+	if err != nil && IsUnauthorized(err) {
 		if refreshErr := e.ensureToken(acc); refreshErr != nil {
 			return nil, fmt.Errorf("token 已失效且刷新失败: %w", refreshErr)
 		}
 		res, err = attempt()
 	}
-	if err != nil && kiro.IsRateLimited(err) {
+	if err != nil && IsRateLimited(err) {
 		e.markCooldown(acc, "上游限流", 3*time.Minute)
 	}
 	return res, err
 }
 
 // chatLoop 轮询账号直到成功或池耗尽。
-func (e *KiroEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
+func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engine.UnavailableError(e)
 	}
@@ -422,7 +421,7 @@ func (e *KiroEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelt
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if kiro.IsUnauthorized(err) || strings.Contains(err.Error(), "刷新失败") {
+		if IsUnauthorized(err) || strings.Contains(err.Error(), "刷新失败") {
 			e.markCooldown(acc, "凭据失效", 10*time.Minute)
 			continue
 		}
@@ -433,7 +432,7 @@ func (e *KiroEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelt
 	return nil, errors.New("kiro 没有可用账号")
 }
 
-func (e *KiroEngine) usableCount() int {
+func (e *Engine) usableCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := 0
@@ -451,12 +450,12 @@ func (e *KiroEngine) usableCount() int {
 }
 
 // Chat 非流式对话。
-func (e *KiroEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, nil)
 }
 
 // ChatStream 流式对话。
-func (e *KiroEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, func(delta string) error {
 		if onDelta != nil {
 			return onDelta(delta)
@@ -465,14 +464,14 @@ func (e *KiroEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDe
 	})
 }
 
-func (e *KiroEngine) setErr(err error) {
+func (e *Engine) setErr(err error) {
 	e.errMu.Lock()
 	e.lastErr = err
 	e.errMu.Unlock()
 }
 
 // Status 引擎运行状态。
-func (e *KiroEngine) Status() map[string]any {
+func (e *Engine) Status() map[string]any {
 	accounts := e.AccountStates()
 	ready := 0
 	for _, st := range accounts {
@@ -497,11 +496,11 @@ func (e *KiroEngine) Status() map[string]any {
 }
 
 // Passthrough kiro 不支持多模态端点透传。
-func (e *KiroEngine) Passthrough() bool { return false }
+func (e *Engine) Passthrough() bool { return false }
 
-func (e *KiroEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("kiro 引擎不支持透传")
 }
 
 // Close 关闭引擎。
-func (e *KiroEngine) Close() {}
+func (e *Engine) Close() {}

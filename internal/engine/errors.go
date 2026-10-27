@@ -204,7 +204,7 @@ func emptyStatusList(v any) bool {
 	case []any:
 		return len(list) == 0
 	default:
-		// 订阅引擎的 []AccountState 等具体切片类型
+		// 订阅引擎的 []engine.AccountState 等具体切片类型
 		rv := reflect.ValueOf(v)
 		if rv.Kind() == reflect.Slice {
 			return rv.Len() == 0

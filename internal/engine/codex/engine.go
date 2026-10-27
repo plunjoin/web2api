@@ -1,6 +1,6 @@
-// engine_codex.go 引擎 codex：OpenAI Codex（ChatGPT 订阅号）账号池。
+// engine_go 引擎 codex：OpenAI Codex（ChatGPT 订阅号）账号池。
 // 凭据为 OAuth refresh_token，运行时自动刷新 access_token，401 自动重试。
-package provider
+package codex
 
 import (
 	"context"
@@ -17,11 +17,10 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/engine/codex"
 )
 
-// CodexCredentials codex 引擎凭据（accounts.credentials JSON）。
-type CodexCredentials struct {
+// Credentials codex 引擎凭据（accounts.credentials JSON）。
+type Credentials struct {
 	RefreshToken     string `json:"refresh_token"`
 	Email            string `json:"email,omitempty"`
 	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
@@ -32,7 +31,7 @@ type CodexCredentials struct {
 type codexAccount struct {
 	id, label string
 	mu        sync.Mutex
-	creds     CodexCredentials
+	creds     Credentials
 	enabled   bool
 
 	accessToken string
@@ -52,8 +51,8 @@ func (a *codexAccount) proxy(engineProxy string) string {
 	return engineProxy
 }
 
-// CodexEngine codex 引擎。
-type CodexEngine struct {
+// Engine codex 引擎。
+type Engine struct {
 	name  string
 	proxy string
 	st    *store.Store
@@ -68,8 +67,8 @@ type CodexEngine struct {
 }
 
 // NewCodex 构建 codex 引擎（账号通过 AddAccount 动态注入）。
-func NewCodex(cfg config.CodexConfig, st *store.Store) *CodexEngine {
-	return &CodexEngine{
+func New(cfg config.CodexConfig, st *store.Store) *Engine {
+	return &Engine{
 		name:  "codex",
 		proxy: strings.TrimSpace(cfg.Proxy),
 		st:    st,
@@ -78,7 +77,7 @@ func NewCodex(cfg config.CodexConfig, st *store.Store) *CodexEngine {
 }
 
 // AddAccount 添加账号并异步首刷 token。
-func (e *CodexEngine) AddAccount(id, label string, creds CodexCredentials) error {
+func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	if strings.TrimSpace(creds.RefreshToken) == "" {
 		return errors.New("refresh_token 不能为空")
 	}
@@ -96,7 +95,7 @@ func (e *CodexEngine) AddAccount(id, label string, creds CodexCredentials) error
 }
 
 // RemoveAccount 移除账号。
-func (e *CodexEngine) RemoveAccount(id string) error {
+func (e *Engine) RemoveAccount(id string) error {
 	e.mu.Lock()
 	idx, ok := e.ids[id]
 	if !ok {
@@ -115,7 +114,7 @@ func (e *CodexEngine) RemoveAccount(id string) error {
 }
 
 // SetEnabled 启停账号。
-func (e *CodexEngine) SetEnabled(id string, enabled bool) error {
+func (e *Engine) SetEnabled(id string, enabled bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	idx, ok := e.ids[id]
@@ -129,7 +128,7 @@ func (e *CodexEngine) SetEnabled(id string, enabled bool) error {
 }
 
 // ReplaceCredentials 更新凭据（重建账号）。
-func (e *CodexEngine) ReplaceCredentials(id string, creds CodexCredentials) error {
+func (e *Engine) ReplaceCredentials(id string, creds Credentials) error {
 	label, err := e.labelOf(id)
 	if err != nil {
 		return err
@@ -140,7 +139,7 @@ func (e *CodexEngine) ReplaceCredentials(id string, creds CodexCredentials) erro
 	return e.AddAccount(id, label, creds)
 }
 
-func (e *CodexEngine) labelOf(id string) (string, error) {
+func (e *Engine) labelOf(id string) (string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	idx, ok := e.ids[id]
@@ -151,20 +150,20 @@ func (e *CodexEngine) labelOf(id string) (string, error) {
 }
 
 // AccountStates 全部账号状态（管理台）。
-func (e *CodexEngine) AccountStates() []AccountState {
+func (e *Engine) AccountStates() []engine.AccountState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make([]AccountState, 0, len(e.accounts))
+	out := make([]engine.AccountState, 0, len(e.accounts))
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
-		state := AccountState{
+		state := engine.AccountState{
 			ID:      acc.id,
 			Label:   acc.label,
 			Enabled: acc.enabled,
 			Detail:  acc.lastErr,
 			Tier:    acc.creds.Email,
 			Quota:   acc.quota,
-			Models:  len(codex.DefaultModels),
+			Models:  len(DefaultModels),
 		}
 		switch {
 		case !acc.enabled:
@@ -190,7 +189,7 @@ func (e *CodexEngine) AccountStates() []AccountState {
 // ---- token 生命周期 ----
 
 // ensureToken 刷新账号 token（加锁防并发），成功回写池内状态。
-func (e *CodexEngine) ensureToken(acc *codexAccount) error {
+func (e *Engine) ensureToken(acc *codexAccount) error {
 	acc.mu.Lock()
 	refreshToken := acc.creds.RefreshToken
 	proxy := acc.proxy(e.proxy)
@@ -198,7 +197,7 @@ func (e *CodexEngine) ensureToken(acc *codexAccount) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	tok, err := codex.Refresh(ctx, proxy, refreshToken)
+	tok, err := Refresh(ctx, proxy, refreshToken)
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
 	if err != nil {
@@ -231,7 +230,7 @@ func (e *CodexEngine) ensureToken(acc *codexAccount) error {
 }
 
 // token 返回有效 access_token；过期（提前 3 分钟）时刷新。
-func (e *CodexEngine) token(acc *codexAccount) (string, string, error) {
+func (e *Engine) token(acc *codexAccount) (string, string, error) {
 	acc.mu.Lock()
 	needRefresh := acc.accessToken == "" || (acc.expiresAt.After(time.Time{}) && time.Until(acc.expiresAt) < 3*time.Minute)
 	tok := acc.accessToken
@@ -255,14 +254,14 @@ func (e *CodexEngine) token(acc *codexAccount) (string, string, error) {
 
 // ---- Engine 接口 ----
 
-func (e *CodexEngine) Name() string { return e.name }
+func (e *Engine) Name() string { return e.name }
 
-func (e *CodexEngine) Describe() string {
+func (e *Engine) Describe() string {
 	return "OpenAI Codex（ChatGPT 订阅号池，Responses 协议）"
 }
 
 // Ready 至少一个账号可用。
-func (e *CodexEngine) Ready() bool {
+func (e *Engine) Ready() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, acc := range e.accounts {
@@ -277,7 +276,7 @@ func (e *CodexEngine) Ready() bool {
 }
 
 // ListModels codex 模型目录。
-func (e *CodexEngine) ListModels() []model.ModelInfo {
+func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	enabled := 0
 	for _, acc := range e.accounts {
@@ -288,8 +287,8 @@ func (e *CodexEngine) ListModels() []model.ModelInfo {
 		acc.mu.Unlock()
 	}
 	e.mu.RUnlock()
-	out := make([]model.ModelInfo, 0, len(codex.DefaultModels))
-	for _, id := range codex.DefaultModels {
+	out := make([]model.ModelInfo, 0, len(DefaultModels))
+	for _, id := range DefaultModels {
 		out = append(out, model.ModelInfo{
 			ID:          id,
 			Object:      "model",
@@ -302,7 +301,7 @@ func (e *CodexEngine) ListModels() []model.ModelInfo {
 }
 
 // pick 轮询选择可用账号。
-func (e *CodexEngine) pick() *codexAccount {
+func (e *Engine) pick() *codexAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -322,23 +321,23 @@ func (e *CodexEngine) pick() *codexAccount {
 	return nil
 }
 
-func (e *CodexEngine) markCooldown(acc *codexAccount, reason string, d time.Duration) {
+func (e *Engine) markCooldown(acc *codexAccount, reason string, d time.Duration) {
 	acc.mu.Lock()
 	acc.cooldownUntil = time.Now().Add(d)
 	acc.cooldownReason = reason
 	acc.mu.Unlock()
 }
 
-// toCodexRequest ChatRequest → codex.Request。
-func toCodexRequest(req model.ChatRequest) *codex.Request {
-	out := &codex.Request{
+// toCodexRequest ChatRequest → Request。
+func toCodexRequest(req model.ChatRequest) *Request {
+	out := &Request{
 		Model:      req.Model,
 		MaxTokens:  engine.DerefInt(req.MaxTokens),
 		Tools:      toCodexTools(req.Tools),
 		ToolChoice: req.ToolChoice,
 	}
 	for _, m := range req.Messages {
-		msg := codex.Message{
+		msg := Message{
 			Role:       m.Role,
 			Text:       m.Text(),
 			ImageURLs:  engine.SubImageURLs(m.Content),
@@ -346,7 +345,7 @@ func toCodexRequest(req model.ChatRequest) *codex.Request {
 			Name:       m.Name,
 		}
 		for _, call := range m.ToolCalls {
-			msg.ToolCalls = append(msg.ToolCalls, codex.ToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
 				ID:        call.ID,
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
@@ -358,13 +357,13 @@ func toCodexRequest(req model.ChatRequest) *codex.Request {
 }
 
 // toCodexTools 把 OpenAI 工具定义转成 Responses 格式（name 等字段平铺）。
-func toCodexTools(tools []model.Tool) []codex.Tool {
-	out := make([]codex.Tool, 0, len(tools))
+func toCodexTools(tools []model.Tool) []Tool {
+	out := make([]Tool, 0, len(tools))
 	for _, tool := range tools {
 		if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
 			continue
 		}
-		out = append(out, codex.Tool{
+		out = append(out, Tool{
 			Type:        "function",
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
@@ -375,23 +374,23 @@ func toCodexTools(tools []model.Tool) []codex.Tool {
 }
 
 // chatOnce 单账号一次请求（401 时刷新重试一次）。
-func (e *CodexEngine) chatOnce(ctx context.Context, acc *codexAccount, req *codex.Request, onDelta func(string) error, onTool func(codex.ToolCallDelta) error) (*codex.Result, error) {
-	attempt := func() (*codex.Result, error) {
+func (e *Engine) chatOnce(ctx context.Context, acc *codexAccount, req *Request, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
+	attempt := func() (*Result, error) {
 		accessToken, accountID, err := e.token(acc)
 		if err != nil {
 			return nil, err
 		}
-		return codex.StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, accountID, req, onDelta, onTool)
+		return StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, accountID, req, onDelta, onTool)
 	}
 	res, err := attempt()
-	if err != nil && codex.IsUnauthorized(err) {
+	if err != nil && IsUnauthorized(err) {
 		// token 失效：强制刷新后重试一次
 		if refreshErr := e.ensureToken(acc); refreshErr != nil {
 			return nil, fmt.Errorf("token 已失效且刷新失败: %w", refreshErr)
 		}
 		res, err = attempt()
 	}
-	if err != nil && codex.IsRateLimited(err) {
+	if err != nil && IsRateLimited(err) {
 		e.markCooldown(acc, "上游限流", 5*time.Minute)
 	}
 	if err == nil && res != nil && res.PrimaryUsedPercent > 0 {
@@ -409,7 +408,7 @@ func (e *CodexEngine) chatOnce(ctx context.Context, acc *codexAccount, req *code
 }
 
 // chatLoop 轮询账号直到成功或池耗尽。
-func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engine.UnavailableError(e)
 	}
@@ -423,7 +422,7 @@ func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink 
 		if acc == nil {
 			break
 		}
-		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta codex.ToolCallDelta) error {
+		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta ToolCallDelta) error {
 			return sink.ToolCall(model.ToolCallDelta{
 				Index: delta.Index,
 				ID:    delta.ID,
@@ -464,7 +463,7 @@ func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink 
 			return nil, err
 		}
 		// 401 刷新已失败 → 账号短暂冷却，换下一个
-		if codex.IsUnauthorized(err) || strings.Contains(err.Error(), "刷新失败") {
+		if IsUnauthorized(err) || strings.Contains(err.Error(), "刷新失败") {
 			e.markCooldown(acc, "凭据失效", 10*time.Minute)
 			continue
 		}
@@ -476,7 +475,7 @@ func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink 
 	return nil, errors.New("codex 没有可用账号")
 }
 
-func (e *CodexEngine) usableCount() int {
+func (e *Engine) usableCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := 0
@@ -494,28 +493,28 @@ func (e *CodexEngine) usableCount() int {
 }
 
 // Chat 非流式对话。
-func (e *CodexEngine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, nil)
 }
 
 // ChatStream 流式对话。
-func (e *CodexEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
+func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, model.TextSink(onDelta))
 }
 
 // ChatStreamSink 流式对话（支持工具调用增量）。
-func (e *CodexEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+func (e *Engine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	return e.chatLoop(ctx, req, sink)
 }
 
-func (e *CodexEngine) setErr(err error) {
+func (e *Engine) setErr(err error) {
 	e.errMu.Lock()
 	e.lastErr = err
 	e.errMu.Unlock()
 }
 
 // Status 引擎运行状态。
-func (e *CodexEngine) Status() map[string]any {
+func (e *Engine) Status() map[string]any {
 	accounts := e.AccountStates()
 	ready := 0
 	for _, st := range accounts {
@@ -540,11 +539,11 @@ func (e *CodexEngine) Status() map[string]any {
 }
 
 // Passthrough codex 不支持多模态端点透传。
-func (e *CodexEngine) Passthrough() bool { return false }
+func (e *Engine) Passthrough() bool { return false }
 
-func (e *CodexEngine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
+func (e *Engine) ServePassthrough(ctx context.Context, method, path string, body io.Reader, contentType string, w engine.PassthroughWriter) error {
 	return errors.New("codex 引擎不支持透传")
 }
 
 // Close 关闭引擎（账号无后台协程，无需清理）。
-func (e *CodexEngine) Close() {}
+func (e *Engine) Close() {}
