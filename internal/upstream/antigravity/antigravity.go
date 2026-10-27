@@ -883,11 +883,16 @@ func setCommonHeaders(req *http.Request, accessToken string) {
 
 // ==================== 推理（v1internal:streamGenerateContent） ====================
 
-// Message 输入消息（role: system/user/assistant）。
+// Message 输入消息（role: system/user/assistant/tool）。
 type Message struct {
 	Role      string
 	Text      string
 	ImageURLs []string // data:URL（inlineData）或 http URL
+	// ToolCalls 仅 assistant：模型上一轮发起的函数调用，需按 functionCall 回填。
+	ToolCalls []ToolCall
+	// ToolCallID / ToolName 仅 tool：应答哪一次调用。
+	ToolCallID string
+	ToolName   string
 }
 
 // Request 推理请求。
@@ -899,6 +904,9 @@ type Request struct {
 	Temperature *float64
 	ProjectID   string
 	UseDaily    bool // 付费号可走 daily；免费号必须走 prod
+	// Tools / ToolChoice：OpenAI function calling → Gemini functionDeclarations。
+	Tools      []Tool
+	ToolChoice json.RawMessage
 }
 
 // Result 推理结果与用量（OpenAI 口径换算后）。
@@ -907,11 +915,25 @@ type Result struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	ReasoningTokens  int64
+	ToolCalls        []ToolCall
 }
 
 type geminiPart struct {
-	Text       string        `json:"text,omitempty"`
-	InlineData *geminiInline `json:"inlineData,omitempty"`
+	Text             string                  `json:"text,omitempty"`
+	InlineData       *geminiInline           `json:"inlineData,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
+}
+
+type geminiFunctionCall struct {
+	Name string `json:"name"`
+	Args any    `json:"args,omitempty"`
+}
+
+type geminiFunctionResponse struct {
+	Name     string `json:"name"`
+	Response any    `json:"response"`
 }
 
 type geminiInline struct {
@@ -937,7 +959,8 @@ type geminiBody struct {
 	Contents          []geminiContent     `json:"contents"`
 	SystemInstruction *geminiContent      `json:"systemInstruction,omitempty"`
 	GenerationConfig  map[string]any      `json:"generationConfig"`
-	ToolConfig        map[string]any      `json:"toolConfig"`
+	Tools             []map[string]any    `json:"tools,omitempty"`
+	ToolConfig        map[string]any      `json:"toolConfig,omitempty"`
 	SafetySettings    []map[string]string `json:"safetySettings"`
 	SessionID         string              `json:"sessionId,omitempty"`
 }
@@ -954,28 +977,57 @@ func buildBody(req *Request) (*internalRequest, error) {
 		Model:       req.Model,
 	}
 	for _, msg := range req.Messages {
-		role := "user"
-		switch strings.ToLower(msg.Role) {
+		roleLower := strings.ToLower(msg.Role)
+		switch roleLower {
 		case "system":
 			continue // system 走 systemInstruction
+		case "tool":
+			// 工具结果必须以 functionResponse 回填，否则模型会反复发起同一调用。
+			content := geminiContent{Role: "user"}
+			appendFunctionResponsePart(&content.Parts, msg.ToolCallID, msg.ToolName, msg.Text)
+			out.Request.Contents = append(out.Request.Contents, content)
+			continue
 		case "assistant":
-			role = "model"
-		}
-		content := geminiContent{Role: role}
-		if strings.TrimSpace(msg.Text) != "" {
-			content.Parts = append(content.Parts, geminiPart{Text: msg.Text})
-		}
-		for _, img := range msg.ImageURLs {
-			part, err := imagePart(img)
-			if err != nil {
-				return nil, err
+			content := geminiContent{Role: "model"}
+			if strings.TrimSpace(msg.Text) != "" {
+				content.Parts = append(content.Parts, geminiPart{Text: msg.Text})
 			}
-			content.Parts = append(content.Parts, *part)
+			for _, call := range msg.ToolCalls {
+				appendFunctionCallPart(&content.Parts, call)
+			}
+			for _, img := range msg.ImageURLs {
+				part, err := imagePart(img)
+				if err != nil {
+					return nil, err
+				}
+				if part != nil {
+					content.Parts = append(content.Parts, *part)
+				}
+			}
+			if len(content.Parts) == 0 {
+				content.Parts = append(content.Parts, geminiPart{Text: " "})
+			}
+			out.Request.Contents = append(out.Request.Contents, content)
+			continue
+		default:
+			content := geminiContent{Role: "user"}
+			if strings.TrimSpace(msg.Text) != "" {
+				content.Parts = append(content.Parts, geminiPart{Text: msg.Text})
+			}
+			for _, img := range msg.ImageURLs {
+				part, err := imagePart(img)
+				if err != nil {
+					return nil, err
+				}
+				if part != nil {
+					content.Parts = append(content.Parts, *part)
+				}
+			}
+			if len(content.Parts) == 0 {
+				content.Parts = append(content.Parts, geminiPart{Text: " "})
+			}
+			out.Request.Contents = append(out.Request.Contents, content)
 		}
-		if len(content.Parts) == 0 {
-			content.Parts = append(content.Parts, geminiPart{Text: " "})
-		}
-		out.Request.Contents = append(out.Request.Contents, content)
 	}
 	if len(out.Request.Contents) == 0 {
 		return nil, errors.New("没有可发送的消息")
@@ -998,9 +1050,7 @@ func buildBody(req *Request) (*internalRequest, error) {
 		genConfig["temperature"] = *req.Temperature
 	}
 	out.Request.GenerationConfig = genConfig
-	out.Request.ToolConfig = map[string]any{
-		"functionCallingConfig": map[string]any{"mode": "VALIDATED"},
-	}
+	applyTools(&out.Request, req.Tools, req.ToolChoice)
 	// sessionId：官方客户端按首条 user 消息内容派生，缺失可能被上游风控拦截
 	out.Request.SessionID = deriveSessionID(req.Messages)
 	for _, cat := range []string{
@@ -1117,9 +1167,14 @@ func rememberBase(base string) {
 	urlState.mu.Unlock()
 }
 
-// Stream 发起 v1internal 流式推理。
-// 端点级 429（"Resource has been exhausted"）时自动切换 prod/daily 另一端点重试一次。
+// Stream 发起 v1internal 流式推理（仅文本增量）。
 func Stream(ctx context.Context, proxy, accessToken string, req *Request, onDelta func(string) error) (*Result, error) {
+	return StreamWithTools(ctx, proxy, accessToken, req, onDelta, nil)
+}
+
+// StreamWithTools 与 Stream 相同，额外把 functionCall 回调出去。
+// 端点级 429（"Resource has been exhausted"）时自动切换 prod/daily 另一端点重试一次。
+func StreamWithTools(ctx context.Context, proxy, accessToken string, req *Request, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
 	body, err := buildBody(req)
 	if err != nil {
 		return nil, err
@@ -1138,7 +1193,7 @@ func Stream(ctx context.Context, proxy, accessToken string, req *Request, onDelt
 	primary, fallback := preferredBases(req.UseDaily)
 	var lastErr error
 	for _, base := range []string{primary, fallback} {
-		res, err := streamOnce(ctx, client, base, accessToken, payload, onDelta)
+		res, err := streamOnce(ctx, client, base, accessToken, payload, onDelta, onTool)
 		if err == nil {
 			rememberBase(base)
 			return res, nil
@@ -1159,7 +1214,7 @@ func Stream(ctx context.Context, proxy, accessToken string, req *Request, onDelt
 }
 
 // streamOnce 向指定端点发起一次流式请求。
-func streamOnce(ctx context.Context, client *http.Client, base, accessToken string, payload []byte, onDelta func(string) error) (*Result, error) {
+func streamOnce(ctx context.Context, client *http.Client, base, accessToken string, payload []byte, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		base+"/v1internal:streamGenerateContent?alt=sse", bytes.NewReader(payload))
 	if err != nil {
@@ -1176,7 +1231,7 @@ func streamOnce(ctx context.Context, client *http.Client, base, accessToken stri
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, &UpstreamError{Status: resp.StatusCode, Body: string(b)}
 	}
-	return parseSSE(resp.Body, onDelta)
+	return parseSSE(resp.Body, onDelta, onTool)
 }
 
 // UpstreamError 上游非 200 响应。
@@ -1218,7 +1273,7 @@ func IsResourceExhausted(err error) bool {
 }
 
 // parseSSE 解析 v1internal SSE（每块 {"response": {GeminiResponse}}）。
-func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
+func parseSSE(r io.Reader, onDelta func(string) error, onTool func(ToolCallDelta) error) (*Result, error) {
 	result := &Result{}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
@@ -1249,9 +1304,13 @@ func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
 			Candidates []struct {
 				Content struct {
 					Parts []struct {
-						Text       string `json:"text"`
-						Thought    bool   `json:"thought"`
-						ThoughtSig string `json:"thoughtSignature"`
+						Text         string `json:"text"`
+						Thought      bool   `json:"thought"`
+						ThoughtSig   string `json:"thoughtSignature"`
+						FunctionCall *struct {
+							Name string          `json:"name"`
+							Args json.RawMessage `json:"args"`
+						} `json:"functionCall"`
 						InlineData *struct {
 							MimeType string `json:"mimeType"`
 							Data     string `json:"data"`
@@ -1272,6 +1331,35 @@ func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
 		for _, cand := range chunk.Candidates {
 			for _, part := range cand.Content.Parts {
 				switch {
+				case part.FunctionCall != nil && strings.TrimSpace(part.FunctionCall.Name) != "":
+					args := "{}"
+					if len(part.FunctionCall.Args) > 0 && string(part.FunctionCall.Args) != "null" {
+						var obj any
+						if json.Unmarshal(part.FunctionCall.Args, &obj) == nil {
+							args = argsToJSONString(obj)
+						} else if json.Valid(part.FunctionCall.Args) {
+							args = string(part.FunctionCall.Args)
+						}
+					}
+					call := ToolCall{
+						ID:         newToolCallID(part.FunctionCall.Name),
+						Name:       part.FunctionCall.Name,
+						Arguments:  args,
+						ThoughtSig: strings.TrimSpace(part.ThoughtSig),
+					}
+					index := len(result.ToolCalls)
+					result.ToolCalls = append(result.ToolCalls, call)
+					if onTool != nil {
+						if err := onTool(ToolCallDelta{
+							Index:      index,
+							ID:         call.ID,
+							Name:       call.Name,
+							Arguments:  call.Arguments,
+							ThoughtSig: call.ThoughtSig,
+						}); err != nil {
+							return nil, err
+						}
+					}
 				case part.InlineData != nil:
 					md := "\n\n![image](data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data + ")\n"
 					result.Text += md
@@ -1300,12 +1388,12 @@ func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		if result.Text != "" {
+		if result.Text != "" || len(result.ToolCalls) > 0 {
 			return result, nil
 		}
 		return nil, err
 	}
-	if result.Text == "" {
+	if result.Text == "" && len(result.ToolCalls) == 0 {
 		return nil, errors.New("上游没有返回任何内容")
 	}
 	return result, nil

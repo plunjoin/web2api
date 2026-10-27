@@ -4,6 +4,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -677,26 +678,78 @@ func (e *AntigravityEngine) markCooldown(acc *antigravityAccount, reason string,
 // toAntigravityRequest ChatRequest → antigravity.Request。
 func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.Request {
 	out := &antigravity.Request{
-		Model:     req.Model,
-		System:    subSystemText(req),
-		MaxTokens: derefInt(req.MaxTokens),
-		ProjectID: projectID,
+		Model:      req.Model,
+		System:     subSystemText(req),
+		MaxTokens:  derefInt(req.MaxTokens),
+		ProjectID:  projectID,
+		ToolChoice: req.ToolChoice,
 	}
-	for _, m := range req.Messages {
-		if strings.EqualFold(m.Role, "system") {
+	for _, tool := range req.Tools {
+		if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
 			continue
 		}
-		out.Messages = append(out.Messages, antigravity.Message{
-			Role:      m.PlainRole(),
-			Text:      m.Text(),
-			ImageURLs: subImageURLs(m.Content),
+		out.Tools = append(out.Tools, antigravity.Tool{
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
 		})
+	}
+	for _, m := range req.Messages {
+		role := strings.ToLower(m.Role)
+		switch role {
+		case "system":
+			continue
+		case "tool":
+			out.Messages = append(out.Messages, antigravity.Message{
+				Role:       "tool",
+				Text:       m.Text(),
+				ToolCallID: m.ToolCallID,
+				ToolName:   m.Name,
+			})
+		case "assistant":
+			msg := antigravity.Message{
+				Role:      "assistant",
+				Text:      m.Text(),
+				ImageURLs: subImageURLs(m.Content),
+			}
+			for _, call := range m.ToolCalls {
+				msg.ToolCalls = append(msg.ToolCalls, antigravity.ToolCall{
+					ID:         call.ID,
+					Name:       call.Function.Name,
+					Arguments:  call.Function.Arguments,
+					ThoughtSig: thoughtSigFromExtra(call.ExtraContent),
+				})
+			}
+			out.Messages = append(out.Messages, msg)
+		default:
+			out.Messages = append(out.Messages, antigravity.Message{
+				Role:      m.PlainRole(),
+				Text:      m.Text(),
+				ImageURLs: subImageURLs(m.Content),
+			})
+		}
 	}
 	return out
 }
 
+// thoughtSigFromExtra 从 Gemini OpenAI 兼容端点的 extra_content 里取出 thought_signature。
+func thoughtSigFromExtra(extra json.RawMessage) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	var wrap struct {
+		Google struct {
+			ThoughtSignature string `json:"thought_signature"`
+		} `json:"google"`
+	}
+	if json.Unmarshal(extra, &wrap) == nil && strings.TrimSpace(wrap.Google.ThoughtSignature) != "" {
+		return wrap.Google.ThoughtSignature
+	}
+	return ""
+}
+
 // chatOnce 单账号一次请求（401 刷新重试）。
-func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccount, req *antigravity.Request, onDelta func(string) error) (*antigravity.Result, error) {
+func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccount, req *antigravity.Request, onDelta func(string) error, onTool func(antigravity.ToolCallDelta) error) (*antigravity.Result, error) {
 	attempt := func() (*antigravity.Result, error) {
 		accessToken, projectID, err := e.token(acc)
 		if err != nil {
@@ -704,7 +757,7 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 		}
 		req.ProjectID = projectID
 		req.Model = e.resolveModel(acc, req.Model)
-		return antigravity.Stream(ctx, acc.proxy(e.proxy), accessToken, req, onDelta)
+		return antigravity.StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, req, onDelta, onTool)
 	}
 	res, err := attempt()
 	if err != nil && antigravity.IsUnauthorized(err) {
@@ -723,9 +776,12 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 }
 
 // chatLoop 轮询账号直到成功或池耗尽。
-func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
+func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engineUnavailableError(e)
+	}
+	if sink == nil {
+		sink = model.TextSink(nil)
 	}
 	// 先取 projectID 占位（chatOnce 内 token() 会重取）
 	cReq := toAntigravityRequest(req, "")
@@ -735,14 +791,57 @@ func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest,
 		if acc == nil {
 			break
 		}
-		res, err := e.chatOnce(ctx, acc, cReq, onDelta)
+		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta antigravity.ToolCallDelta) error {
+			extra := json.RawMessage(nil)
+			if strings.TrimSpace(delta.ThoughtSig) != "" {
+				b, mErr := json.Marshal(map[string]any{
+					"google": map[string]string{"thought_signature": delta.ThoughtSig},
+				})
+				if mErr == nil {
+					extra = b
+				}
+			}
+			return sink.ToolCall(model.ToolCallDelta{
+				Index: delta.Index,
+				ID:    delta.ID,
+				Type:  "function",
+				Function: model.ToolFunctionDelta{
+					Name:      delta.Name,
+					Arguments: delta.Arguments,
+				},
+				ExtraContent: extra,
+			})
+		})
 		if err == nil {
-			return &model.ChatResult{
+			result := &model.ChatResult{
 				Text:   res.Text,
 				Engine: e.name,
 				Model:  req.Model,
 				Usage:  subResultUsage(res.PromptTokens, res.CompletionTokens+res.ReasoningTokens, res.ReasoningTokens),
-			}, nil
+			}
+			for _, call := range res.ToolCalls {
+				tc := model.ToolCall{
+					ID:   call.ID,
+					Type: "function",
+					Function: model.ToolFunction{
+						Name:      call.Name,
+						Arguments: call.Arguments,
+					},
+				}
+				if strings.TrimSpace(call.ThoughtSig) != "" {
+					if b, mErr := json.Marshal(map[string]any{
+						"google": map[string]string{"thought_signature": call.ThoughtSig},
+					}); mErr == nil {
+						tc.ExtraContent = b
+						model.RememberToolCallExtra(tc.ID, tc.ExtraContent)
+					}
+				}
+				result.ToolCalls = append(result.ToolCalls, tc)
+			}
+			if len(result.ToolCalls) > 0 {
+				result.FinishReason = "tool_calls"
+			}
+			return result, nil
 		}
 		lastErr = err
 		if ctx.Err() != nil {
@@ -783,12 +882,12 @@ func (e *AntigravityEngine) Chat(ctx context.Context, req model.ChatRequest) (*m
 
 // ChatStream 流式对话。
 func (e *AntigravityEngine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	return e.chatLoop(ctx, req, func(delta string) error {
-		if onDelta != nil {
-			return onDelta(delta)
-		}
-		return nil
-	})
+	return e.chatLoop(ctx, req, model.TextSink(onDelta))
+}
+
+// ChatStreamSink 流式对话（支持工具调用增量）。
+func (e *AntigravityEngine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	return e.chatLoop(ctx, req, sink)
 }
 
 func (e *AntigravityEngine) setErr(err error) {
