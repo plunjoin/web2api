@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleModels))
 	// Codex 模型目录（model_catalog_url 拉取，Bearer 或 ?key= 鉴权）
 	mux.HandleFunc("GET /v1/codex/catalog", s.handleCodexCatalog)
+	mux.HandleFunc("GET /v1/usage", s.handleKeyUsage)
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChat))
 	// OpenAI Responses 协议兼容端点：供 Codex 等只讲 Responses 的客户端直连，
 	// 避免再经本地路由做协议转换。

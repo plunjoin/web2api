@@ -10,6 +10,7 @@ export const modelKinds = [
   { id: 'music', label: '音乐' },
   { id: 'speech', label: '语音' },
   { id: 'embedding', label: '向量' },
+  { id: 'other', label: '其他' },
 ] as const
 
 const kindTone = {
@@ -19,6 +20,7 @@ const kindTone = {
   music: 'success',
   speech: 'warning',
   embedding: 'muted',
+  other: 'muted',
 } as const
 
 export function modelKindLabel(kind?: string) {

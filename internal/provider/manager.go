@@ -1210,6 +1210,12 @@ func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, boo
 		if !ok {
 			continue
 		}
+		// 号池为空/全部不可用的订阅引擎不认领模型：它们的目录是写死的静态列表
+		// （antigravity/workbuddy 都含 gemini-2.5-flash），不判 Ready 会把本该由
+		// custom/A/B 承接的同名模型抢走，然后报「没有可用账号」。
+		if !eng.Ready() {
+			continue
+		}
 		if engineHasModel(eng, modelName) {
 			return eng, true
 		}
@@ -1709,6 +1715,11 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]
 		if !ok {
+			continue
+		}
+		// 公开目录（/v1/models、Codex 目录）不展示没有可用账号的订阅/custom 引擎
+		// 的静态模型，免得客户端选到一个必然失败的模型；管理台仍可看到全部。
+		if publicOnly && name != "a" && name != "b" && !eng.Ready() {
 			continue
 		}
 		for _, mi := range eng.ListModels() {

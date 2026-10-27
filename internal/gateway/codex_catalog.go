@@ -48,24 +48,41 @@ func (s *Server) handleCodexCatalog(w http.ResponseWriter, r *http.Request) {
 		allowed = info.ModelAllowed
 	}
 
+	writeJSON(w, http.StatusOK, map[string]any{"models": s.codexCatalogModels(allowed)})
+}
+
+// codexCatalogModels 生成 Codex 目录条目。
+//
+// Google OpenAI 兼容端点（custom 引擎接 Gemini Key）的模型 ID 带 models/
+// 前缀；Codex 用 slug 原样请求，网关路由两侧都会去前缀匹配，所以这里统一
+// 去掉前缀再去重，否则 Gemini Key 的模型一个也进不了目录。
+func (s *Server) codexCatalogModels(allowed func(string) bool) []map[string]any {
 	out := []map[string]any{}
+	seen := map[string]bool{}
 	for _, m := range s.mgr.ListModels() {
-		// 只导出对话模型：Codex 只会走 /v1/chat/completions。
-		// 带 / 的 ID（如 models/gemini-2.5-flash）是 Gemini 原生风格的目录项，
-		// 与不带前缀的目录重复，跳过。
-		if m.Kind != "chat" || !m.Available || strings.Contains(m.ID, "/") {
+		// 只导出对话模型（Codex 走 /v1/responses，生图/向量/音乐模型接不了）。
+		if m.Kind != "chat" || !m.Available {
 			continue
 		}
-		if allowed != nil && !allowed(m.ID) {
+		slug, ok := codexCatalogSlug(m.ID)
+		if !ok || seen[strings.ToLower(slug)] {
+			continue
+		}
+		if allowed != nil && !allowed(m.ID) && !allowed(slug) {
 			continue
 		}
 		// 管理台显式下架的模型不进目录（与 keyguard 的口径一致：查询出错视为未管理）。
 		if enabled, err := s.st.ModelEnabled(m.ID); err == nil && !enabled {
 			continue
 		}
+		seen[strings.ToLower(slug)] = true
+		m.ID = slug
+		if m.DisplayName == "" || strings.HasPrefix(m.DisplayName, "models/") {
+			m.DisplayName = slug
+		}
 		out = append(out, codexCatalogEntry(m))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+	return out
 }
 
 // codexCatalogEntry 把网关模型目录转换成 Codex 模型目录条目。
@@ -78,14 +95,14 @@ func codexCatalogEntry(m model.ModelInfo) map[string]any {
 		display = m.ID
 	}
 	return map[string]any{
-		"slug":                          m.ID,
-		"display_name":                  display,
-		"description":                   display + " · web2api",
-		"context_window":                1000000,
-		"max_context_window":            1000000,
+		"slug":                             m.ID,
+		"display_name":                     display,
+		"description":                      display + " · web2api",
+		"context_window":                   1000000,
+		"max_context_window":               1000000,
 		"effective_context_window_percent": 95,
-		"default_reasoning_level":       "medium",
-		"default_reasoning_summary":     "none",
+		"default_reasoning_level":          "medium",
+		"default_reasoning_summary":        "none",
 		"supported_reasoning_levels": []map[string]any{
 			{"effort": "none", "description": "关闭额外推理"},
 			{"effort": "low", "description": "较快的轻量推理"},
@@ -110,4 +127,14 @@ func codexCatalogEntry(m model.ModelInfo) map[string]any {
 		"availability_nux":               nil,
 		"upgrade":                        nil,
 	}
+}
+
+// codexCatalogSlug 把网关模型 ID 转成 Codex 目录 slug：去掉 Google 的 models/
+// 前缀；仍含 / 的（如 OpenRouter 的 vendor/model）Codex 选模型时无法区分，跳过。
+func codexCatalogSlug(id string) (string, bool) {
+	slug := strings.TrimPrefix(strings.TrimSpace(id), "models/")
+	if slug == "" || strings.Contains(slug, "/") {
+		return "", false
+	}
+	return slug, true
 }
