@@ -1,6 +1,6 @@
 # Gemini 官方字段完整对照
 
-> 此页由 `scripts/audit-gemini-docs.mjs` 从官方 OpenAPI 快照生成。请通过修改快照并重新生成来更新此页。
+> 此页由 `docs/audit-gemini-docs.mjs` 从官方 OpenAPI 快照生成。请通过修改快照并重新生成来更新此页。
 
 对照日期：2026-10-07（北京时间）。范围为保存的官方 OpenAPI 中全部 20 个路径、37 个操作和全部组件：Interactions 创建 / 获取 / 取消 / 删除、agents、voices、environments、webhooks、triggers、credentials 等资源，以及请求、响应、错误和 SSE schema。快照未定义的独立 Files / models API 通过官方后端通用路由转发，使用流程见中文参考详解。
 

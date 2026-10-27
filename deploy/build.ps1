@@ -4,7 +4,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-# 脚本位于 scripts/ 下，仓库根目录是它的上一级。
+# 脚本位于 deploy/ 下，仓库根目录是它的上一级。
 $Root = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $Root $Output
 $Targets = @(
@@ -47,7 +47,7 @@ foreach ($target in $Targets) {
     Copy-Item (Join-Path $Root "config.example.yaml") (Join-Path $stage "config.example.yaml")
     Copy-Item (Join-Path $Root "README.md") (Join-Path $stage "README.md")
     if ($target.GOOS -eq "windows") {
-        Copy-Item (Join-Path $Root "scripts/start.bat") (Join-Path $stage "start.bat")
+        Copy-Item (Join-Path $Root "deploy/start.bat") (Join-Path $stage "start.bat")
     } elseif ($target.GOOS -eq "linux") {
         Copy-Item (Join-Path $Root "deploy/README.md") (Join-Path $stage "DEPLOY.md")
         Copy-Item (Join-Path $Root "deploy/install.sh") (Join-Path $stage "install.sh")

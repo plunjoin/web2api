@@ -21,12 +21,12 @@ jobs:
         with:
           node-version: 20
       - name: Verify official Gemini parameter inventory
-        run: node scripts/audit-gemini-docs.mjs --check
+        run: node docs/audit-gemini-docs.mjs --check
       - name: Vet
         run: go vet ./...
       - name: Build all platforms
         shell: pwsh
-        run: ./scripts/build.ps1 -Version $env:GITHUB_REF_NAME
+        run: ./deploy/build.ps1 -Version $env:GITHUB_REF_NAME
       - uses: actions/upload-artifact@v4
         with:
           name: release-packages

@@ -27,7 +27,7 @@ build_one() {
   cp "$ROOT/config.example.yaml" "$stage/config.example.yaml"
   cp "$ROOT/README.md" "$stage/README.md"
   if [[ "$goos" == windows ]]; then
-    cp "$ROOT/scripts/start.bat" "$stage/start.bat"
+    cp "$ROOT/deploy/start.bat" "$stage/start.bat"
   elif [[ "$goos" == linux ]]; then
     cp "$ROOT/deploy/README.md" "$stage/DEPLOY.md"
     cp "$ROOT/deploy/install.sh" "$stage/install.sh"

@@ -218,8 +218,8 @@ Content 的 MIME 枚举、每一种 Annotation 的全部属性、各 Step 和增
 保存的原始资料位于 `docs/public/reference/`。更新快照时同时记录来源、日期和校验值，再运行：
 
 ```bash
-node scripts/audit-gemini-docs.mjs
-node scripts/audit-gemini-docs.mjs --check
+node docs/audit-gemini-docs.mjs
+node docs/audit-gemini-docs.mjs --check
 npm --prefix docs run build
 ```
 

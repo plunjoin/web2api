@@ -117,7 +117,7 @@ function status(name, field) {
 }
 const lines = [
   '# Gemini 官方字段完整对照', '',
-  '> 此页由 `scripts/audit-gemini-docs.mjs` 从官方 OpenAPI 快照生成。请通过修改快照并重新生成来更新此页。', '',
+  '> 此页由 `docs/audit-gemini-docs.mjs` 从官方 OpenAPI 快照生成。请通过修改快照并重新生成来更新此页。', '',
   `对照日期：${provenance.retrieved_date}（北京时间）。范围为保存的官方 OpenAPI 中全部 ${endpoints.length} 个路径、${endpoints.reduce((sum, [, item]) => sum + methods.filter(method => item[method]).length, 0)} 个操作和全部组件：Interactions 创建 / 获取 / 取消 / 删除、agents、voices、environments、webhooks、triggers、credentials 等资源，以及请求、响应、错误和 SSE schema。快照未定义的独立 Files / models API 通过官方后端通用路由转发，使用流程见中文参考详解。`, '',
   '启用 gemini_api 后，官方路由完整转发本页全部字段、联合类型及未来扩展字段，由 Google 校验并执行，响应和 SSE 保留原结构。表内分别列出官方后端的支持情况和网页登录态 / OpenAI 兼容聊天的映射限制。配置与 SDK 示例见 [官方后端接入](/api/gemini-official)，内部能力见 [Gemini 参数与差距](/api/gemini)。', '',
   `共覆盖 **${used.size} 个 schema、${[...used].reduce((sum, name) => sum + rows(schemas[name]).length, 0)} 个字段定义**（共享字段按所属 schema 分别计数）、全部联合类型和枚举。自由对象的自定义键由调用方定义，不是可穷举的官方参数。`, '',
@@ -198,7 +198,7 @@ const generated = lines.join('\n').replace(/\n{3,}/g, '\n\n') + '\n'
 if (process.argv.includes('--check')) {
   if (!fs.existsSync(runtimeSnapshot) || !fs.readFileSync(runtimeSnapshot).equals(raw)) throw new Error('Embedded official schema differs from the audited snapshot')
   if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8').replaceAll('\r\n', '\n') !== generated) {
-    throw new Error('Gemini inventory is stale. Run node scripts/audit-gemini-docs.mjs')
+    throw new Error('Gemini inventory is stale. Run node docs/audit-gemini-docs.mjs')
   }
 } else {
   fs.writeFileSync(target, generated)
