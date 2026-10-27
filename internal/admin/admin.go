@@ -17,9 +17,9 @@ import (
 	"web2api/internal/provider"
 	"web2api/internal/store"
 	"web2api/internal/upgrade"
-	"web2api/internal/upstream/antigravity"
-	"web2api/internal/upstream/codex"
-	"web2api/internal/upstream/workbuddy"
+	"web2api/internal/engine/antigravity"
+	"web2api/internal/engine/codex"
+	"web2api/internal/engine/workbuddy"
 	"web2api/internal/version"
 )
 

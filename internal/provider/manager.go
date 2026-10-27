@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	aistudio "web2api/internal/aistudio"
+	aistudio "web2api/internal/engine/aistudio"
 	"web2api/internal/config"
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/upstream/workbuddy"
+	"web2api/internal/engine/workbuddy"
 )
 
 // Manager 引擎注册表、模型路由与号池动态管理。

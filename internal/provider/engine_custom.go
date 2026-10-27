@@ -17,8 +17,8 @@ import (
 	"web2api/internal/engine/upstream"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/upstream/codex"
-	"web2api/internal/upstream/custombalance"
+	"web2api/internal/engine/codex"
+	"web2api/internal/engine/custombalance"
 )
 
 // CustomCredentials 第三方 Key 凭据（accounts.credentials JSON）。

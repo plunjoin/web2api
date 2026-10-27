@@ -17,7 +17,7 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/upstream/kiro"
+	"web2api/internal/engine/kiro"
 )
 
 // KiroCredentials kiro 引擎凭据（accounts.credentials JSON）。

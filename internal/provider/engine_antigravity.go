@@ -20,7 +20,7 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/upstream/antigravity"
+	"web2api/internal/engine/antigravity"
 )
 
 // AntigravityCredentials antigravity 引擎凭据（accounts.credentials JSON）。

@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	aistudio "web2api/internal/aistudio"
+	aistudio "web2api/internal/engine/aistudio"
 
 	"web2api/internal/config"
 	"web2api/internal/engine"
