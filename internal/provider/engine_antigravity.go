@@ -743,6 +743,11 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 					})
 				}
 			}
+			// 无工具通道时丢掉「只含 tool_calls」的空 assistant，避免上游收到
+			// 连续空 model/user 回合（多轮 Codex 工具史）。
+			if strings.TrimSpace(msg.Text) == "" && len(msg.ToolCalls) == 0 && len(msg.ImageURLs) == 0 {
+				continue
+			}
 			out.Messages = append(out.Messages, msg)
 		default:
 			out.Messages = append(out.Messages, antigravity.Message{
@@ -791,15 +796,29 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 	}
 	// Gemini 工具协议偶发不被上游接受（schema / 模型档位）：去掉 tools 再试，
 	// 恢复成 v0.3.7「静默丢工具、纯文本仍可用」的行为，避免整请求挂死。
+	// Messages 必须深拷贝：浅拷贝会改坏原 req，换号重试时工具历史会被污染。
 	if err != nil && len(req.Tools) > 0 && antigravity.IsBadRequest(err) {
 		stripped := *req
 		stripped.Tools = nil
 		stripped.ToolChoice = nil
-		for i := range stripped.Messages {
-			stripped.Messages[i].ToolCalls = nil
-			if strings.EqualFold(stripped.Messages[i].Role, "tool") {
-				stripped.Messages[i].Role = "user"
+		stripped.Messages = make([]antigravity.Message, 0, len(req.Messages))
+		for _, m := range req.Messages {
+			cp := m
+			cp.ToolCalls = nil
+			if strings.EqualFold(cp.Role, "tool") {
+				text := cp.Text
+				if name := strings.TrimSpace(cp.ToolName); name != "" {
+					text = "[" + name + "] " + text
+				}
+				cp.Role = "user"
+				cp.Text = text
+				cp.ToolCallID = ""
+				cp.ToolName = ""
 			}
+			if strings.EqualFold(cp.Role, "assistant") && strings.TrimSpace(cp.Text) == "" && len(m.ToolCalls) > 0 && len(cp.ImageURLs) == 0 {
+				continue
+			}
+			stripped.Messages = append(stripped.Messages, cp)
 		}
 		if retry, retryErr := attempt(&stripped, nil); retryErr == nil {
 			return retry, nil

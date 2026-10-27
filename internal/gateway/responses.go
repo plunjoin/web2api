@@ -100,7 +100,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	res, err := s.mgr.Chat(r.Context(), chatReq)
 	if err != nil {
 		s.logger.Printf("[responses] 请求失败 model=%q: %v", chatReq.Model, err)
-		s.recordChat(r, chatReq, nil, false, err, start, "/v1/responses")
+		s.recordChat(r, chatReq, res, false, err, start, "/v1/responses")
 		s.writeResponsesError(w, err)
 		return
 	}
@@ -243,7 +243,7 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, req mod
 	res, runErr := s.mgr.ChatStream(r.Context(), req, sink)
 	if runErr != nil {
 		s.logger.Printf("[responses] 流式请求失败 model=%q: %v", req.Model, runErr)
-		s.recordChat(r, req, nil, true, runErr, start, "/v1/responses")
+		s.recordChat(r, req, res, true, runErr, start, "/v1/responses")
 		failed := responsesObject(respID, req.Model, "failed", []any{}, nil, createdAt)
 		failed["error"] = map[string]any{"code": "server_error", "message": runErr.Error()}
 		emit("response.failed", map[string]any{"response": failed})
@@ -502,6 +502,9 @@ func parseResponsesInput(raw json.RawMessage) ([]model.ChatMessage, error) {
 		return nil, fmt.Errorf("input 解析失败: %w", err)
 	}
 	out := make([]model.ChatMessage, 0, len(items))
+	// callID → 函数名：Responses 的 function_call_output 通常只有 call_id，
+	// 不含 name；MiniMax / Gemini functionResponse / AI Studio 都需要 name。
+	callNames := map[string]string{}
 	for _, item := range items {
 		switch item.Type {
 		case "", "message":
@@ -537,24 +540,36 @@ func parseResponsesInput(raw json.RawMessage) ([]model.ChatMessage, error) {
 			if callID == "" {
 				callID = "call_" + model.NewID(16)
 			}
+			name := strings.TrimSpace(item.Name)
+			if name != "" {
+				callNames[callID] = name
+			}
 			call := model.ToolCall{
 				ID:   callID,
 				Type: "function",
 				Function: model.ToolFunction{
-					Name:      item.Name,
+					Name:      name,
 					Arguments: rawJSONString(item.Arguments),
 				},
 			}
 			// 连续的 function_call 属于同一个 assistant 回合，归并成一条消息。
+			// Content 必须是 "" 而不是 nil：encoding/json 会把 nil any 编成
+			// null，MiniMax 等第三方上游对 assistant.content=null 直接 400。
 			if n := len(out); n > 0 && out[n-1].Role == "assistant" && out[n-1].ToolCallID == "" {
 				out[n-1].ToolCalls = append(out[n-1].ToolCalls, call)
 				continue
 			}
-			out = append(out, model.ChatMessage{Role: "assistant", ToolCalls: []model.ToolCall{call}})
+			out = append(out, model.ChatMessage{Role: "assistant", Content: "", ToolCalls: []model.ToolCall{call}})
 		case "function_call_output":
+			callID := strings.TrimSpace(item.CallID)
+			name := strings.TrimSpace(item.Name)
+			if name == "" && callID != "" {
+				name = callNames[callID]
+			}
 			out = append(out, model.ChatMessage{
 				Role:       "tool",
-				ToolCallID: item.CallID,
+				Name:       name,
+				ToolCallID: callID,
 				Content:    rawText(item.Output),
 			})
 		case "reasoning":

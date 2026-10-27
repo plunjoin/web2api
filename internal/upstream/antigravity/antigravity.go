@@ -983,6 +983,15 @@ func buildBody(req *Request) (*internalRequest, error) {
 			continue // system 走 systemInstruction
 		case "tool":
 			// 工具结果必须以 functionResponse 回填，否则模型会反复发起同一调用。
+			// 并行工具结果合并进同一条 user content（Gemini 惯例），避免连续
+			// 多条 user 被上游当成非法多轮。
+			if n := len(out.Request.Contents); n > 0 {
+				prev := &out.Request.Contents[n-1]
+				if prev.Role == "user" && geminiPartsAllFunctionResponses(prev.Parts) {
+					appendFunctionResponsePart(&prev.Parts, msg.ToolCallID, msg.ToolName, msg.Text)
+					continue
+				}
+			}
 			content := geminiContent{Role: "user"}
 			appendFunctionResponsePart(&content.Parts, msg.ToolCallID, msg.ToolName, msg.Text)
 			out.Request.Contents = append(out.Request.Contents, content)

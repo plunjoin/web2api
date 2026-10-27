@@ -601,10 +601,19 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink
 			res *model.ChatResult
 			err error
 		)
-		if sink != nil {
-			res, err = up.ChatStreamSink(ctx, req, sink)
-		} else {
-			res, err = up.Chat(ctx, req)
+		call := func(r model.ChatRequest) (*model.ChatResult, error) {
+			if sink != nil {
+				return up.ChatStreamSink(ctx, r, sink)
+			}
+			return up.Chat(ctx, r)
+		}
+		res, err = call(req)
+		// Codex / Responses 自带的复杂 tools 在 MiniMax 等上游常 400：
+		// 去掉 tools 再试一次，保证纯文本对话可用（与 Antigravity 降级一致）。
+		if err != nil && len(req.Tools) > 0 && isHTTPStatus(err, 400) {
+			if retry, retryErr := call(stripChatTools(req)); retryErr == nil {
+				res, err = retry, nil
+			}
 		}
 		if err == nil {
 			if res != nil {

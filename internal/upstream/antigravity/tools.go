@@ -137,6 +137,19 @@ func appendFunctionCallPart(parts *[]geminiPart, call ToolCall) {
 	*parts = append(*parts, part)
 }
 
+// geminiPartsAllFunctionResponses 判断 content 是否只含 functionResponse（可安全合并并行工具结果）。
+func geminiPartsAllFunctionResponses(parts []geminiPart) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, p := range parts {
+		if p.FunctionResponse == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // appendFunctionResponsePart 把工具执行结果写成 user 角色的 functionResponse part。
 func appendFunctionResponsePart(parts *[]geminiPart, callID, name, output string) {
 	name = strings.TrimSpace(name)

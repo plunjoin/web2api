@@ -2,8 +2,35 @@ package gateway
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestParseResponsesInputFillsToolNameAndEmptyAssistantContent(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"ok"}
+	]`)
+	msgs, err := parseResponsesInput(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("msgs=%d %#v", len(msgs), msgs)
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != "" {
+		t.Fatalf("assistant content must be empty string, got %#v", msgs[1].Content)
+	}
+	data, _ := json.Marshal(msgs[1])
+	if strings.Contains(string(data), `"content":null`) {
+		t.Fatalf("content must not marshal as null: %s", data)
+	}
+	if msgs[2].Role != "tool" || msgs[2].Name != "exec_command" || msgs[2].ToolCallID != "call_1" {
+		t.Fatalf("tool msg=%#v", msgs[2])
+	}
+}
+
 
 func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 	req := responsesRequest{Tools: []responsesTool{

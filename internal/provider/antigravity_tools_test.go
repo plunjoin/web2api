@@ -65,6 +65,10 @@ func TestToAntigravityRequestStripsToolsForClaude(t *testing.T) {
 	if len(out.ToolChoice) != 0 {
 		t.Fatalf("claude should not receive tool_choice")
 	}
+	// 只含 tool_calls 的空 assistant 应被丢掉，tool 折成 user：user + user。
+	if len(out.Messages) != 2 {
+		t.Fatalf("want 2 messages after strip, got %#v", out.Messages)
+	}
 	for _, m := range out.Messages {
 		if len(m.ToolCalls) != 0 {
 			t.Fatalf("assistant tool_calls should be stripped for claude")
@@ -72,6 +76,12 @@ func TestToAntigravityRequestStripsToolsForClaude(t *testing.T) {
 		if strings.EqualFold(m.Role, "tool") {
 			t.Fatalf("tool role should be flattened for claude")
 		}
+		if strings.EqualFold(m.Role, "assistant") {
+			t.Fatalf("empty tool-only assistant should be dropped, got %#v", m)
+		}
+	}
+	if out.Messages[1].Role != "user" || !strings.Contains(out.Messages[1].Text, "ok") {
+		t.Fatalf("tool fold=%#v", out.Messages[1])
 	}
 }
 

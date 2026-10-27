@@ -69,6 +69,37 @@ func TestBuildBodyToolResultAsFunctionResponse(t *testing.T) {
 	}
 }
 
+func TestBuildBodyMergesParallelFunctionResponses(t *testing.T) {
+	body, err := buildBody(&Request{
+		Model: "gemini-3.8-flash",
+		Messages: []Message{
+			{Role: "user", Text: "run two"},
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "c1", Name: "a", Arguments: `{}`},
+				{ID: "c2", Name: "b", Arguments: `{}`},
+			}},
+			{Role: "tool", ToolCallID: "c1", ToolName: "a", Text: "one"},
+			{Role: "tool", ToolCallID: "c2", ToolName: "b", Text: "two"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userCount := 0
+	for _, c := range body.Request.Contents {
+		if c.Role != "user" {
+			continue
+		}
+		userCount++
+		if userCount == 2 && len(c.Parts) != 2 {
+			t.Fatalf("parallel tool results should merge into one user with 2 parts, got %d parts", len(c.Parts))
+		}
+	}
+	if userCount != 2 {
+		t.Fatalf("want 2 user turns (prompt + merged tools), got %d", userCount)
+	}
+}
+
 func TestParseSSEFunctionCallOnly(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"exec_command","args":{"cmd":"ls"}}}]}}]}}`,

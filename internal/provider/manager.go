@@ -1443,7 +1443,12 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 	if err != nil {
 		return nil, err
 	}
-	return eng.Chat(ctx, req)
+	res, err := eng.Chat(ctx, req)
+	if err != nil {
+		// 失败也带回引擎名，用量明细才不会显示「—」。
+		return &model.ChatResult{Engine: eng.Name(), Model: req.Model}, err
+	}
+	return res, nil
 }
 
 // ChatStream 流式对话。sink 同时承接文本与工具调用增量：引擎实现
@@ -1456,10 +1461,18 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 	if err != nil {
 		return nil, err
 	}
+	var (
+		res *model.ChatResult
+	)
 	if toolEng, ok := eng.(engine.ToolEngine); ok {
-		return toolEng.ChatStreamSink(ctx, req, sink)
+		res, err = toolEng.ChatStreamSink(ctx, req, sink)
+	} else {
+		res, err = eng.ChatStream(ctx, req, sink.Text)
 	}
-	return eng.ChatStream(ctx, req, sink.Text)
+	if err != nil {
+		return &model.ChatResult{Engine: eng.Name(), Model: req.Model}, err
+	}
+	return res, nil
 }
 
 // resolveChatEngine 选定引擎。目录命中的模型归属其引擎：引擎不可用时直接返回

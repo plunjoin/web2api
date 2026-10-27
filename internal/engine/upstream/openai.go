@@ -261,12 +261,31 @@ func withThoughtSignatures(modelName string, messages []model.ChatMessage) []mod
 // BaseURL 上游地址。
 func (o *OpenAI) BaseURL() string { return o.baseURL }
 
+// normalizeAssistantContent 把「仅有 tool_calls」的 assistant.content 从 nil 改成 ""。
+// encoding/json 会把 nil any 编成 null；MiniMax 等第三方对 content=null 直接 400。
+func normalizeAssistantContent(messages []model.ChatMessage) []model.ChatMessage {
+	var out []model.ChatMessage
+	for i, m := range messages {
+		if !strings.EqualFold(m.Role, "assistant") || m.Content != nil || len(m.ToolCalls) == 0 {
+			continue
+		}
+		if out == nil {
+			out = append([]model.ChatMessage(nil), messages...)
+		}
+		out[i].Content = ""
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
 // chatPayload 组装 /v1/chat/completions 请求体。工具定义只在非空时下发：
 // 部分第三方上游看到空的 tools 数组会直接 400。
 func (o *OpenAI) chatPayload(req model.ChatRequest, stream bool) map[string]any {
 	payload := map[string]any{
 		"model":    req.Model,
-		"messages": withThoughtSignatures(req.Model, req.Messages),
+		"messages": withThoughtSignatures(req.Model, normalizeAssistantContent(req.Messages)),
 		"stream":   stream,
 	}
 	if req.Temperature != nil {
