@@ -272,7 +272,7 @@ func (e *WorkBuddyEngine) markCooldown(acc *workbuddyAccount, reason string, d t
 func toWorkBuddyRequest(req model.ChatRequest) *workbuddy.Request {
 	out := &workbuddy.Request{
 		Model:       req.Model,
-		MaxTokens:   derefInt(req.MaxTokens),
+		MaxTokens:   engine.DerefInt(req.MaxTokens),
 		Temperature: req.Temperature,
 	}
 	for _, m := range req.Messages {
@@ -284,7 +284,7 @@ func toWorkBuddyRequest(req model.ChatRequest) *workbuddy.Request {
 // chatLoop 轮询账号直到成功或池耗尽。
 func (e *WorkBuddyEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
 	if !e.Ready() {
-		return nil, engineUnavailableError(e)
+		return nil, engine.UnavailableError(e)
 	}
 	cReq := toWorkBuddyRequest(req)
 	var lastErr error
@@ -304,7 +304,7 @@ func (e *WorkBuddyEngine) chatLoop(ctx context.Context, req model.ChatRequest, o
 				Text:   res.Text,
 				Engine: e.name,
 				Model:  req.Model,
-				Usage:  subResultUsage(res.PromptTokens, res.CompletionTokens, 0),
+				Usage:  engine.SubResultUsage(res.PromptTokens, res.CompletionTokens, 0),
 			}, nil
 		}
 		lastErr = err

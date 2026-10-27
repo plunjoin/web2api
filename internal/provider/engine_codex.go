@@ -223,7 +223,7 @@ func (e *CodexEngine) ensureToken(acc *codexAccount) error {
 	// 回写凭据（refresh_token 轮换），不动账号状态
 	if e.st != nil {
 		if dbID, err := strconv.ParseInt(acc.id, 10, 64); err == nil {
-			_ = e.st.UpdateAccountRawCredentials(dbID, marshalCompact(acc.creds))
+			_ = e.st.UpdateAccountRawCredentials(dbID, engine.MarshalCompact(acc.creds))
 		}
 	}
 	e.setErr(nil)
@@ -333,7 +333,7 @@ func (e *CodexEngine) markCooldown(acc *codexAccount, reason string, d time.Dura
 func toCodexRequest(req model.ChatRequest) *codex.Request {
 	out := &codex.Request{
 		Model:      req.Model,
-		MaxTokens:  derefInt(req.MaxTokens),
+		MaxTokens:  engine.DerefInt(req.MaxTokens),
 		Tools:      toCodexTools(req.Tools),
 		ToolChoice: req.ToolChoice,
 	}
@@ -341,7 +341,7 @@ func toCodexRequest(req model.ChatRequest) *codex.Request {
 		msg := codex.Message{
 			Role:       m.Role,
 			Text:       m.Text(),
-			ImageURLs:  subImageURLs(m.Content),
+			ImageURLs:  engine.SubImageURLs(m.Content),
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
@@ -411,7 +411,7 @@ func (e *CodexEngine) chatOnce(ctx context.Context, acc *codexAccount, req *code
 // chatLoop 轮询账号直到成功或池耗尽。
 func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
-		return nil, engineUnavailableError(e)
+		return nil, engine.UnavailableError(e)
 	}
 	if sink == nil {
 		sink = model.TextSink(nil)
@@ -439,7 +439,7 @@ func (e *CodexEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink 
 				Text:   res.Text,
 				Engine: e.name,
 				Model:  req.Model,
-				Usage:  subResultUsage(res.PromptTokens, res.CompletionTokens, res.ReasoningTokens),
+				Usage:  engine.SubResultUsage(res.PromptTokens, res.CompletionTokens, res.ReasoningTokens),
 			}
 			for _, call := range res.ToolCalls {
 				result.ToolCalls = append(result.ToolCalls, model.ToolCall{
@@ -548,10 +548,3 @@ func (e *CodexEngine) ServePassthrough(ctx context.Context, method, path string,
 
 // Close 关闭引擎（账号无后台协程，无需清理）。
 func (e *CodexEngine) Close() {}
-
-func derefInt(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
-}

@@ -218,7 +218,7 @@ func (e *KiroEngine) ensureToken(acc *kiroAccount) error {
 	if e.st != nil && tok.RefreshToken != acc.creds.RefreshToken {
 		acc.creds.RefreshToken = tok.RefreshToken
 		if dbID, perr := strconv.ParseInt(acc.id, 10, 64); perr == nil {
-			_ = e.st.UpdateAccountRawCredentials(dbID, marshalCompact(acc.creds))
+			_ = e.st.UpdateAccountRawCredentials(dbID, engine.MarshalCompact(acc.creds))
 		}
 	}
 	accessToken := acc.accessToken
@@ -397,7 +397,7 @@ func (e *KiroEngine) chatOnce(ctx context.Context, acc *kiroAccount, req *kiro.R
 // chatLoop 轮询账号直到成功或池耗尽。
 func (e *KiroEngine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
 	if !e.Ready() {
-		return nil, engineUnavailableError(e)
+		return nil, engine.UnavailableError(e)
 	}
 	cReq, err := toKiroRequest(req)
 	if err != nil {

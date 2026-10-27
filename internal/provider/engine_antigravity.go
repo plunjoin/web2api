@@ -160,7 +160,7 @@ func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
 		acc.mu.Unlock()
 		if e.st != nil {
 			if dbID, perr := strconv.ParseInt(acc.id, 10, 64); perr == nil {
-				_ = e.st.UpdateAccountRawCredentials(dbID, marshalCompact(acc.creds))
+				_ = e.st.UpdateAccountRawCredentials(dbID, engine.MarshalCompact(acc.creds))
 			}
 		}
 	}
@@ -182,7 +182,7 @@ func (e *AntigravityEngine) initialize(acc *antigravityAccount) {
 	if needPersist && e.st != nil {
 		if dbID, perr := strconv.ParseInt(acc.id, 10, 64); perr == nil {
 			acc.mu.Lock()
-			raw := marshalCompact(acc.creds)
+			raw := engine.MarshalCompact(acc.creds)
 			acc.mu.Unlock()
 			_ = e.st.UpdateAccountRawCredentials(dbID, raw)
 		}
@@ -466,7 +466,7 @@ func (e *AntigravityEngine) ensureToken(acc *antigravityAccount) error {
 	acc.lastErr = ""
 	if e.st != nil {
 		if dbID, perr := strconv.ParseInt(acc.id, 10, 64); perr == nil {
-			_ = e.st.UpdateAccountRawCredentials(dbID, marshalCompact(acc.creds))
+			_ = e.st.UpdateAccountRawCredentials(dbID, engine.MarshalCompact(acc.creds))
 		}
 	}
 	e.setErr(nil)
@@ -682,11 +682,11 @@ func (e *AntigravityEngine) markCooldown(acc *antigravityAccount, reason string,
 func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.Request {
 	out := &antigravity.Request{
 		Model:     req.Model,
-		System:    subSystemText(req),
-		MaxTokens: derefInt(req.MaxTokens),
+		System:    engine.SubSystemText(req),
+		MaxTokens: engine.DerefInt(req.MaxTokens),
 		ProjectID: projectID,
 	}
-	withTools := CapsFor("antigravity", req.Model).Tools
+	withTools := engine.CapsFor("antigravity", req.Model).Tools
 	if withTools {
 		out.ToolChoice = req.ToolChoice
 		for _, tool := range req.Tools {
@@ -725,7 +725,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 			msg := antigravity.Message{
 				Role:      "assistant",
 				Text:      m.Text(),
-				ImageURLs: subImageURLs(m.Content),
+				ImageURLs: engine.SubImageURLs(m.Content),
 			}
 			if withTools {
 				for _, call := range m.ToolCalls {
@@ -747,7 +747,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 			out.Messages = append(out.Messages, antigravity.Message{
 				Role:      m.PlainRole(),
 				Text:      m.Text(),
-				ImageURLs: subImageURLs(m.Content),
+				ImageURLs: engine.SubImageURLs(m.Content),
 			})
 		}
 	}
@@ -793,7 +793,7 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 	// 仅对开了工具透传的模型（能力表 RetryNoToolsOn400）生效；req.Tools
 	// 非空本身就说明走的是 Gemini 工具通道。
 	// Messages 必须深拷贝：浅拷贝会改坏原 req，换号重试时工具历史会被污染。
-	if err != nil && len(req.Tools) > 0 && CapsFor("antigravity", req.Model).RetryNoToolsOn400 && antigravity.IsBadRequest(err) {
+	if err != nil && len(req.Tools) > 0 && engine.CapsFor("antigravity", req.Model).RetryNoToolsOn400 && antigravity.IsBadRequest(err) {
 		stripped := *req
 		stripped.Tools = nil
 		stripped.ToolChoice = nil
@@ -831,7 +831,7 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 // chatLoop 轮询账号直到成功或池耗尽。
 func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
-		return nil, engineUnavailableError(e)
+		return nil, engine.UnavailableError(e)
 	}
 	if sink == nil {
 		sink = model.TextSink(nil)
@@ -870,7 +870,7 @@ func (e *AntigravityEngine) chatLoop(ctx context.Context, req model.ChatRequest,
 				Text:   res.Text,
 				Engine: e.name,
 				Model:  req.Model,
-				Usage:  subResultUsage(res.PromptTokens, res.CompletionTokens+res.ReasoningTokens, res.ReasoningTokens),
+				Usage:  engine.SubResultUsage(res.PromptTokens, res.CompletionTokens+res.ReasoningTokens, res.ReasoningTokens),
 			}
 			for _, call := range res.ToolCalls {
 				tc := model.ToolCall{

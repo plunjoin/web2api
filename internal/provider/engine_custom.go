@@ -470,14 +470,14 @@ func (e *CustomEngine) pick(modelName string) (*customAccount, error) {
 func (e *CustomEngine) missError(modelName string) error {
 	want := normalizeModelID(modelName)
 	if want == "" {
-		return newModelNotFound("", "请求未指定模型，custom 号池无法选号")
+		return engine.NewModelNotFound("", "请求未指定模型，custom 号池无法选号")
 	}
 	display := strings.TrimPrefix(strings.TrimSpace(modelName), "models/")
 	e.mu.RLock()
 	accounts := append([]*customAccount(nil), e.accounts...)
 	e.mu.RUnlock()
 	if len(accounts) == 0 {
-		return newModelNotFound(display, fmt.Sprintf("custom 号池没有账号，无法承接模型 %q", display))
+		return engine.NewModelNotFound(display, fmt.Sprintf("custom 号池没有账号，无法承接模型 %q", display))
 	}
 	const shown = 3
 	empty := 0
@@ -509,7 +509,7 @@ func (e *CustomEngine) missError(modelName string) error {
 	if empty > 0 {
 		detail += fmt.Sprintf("；其中 %d 个账号没有模型目录，未拉到目录的账号不再兜底接单，请在管理台获取模型列表或手填 models", empty)
 	}
-	return newModelNotFound(display, detail)
+	return engine.NewModelNotFound(display, detail)
 }
 
 // isMediaMimeRejection 上游以「产出不了这种 MIME 类型」为由拒绝请求。
@@ -654,7 +654,7 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink
 		res, err = call(req)
 		// Codex / Responses 自带的复杂 tools 在 MiniMax 等上游常 400：
 		// 按能力表降级——去掉 tools 再试一次，保证纯文本对话可用。
-		if err != nil && len(req.Tools) > 0 && CapsFor(e.name, req.Model).RetryNoToolsOn400 && isHTTPStatus(err, 400) {
+		if err != nil && len(req.Tools) > 0 && engine.CapsFor(e.name, req.Model).RetryNoToolsOn400 && isHTTPStatus(err, 400) {
 			if retry, retryErr := call(stripChatTools(req)); retryErr == nil {
 				res, err = retry, nil
 			}
@@ -679,7 +679,7 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink
 			// 上游以「产出不了这种 MIME」为由拒绝：说明模型用途和端点不匹配
 			// （把音乐/语音模型发到了只能返回文本的 chat 端点），换成能看懂的提示。
 			if kind := model.ClassifyKind(req.Model, "", nil); model.ChatIncompatibleKind(kind) && isMediaMimeRejection(msg) {
-				return nil, newUnsupportedEndpoint(req.Model, kind)
+				return nil, engine.NewUnsupportedEndpoint(req.Model, kind)
 			}
 			// 模型不存在、参数非法等业务错误属于「这一次请求」的问题，不是账号健康问题：
 			// 既不写进账号详情（避免错误详情挂到不相干的账号上），也不换号重试。

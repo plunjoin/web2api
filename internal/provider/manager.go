@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -257,35 +255,35 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 			if strings.TrimSpace(acc.RefreshToken) == "" {
 				continue
 			}
-			creds := marshalCompact(CodexCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email})
+			creds := engine.MarshalCompact(CodexCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email})
 			_, _ = m.st.CreateAccount("codex", seedLabel("codex", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.Antigravity.Accounts {
 			if strings.TrimSpace(acc.RefreshToken) == "" {
 				continue
 			}
-			creds := marshalCompact(AntigravityCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email, ProjectID: acc.ProjectID})
+			creds := engine.MarshalCompact(AntigravityCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email, ProjectID: acc.ProjectID})
 			_, _ = m.st.CreateAccount("antigravity", seedLabel("antigravity", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.Kiro.Accounts {
 			if strings.TrimSpace(acc.RefreshToken) == "" {
 				continue
 			}
-			creds := marshalCompact(KiroCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email})
+			creds := engine.MarshalCompact(KiroCredentials{RefreshToken: acc.RefreshToken, Email: acc.Email})
 			_, _ = m.st.CreateAccount("kiro", seedLabel("kiro", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.WorkBuddy.Accounts {
 			if strings.TrimSpace(acc.Token) == "" {
 				continue
 			}
-			creds := marshalCompact(WorkBuddyCredentials{Token: acc.Token, Email: acc.Email})
+			creds := engine.MarshalCompact(WorkBuddyCredentials{Token: acc.Token, Email: acc.Email})
 			_, _ = m.st.CreateAccount("workbuddy", seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.Custom.Accounts {
 			if strings.TrimSpace(acc.BaseURL) == "" || strings.TrimSpace(acc.APIKey) == "" {
 				continue
 			}
-			creds := marshalCompact(CustomCredentials{BaseURL: acc.BaseURL, APIKey: acc.APIKey, Models: acc.Models})
+			creds := engine.MarshalCompact(CustomCredentials{BaseURL: acc.BaseURL, APIKey: acc.APIKey, Models: acc.Models})
 			_, _ = m.st.CreateAccount("custom", seedLabel("custom", firstNonEmpty(acc.Name, acc.BaseURL)), creds, true)
 		}
 		accounts, err = m.st.ListAccounts()
@@ -760,7 +758,7 @@ func (m *Manager) addCodexAccount(label string, creds CodexCredentials) (store.A
 	if label == "" {
 		return store.Account{}, errors.New("label 或 email 至少填写一个")
 	}
-	acc, err := m.st.CreateAccount("codex", label, marshalCompact(creds), true)
+	acc, err := m.st.CreateAccount("codex", label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -780,7 +778,7 @@ func (m *Manager) addAntigravityAccount(label string, creds AntigravityCredentia
 	if label == "" {
 		return store.Account{}, errors.New("label 或 email 至少填写一个")
 	}
-	acc, err := m.st.CreateAccount("antigravity", label, marshalCompact(creds), true)
+	acc, err := m.st.CreateAccount("antigravity", label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -800,7 +798,7 @@ func (m *Manager) addKiroAccount(label string, creds KiroCredentials) (store.Acc
 	if label == "" {
 		return store.Account{}, errors.New("label 或 email 至少填写一个")
 	}
-	acc, err := m.st.CreateAccount("kiro", label, marshalCompact(creds), true)
+	acc, err := m.st.CreateAccount("kiro", label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -820,7 +818,7 @@ func (m *Manager) addWorkBuddyAccount(label string, creds WorkBuddyCredentials) 
 	if label == "" {
 		return store.Account{}, errors.New("label 或 email 至少填写一个")
 	}
-	acc, err := m.st.CreateAccount("workbuddy", label, marshalCompact(creds), true)
+	acc, err := m.st.CreateAccount("workbuddy", label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -840,7 +838,7 @@ func (m *Manager) addCustomAccount(label string, creds CustomCredentials) (store
 	if label == "" {
 		return store.Account{}, errors.New("label 不能为空")
 	}
-	acc, err := m.st.CreateAccount("custom", label, marshalCompact(creds), true)
+	acc, err := m.st.CreateAccount("custom", label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -905,7 +903,7 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 		if strings.TrimSpace(creds.APIKey) == "" {
 			return errors.New("credentials.api_key 不能为空")
 		}
-		if err := m.st.UpdateAccountCredentials(id, marshalCompact(creds)); err != nil {
+		if err := m.st.UpdateAccountCredentials(id, engine.MarshalCompact(creds)); err != nil {
 			return err
 		}
 		return m.customEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
@@ -1397,10 +1395,10 @@ func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (stri
 func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
 	eng, _ := m.pickEngine(modelID)
 	if eng == nil {
-		return "", newModelNotFound(modelID, m.ownershipHint(modelID))
+		return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
 	}
 	if !engineHasModel(eng, modelID) {
-		return "", newModelNotFound(modelID, m.ownershipHint(modelID))
+		return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
 	}
 	// 目录里有、但没有任何可用账号声明它（引擎自报 available=false）同样不算可用。
 	want := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
@@ -1415,26 +1413,9 @@ func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
 		break
 	}
 	if !eng.Ready() {
-		return "", engineUnavailableError(eng)
+		return "", engine.UnavailableError(eng)
 	}
-	return fmt.Sprintf("引擎 %s 已声明该模型且引擎可接单（%s 模型未做生成探测）", eng.Name(), kindLabel(kind)), nil
-}
-
-func kindLabel(kind string) string {
-	switch kind {
-	case model.KindVideo:
-		return "视频"
-	case model.KindMusic:
-		return "音乐"
-	case model.KindSpeech:
-		return "语音"
-	case model.KindImage:
-		return "生图"
-	case model.KindEmbedding:
-		return "向量"
-	default:
-		return "对话"
-	}
+	return fmt.Sprintf("引擎 %s 已声明该模型且引擎可接单（%s 模型未做生成探测）", eng.Name(), engine.KindLabel(kind)), nil
 }
 
 // Chat 非流式对话。
@@ -1487,29 +1468,29 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 	if model.ChatIncompatibleKind(kind) {
 		if mediaEng, ok := m.chatMediaEngine(); ok {
 			if !mediaEng.Ready() {
-				return nil, req, engineUnavailableError(mediaEng)
+				return nil, req, engine.UnavailableError(mediaEng)
 			}
 			return mediaEng, req, nil
 		}
-		return nil, req, newUnsupportedEndpoint(req.Model, kind)
+		return nil, req, engine.NewUnsupportedEndpoint(req.Model, kind)
 	}
 
 	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
-		return nil, req, newModelNotFound(req.Model, m.ownershipHint(req.Model))
+		return nil, req, engine.NewModelNotFound(req.Model, m.ownershipHint(req.Model))
 	}
 	if !eng.Ready() {
 		// 多模态（lyria / veo / image / tts 等）与目录已标明归属的模型禁止换引擎：
 		// 换到 custom 只会把请求打到不相干的第三方供应商，最终以假 404 收场。
 		// 目标引擎不可用时返回它自己的真实错误（如 engine b: worker_ready=0）。
 		if owned || isMultimodalModel(strings.ToLower(strings.TrimSpace(req.Model))) {
-			return nil, req, engineUnavailableError(eng)
+			return nil, req, engine.UnavailableError(eng)
 		}
 		alt := m.alternate(eng, req.Model)
 		if alt != nil {
 			eng = alt
 		} else {
-			return nil, req, engineUnavailableError(eng)
+			return nil, req, engine.UnavailableError(eng)
 		}
 	}
 	return eng, req, nil
@@ -1577,7 +1558,7 @@ func (m *Manager) GenerateVideo(ctx context.Context, request aistudio.VideoReque
 		return aistudio.VideoOperation{}, errors.New("当前未启用引擎B原生 Veo 协议")
 	}
 	if !native.Ready() {
-		return aistudio.VideoOperation{}, engineUnavailableError(native)
+		return aistudio.VideoOperation{}, engine.UnavailableError(native)
 	}
 	return native.GenerateVideo(ctx, request)
 }
@@ -1589,7 +1570,7 @@ func (m *Manager) GetGenerateVideoOperation(ctx context.Context, operationID str
 		return aistudio.VideoOperation{}, errors.New("当前未启用引擎B原生 Veo 协议")
 	}
 	if !native.Ready() {
-		return aistudio.VideoOperation{}, engineUnavailableError(native)
+		return aistudio.VideoOperation{}, engine.UnavailableError(native)
 	}
 	return native.GetGenerateVideoOperation(ctx, operationID)
 }
@@ -1601,97 +1582,9 @@ func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (aistudi
 		return aistudio.MediaStream{}, errors.New("当前未启用引擎B原生 Veo 协议")
 	}
 	if !native.Ready() {
-		return aistudio.MediaStream{}, engineUnavailableError(native)
+		return aistudio.MediaStream{}, engine.UnavailableError(native)
 	}
 	return native.DownloadVideoFile(ctx, fileID)
-}
-
-// engineUnavailableError 保留引擎最近一次初始化/健康检查错误，避免线上只看到
-// “引擎不可用”而无法判断是账号、代理、网络还是上游协议问题。
-func engineUnavailableError(eng engine.Engine) error {
-	msg := fmt.Sprintf("引擎 %s 不可用", eng.Name())
-	if status := eng.Status(); status != nil {
-		switch {
-		case statusString(status["error"]) != "":
-			msg += ": " + statusString(status["error"])
-		case statusString(status["worker_error"]) != "":
-			// 账号 ready 但 WAA Worker 起不来：这层信息最容易被漏掉，单独透出。
-			msg += ": WAA Worker 未就绪（worker_ready=" + statusInt(status["worker_ready"]) + "）: " + statusString(status["worker_error"])
-		case status["worker_ready"] != nil && statusInt(status["worker_ready"]) == "0":
-			msg += ": WAA Worker 未就绪（worker_ready=0），账号在池但没有任何可用的工人"
-		case emptyStatusList(status["accounts"]):
-			msg += ": 没有可用账号（请在管理台添加账号，或检查 auth_states 配置）"
-		case firstAccountError(status["accounts"]) != "":
-			// 账号级错误（凭据失效 / 冷却中等）
-			msg += ": " + firstAccountError(status["accounts"])
-		}
-	}
-	return errors.New(msg)
-}
-
-// statusString 安全读取状态里的字符串字段。
-func statusString(v any) string {
-	s, _ := v.(string)
-	return strings.TrimSpace(s)
-}
-
-// statusInt 安全读取状态里的整数字段（数字或字符串形式）。
-func statusInt(v any) string {
-	switch n := v.(type) {
-	case int:
-		return strconv.Itoa(n)
-	case int64:
-		return strconv.FormatInt(n, 10)
-	case float64:
-		return strconv.FormatInt(int64(n), 10)
-	case string:
-		return strings.TrimSpace(n)
-	default:
-		return "0"
-	}
-}
-
-// firstAccountError 从账号状态列表中提取第一条错误描述。
-func firstAccountError(v any) string {
-	switch list := v.(type) {
-	case []AccountState:
-		for _, st := range list {
-			if st.Status == "error" && strings.TrimSpace(st.Detail) != "" {
-				return st.Label + ": " + strings.TrimSpace(st.Detail)
-			}
-		}
-	case []any:
-		for _, item := range list {
-			if m, ok := item.(map[string]any); ok {
-				status, _ := m["status"].(string)
-				detail, _ := m["detail"].(string)
-				label, _ := m["label"].(string)
-				if status == "error" && strings.TrimSpace(detail) != "" {
-					if label != "" {
-						return label + ": " + strings.TrimSpace(detail)
-					}
-					return strings.TrimSpace(detail)
-				}
-			}
-		}
-	}
-	return ""
-}
-
-func emptyStatusList(v any) bool {
-	switch list := v.(type) {
-	case []map[string]any:
-		return len(list) == 0
-	case []any:
-		return len(list) == 0
-	default:
-		// 订阅引擎的 []AccountState 等具体切片类型
-		rv := reflect.ValueOf(v)
-		if rv.Kind() == reflect.Slice {
-			return rv.Len() == 0
-		}
-		return false
-	}
 }
 
 // alternate 返回另一个引擎（按注册顺序优先就绪的）。
