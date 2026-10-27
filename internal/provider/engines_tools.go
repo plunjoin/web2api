@@ -12,4 +12,5 @@ var (
 	_ engine.ToolEngine = (*AIStudioEngine)(nil)
 	_ engine.ToolEngine = (*NativeAIStudioEngine)(nil)
 	_ engine.ToolEngine = (*CodexEngine)(nil)
+	_ engine.ToolEngine = (*AntigravityEngine)(nil)
 )

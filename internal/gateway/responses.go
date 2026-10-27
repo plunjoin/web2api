@@ -21,8 +21,8 @@ import (
 // 已支持：input（字符串或 item 数组）、instructions、stream、
 // temperature/top_p/max_output_tokens、usage、response.* 事件流，
 // 以及 function calling（tools / tool_choice / function_call 输出项）。
-// 未支持：previous_response_id 等有状态字段、非 function 类型的工具
-// （local_shell、web_search 等由客户端自行执行的内置工具）。
+// 未支持：previous_response_id 等有状态字段。
+// local_shell / apply_patch 等内置工具会降级成同名 function 下发；web_search 仍忽略。
 
 // responsesRequest 是 Responses 请求体（网关支持的子集）。
 type responsesRequest struct {
@@ -42,11 +42,13 @@ type responsesRequest struct {
 
 // responsesTool 是 Responses 格式的工具定义：name/description/parameters
 // 平铺在对象上，而 Chat 格式是嵌在 function 里，转换时需要拆包。
+// namespace 类型会带嵌套 tools；local_shell / web_search 等内置工具通常只有 type。
 type responsesTool struct {
 	Type        string          `json:"type"`
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
+	Tools       []responsesTool `json:"tools"` // namespace 嵌套
 }
 
 // responsesItem 是 input 数组里的单项。
@@ -367,26 +369,75 @@ func (req responsesRequest) toChat() (model.ChatRequest, error) {
 }
 
 // toChatTools 把 Responses 格式的工具定义转成 Chat 格式。
-// 非 function 类型（local_shell、web_search 等由客户端自己执行的工具）
-// 在 Chat 协议里没有对应物，直接丢弃——下发只会让上游报 400。
+//
+// Codex 0.16x 起 shell 类工具已是 type=function（exec_command 等），可直接透传。
+// 更老的客户端仍可能发 local_shell / apply_patch 等内置类型；它们在 Chat/Gemini
+// 协议里没有同名形态，这里降级成同名 function，让非 OpenAI 上游也能发起调用，
+// 客户端再按 function_call 执行本地工具。web_search 仍丢弃（需服务端检索能力）。
+// namespace 嵌套工具会被拍平为独立 function。
 func (req responsesRequest) toChatTools() []model.Tool {
 	out := make([]model.Tool, 0, len(req.Tools))
+	var appendTool func(tool responsesTool)
+	appendTool = func(tool responsesTool) {
+		typ := strings.ToLower(strings.TrimSpace(tool.Type))
+		switch typ {
+		case "", "function":
+			name := strings.TrimSpace(tool.Name)
+			if name == "" {
+				return
+			}
+			params := tool.Parameters
+			if len(params) == 0 || string(params) == "null" {
+				params = json.RawMessage(`{"type":"object","properties":{}}`)
+			}
+			out = append(out, model.Tool{
+				Type: "function",
+				Function: &model.ToolFunc{
+					Name:        name,
+					Description: tool.Description,
+					Parameters:  params,
+				},
+			})
+		case "namespace":
+			for _, nested := range tool.Tools {
+				appendTool(nested)
+			}
+		case "local_shell", "shell", "apply_patch", "shell_command":
+			name := strings.TrimSpace(tool.Name)
+			if name == "" {
+				name = typ
+			}
+			desc := strings.TrimSpace(tool.Description)
+			if desc == "" {
+				switch typ {
+				case "local_shell", "shell", "shell_command":
+					desc = "Run a shell command in the local session and return its output."
+				case "apply_patch":
+					desc = "Apply a patch to local files."
+				}
+			}
+			params := tool.Parameters
+			if len(params) == 0 || string(params) == "null" {
+				if typ == "apply_patch" {
+					params = json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"]}`)
+				} else {
+					params = json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"workdir":{"type":"string"}},"required":["command"]}`)
+				}
+			}
+			out = append(out, model.Tool{
+				Type: "function",
+				Function: &model.ToolFunc{
+					Name:        name,
+					Description: desc,
+					Parameters:  params,
+				},
+			})
+		default:
+			// web_search 等服务端内置工具：非 OpenAI 上游无法执行，丢弃。
+		}
+	}
 	for _, tool := range req.Tools {
-		if tool.Type != "" && tool.Type != "function" {
-			continue
-		}
-		name := strings.TrimSpace(tool.Name)
-		if name == "" {
-			continue
-		}
-		out = append(out, model.Tool{
-			Type: "function",
-			Function: &model.ToolFunc{
-				Name:        name,
-				Description: tool.Description,
-				Parameters:  tool.Parameters,
-			},
-		})
+		appendTool(tool)
 	}
 	return out
 }

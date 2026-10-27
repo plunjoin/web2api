@@ -43,7 +43,7 @@ type ChatMediaEngine interface {
 // ToolEngine 可选能力：支持 OpenAI function calling 透传——把 tools /
 // tool_choice 下发给上游，并把上游的 tool_calls 增量回传。
 //
-// 不实现本接口的引擎（Gemini 网页逆向、Antigravity、Kiro 等）收到带 tools 的
+// 不实现本接口的引擎（Gemini 网页逆向、Kiro、WorkBuddy 等）收到带 tools 的
 // 请求时只能忽略工具定义、用纯文本回答，网关侧不做报错：这类上游本来就没有
 // 可用的函数调用通道，报错只会让客户端完全不可用。
 type ToolEngine interface {
