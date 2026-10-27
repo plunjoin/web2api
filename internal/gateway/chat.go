@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
 	"web2api/internal/store"
@@ -32,6 +33,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "gemini-flash"
 	}
+	// 统一 IR 入口：与 /v1/responses 走同一套规范化不变量（非 function
+	// 工具丢弃、空 assistant content、tool name 回填）。
+	req = ir.NormalizeChat(req, s.logger.Printf)
 	if !s.modelAllowed(w, r, req.Model) {
 		return
 	}

@@ -675,16 +675,10 @@ func (e *AntigravityEngine) markCooldown(acc *antigravityAccount, reason string,
 	acc.mu.Unlock()
 }
 
-// antigravityToolsSupported 是否把 tools 下发给 Antigravity 上游。
-// Claude 等非 Gemini 模型走同一条 v1internal，但不接受 Gemini functionDeclarations；
-// v0.3.8 一律透传后，Codex 自带 tools 会让这些模型整请求 400。Gemini 才开透传。
-func antigravityToolsSupported(modelName string) bool {
-	m := strings.ToLower(strings.TrimSpace(modelName))
-	m = strings.TrimPrefix(m, "models/")
-	return strings.Contains(m, "gemini")
-}
-
 // toAntigravityRequest ChatRequest → antigravity.Request。
+// 是否透传 tools 由能力表决定：Claude 等非 Gemini 模型走同一条 v1internal，
+// 但不接受 Gemini functionDeclarations，v0.3.8 一律透传后 Codex 自带 tools
+// 会让这些模型整请求 400——只有 Gemini 系才开透传（CapsFor）。
 func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.Request {
 	out := &antigravity.Request{
 		Model:     req.Model,
@@ -692,7 +686,7 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 		MaxTokens: derefInt(req.MaxTokens),
 		ProjectID: projectID,
 	}
-	withTools := antigravityToolsSupported(req.Model)
+	withTools := CapsFor("antigravity", req.Model).Tools
 	if withTools {
 		out.ToolChoice = req.ToolChoice
 		for _, tool := range req.Tools {
@@ -796,8 +790,10 @@ func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccoun
 	}
 	// Gemini 工具协议偶发不被上游接受（schema / 模型档位）：去掉 tools 再试，
 	// 恢复成 v0.3.7「静默丢工具、纯文本仍可用」的行为，避免整请求挂死。
+	// 仅对开了工具透传的模型（能力表 RetryNoToolsOn400）生效；req.Tools
+	// 非空本身就说明走的是 Gemini 工具通道。
 	// Messages 必须深拷贝：浅拷贝会改坏原 req，换号重试时工具历史会被污染。
-	if err != nil && len(req.Tools) > 0 && antigravity.IsBadRequest(err) {
+	if err != nil && len(req.Tools) > 0 && CapsFor("antigravity", req.Model).RetryNoToolsOn400 && antigravity.IsBadRequest(err) {
 		stripped := *req
 		stripped.Tools = nil
 		stripped.ToolChoice = nil

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
 	"web2api/internal/store"
@@ -82,11 +83,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error(), "invalid_request_error", nil)
 		return
 	}
-	chatReq, err := req.toChat()
+	chatReq, err := req.toChat(s.logger.Printf)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", nil)
 		return
 	}
+	// 统一 IR 入口：与 /v1/chat/completions 走同一套规范化不变量。
+	chatReq = ir.NormalizeChat(chatReq, s.logger.Printf)
 	if !s.modelAllowed(w, r, chatReq.Model) {
 		return
 	}
@@ -337,8 +340,9 @@ func (s *Server) writeResponsesError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 }
 
-// toChat 把 Responses 请求转换成内部 Chat 请求。
-func (req responsesRequest) toChat() (model.ChatRequest, error) {
+// toChat 把 Responses 请求转换成内部 Chat 请求（近 IR；不明工具类型的
+// 丢弃与日志在此处理，其余不变量由 ir.NormalizeChat 统一兜底）。
+func (req responsesRequest) toChat(logf ir.Logf) (model.ChatRequest, error) {
 	out := model.ChatRequest{
 		Model:             strings.TrimSpace(req.Model),
 		Stream:            req.Stream,
@@ -347,7 +351,7 @@ func (req responsesRequest) toChat() (model.ChatRequest, error) {
 		MaxTokens:         req.MaxOutputTokens,
 		User:              req.User,
 		StreamOptions:     req.StreamOptions,
-		Tools:             req.toChatTools(),
+		Tools:             req.toChatTools(logf),
 		ToolChoice:        toChatToolChoice(req.ToolChoice),
 		ParallelToolCalls: req.ParallelToolCalls,
 	}
@@ -373,10 +377,17 @@ func (req responsesRequest) toChat() (model.ChatRequest, error) {
 // Codex 0.16x 起 shell 类工具已是 type=function（exec_command 等），可直接透传。
 // 更老的客户端仍可能发 local_shell / apply_patch 等内置类型；它们在 Chat/Gemini
 // 协议里没有同名形态，这里降级成同名 function，让非 OpenAI 上游也能发起调用，
-// 客户端再按 function_call 执行本地工具。web_search 仍丢弃（需服务端检索能力）。
+// 客户端再按 function_call 执行本地工具。web_search 等不明类型丢弃并记日志
+// （需服务端检索能力，非 OpenAI 上游无法执行）。
 // namespace 嵌套工具会被拍平为独立 function。
-func (req responsesRequest) toChatTools() []model.Tool {
+func (req responsesRequest) toChatTools(logf ir.Logf) []model.Tool {
 	out := make([]model.Tool, 0, len(req.Tools))
+	var dropped []string
+	drop := func(typ string) {
+		if typ != "" {
+			dropped = append(dropped, typ)
+		}
+	}
 	var appendTool func(tool responsesTool)
 	appendTool = func(tool responsesTool) {
 		typ := strings.ToLower(strings.TrimSpace(tool.Type))
@@ -433,11 +444,15 @@ func (req responsesRequest) toChatTools() []model.Tool {
 				},
 			})
 		default:
-			// web_search 等服务端内置工具：非 OpenAI 上游无法执行，丢弃。
+			// web_search 等服务端内置工具：非 OpenAI 上游无法执行，丢弃并记日志。
+			drop(tool.Type)
 		}
 	}
 	for _, tool := range req.Tools {
 		appendTool(tool)
+	}
+	if len(dropped) > 0 && logf != nil {
+		logf("[responses] 丢弃不明工具类型: %s", strings.Join(dropped, ", "))
 	}
 	return out
 }

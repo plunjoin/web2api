@@ -609,8 +609,8 @@ func (e *CustomEngine) chatLoop(ctx context.Context, req model.ChatRequest, sink
 		}
 		res, err = call(req)
 		// Codex / Responses 自带的复杂 tools 在 MiniMax 等上游常 400：
-		// 去掉 tools 再试一次，保证纯文本对话可用（与 Antigravity 降级一致）。
-		if err != nil && len(req.Tools) > 0 && isHTTPStatus(err, 400) {
+		// 按能力表降级——去掉 tools 再试一次，保证纯文本对话可用。
+		if err != nil && len(req.Tools) > 0 && CapsFor(e.name, req.Model).RetryNoToolsOn400 && isHTTPStatus(err, 400) {
 			if retry, retryErr := call(stripChatTools(req)); retryErr == nil {
 				res, err = retry, nil
 			}

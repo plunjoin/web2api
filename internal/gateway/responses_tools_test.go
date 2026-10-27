@@ -41,7 +41,7 @@ func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 		{Type: "web_search"},
 		{Type: "local_shell"},
 	}}
-	tools := req.toChatTools()
+	tools := req.toChatTools(nil)
 	names := map[string]bool{}
 	for _, tool := range tools {
 		if tool.Function == nil {
@@ -61,7 +61,7 @@ func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 
 func TestToChatToolsLocalShellGetsCommandSchema(t *testing.T) {
 	req := responsesRequest{Tools: []responsesTool{{Type: "local_shell"}}}
-	tools := req.toChatTools()
+	tools := req.toChatTools(nil)
 	if len(tools) != 1 || tools[0].Function == nil {
 		t.Fatalf("tools=%+v", tools)
 	}
