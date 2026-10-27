@@ -97,10 +97,10 @@ Antigravity / OpenAI-compat / Custom 各自 IR→上游、结果→Chat。把现
 
 ### 进度（as of 2026-10-28）
 
-- [x] 阶段 0 补丁已在本机工作区（未 commit / 无 PR）
-- [ ] IR + 能力表代码落地
-- [ ] 三引擎适配器边界清晰、共享路由无模型特例
-- [ ] 契约测试矩阵进 CI
+- [x] 阶段 0 补丁收进 `refactor/responses-adapter` 分支（95a9a6a，未合并）
+- [x] IR + 能力表代码落地（`internal/ir.NormalizeChat` + `provider.CapsFor`，617c8bd）
+- [x] 三引擎适配器边界清晰、共享路由无模型特例（能力表驱动；local_shell/apply_patch 入站从「降级成 function」改为「丢弃并记日志」，见 §5.2）
+- [x] 契约测试矩阵进 CI（`.github/workflows/test.yml`，go test ./...）
 - [ ] 发版与 bllii 真号验收
 
 ---
