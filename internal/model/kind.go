@@ -1,6 +1,9 @@
 package model
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // 模型用途。前端按这个字段筛选，不再靠模型 ID 猜测。
 const (
@@ -10,6 +13,9 @@ const (
 	KindMusic     = "music"
 	KindSpeech    = "speech"
 	KindEmbedding = "embedding"
+	// KindOther 不走 chat/completions 的特殊模型：只支持 Interactions API 的
+	// 智能体（deep-research-*、antigravity-preview-*）和 aqa 这类专用接口模型。
+	KindOther = "other"
 )
 
 // ClassifyKind 根据上游能力标记和模型名判断用途。
@@ -58,7 +64,7 @@ func kindRank(kind string) int {
 		return 4
 	case KindSpeech:
 		return 3
-	case KindEmbedding:
+	case KindEmbedding, KindOther:
 		return 2
 	default:
 		return 1
@@ -67,6 +73,7 @@ func kindRank(kind string) int {
 
 func kindFromName(name string) string {
 	n := strings.ToLower(name)
+	base := n[strings.LastIndex(n, "/")+1:] // 去掉 models/ 之类的前缀
 	switch {
 	case strings.Contains(n, "veo") || strings.Contains(n, "video") || strings.Contains(n, "omni"):
 		return KindVideo
@@ -76,9 +83,24 @@ func kindFromName(name string) string {
 		return KindImage
 	case strings.Contains(n, "tts") || strings.Contains(n, "speech") || strings.Contains(n, "audio"):
 		return KindSpeech
+	// Gemini Live / 实时转写 / 同传：只支持 WebSocket bidiGenerateContent，
+	// chat/completions 会 400（gemini-3.8-live、gemini-3.1-flash-live-preview、
+	// gemini-3.5-live-translate-preview、gemini-robotics-er-2-streaming-preview）。
+	case liveSegment.MatchString(n) || strings.Contains(n, "transcribe") || strings.Contains(n, "-streaming-preview"):
+		return KindSpeech
 	case strings.Contains(n, "embedding") || strings.Contains(n, "embed"):
 		return KindEmbedding
+	// 只支持 Interactions API（"This model only supports Interactions API"）或
+	// 专用接口（aqa 不支持 generateContent）的模型。
+	case strings.HasPrefix(base, "deep-research-") || strings.HasPrefix(base, "antigravity-preview") || aqaName.MatchString(n):
+		return KindOther
 	default:
 		return KindChat
 	}
 }
+
+// liveSegment 匹配独立的 live 段（-live、-live-preview），不误伤 deliver 之类的词。
+var liveSegment = regexp.MustCompile(`(^|[-_ /])live($|[-_ ])`)
+
+// aqaName 匹配 Google 的 aqa（Attributed Question Answering）模型。
+var aqaName = regexp.MustCompile(`(^|/)aqa($|[-_ ])`)
