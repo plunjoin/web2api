@@ -675,24 +675,36 @@ func (e *AntigravityEngine) markCooldown(acc *antigravityAccount, reason string,
 	acc.mu.Unlock()
 }
 
+// antigravityToolsSupported 是否把 tools 下发给 Antigravity 上游。
+// Claude 等非 Gemini 模型走同一条 v1internal，但不接受 Gemini functionDeclarations；
+// v0.3.8 一律透传后，Codex 自带 tools 会让这些模型整请求 400。Gemini 才开透传。
+func antigravityToolsSupported(modelName string) bool {
+	m := strings.ToLower(strings.TrimSpace(modelName))
+	m = strings.TrimPrefix(m, "models/")
+	return strings.Contains(m, "gemini")
+}
+
 // toAntigravityRequest ChatRequest → antigravity.Request。
 func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.Request {
 	out := &antigravity.Request{
-		Model:      req.Model,
-		System:     subSystemText(req),
-		MaxTokens:  derefInt(req.MaxTokens),
-		ProjectID:  projectID,
-		ToolChoice: req.ToolChoice,
+		Model:     req.Model,
+		System:    subSystemText(req),
+		MaxTokens: derefInt(req.MaxTokens),
+		ProjectID: projectID,
 	}
-	for _, tool := range req.Tools {
-		if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
-			continue
+	withTools := antigravityToolsSupported(req.Model)
+	if withTools {
+		out.ToolChoice = req.ToolChoice
+		for _, tool := range req.Tools {
+			if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
+				continue
+			}
+			out.Tools = append(out.Tools, antigravity.Tool{
+				Name:        tool.Function.Name,
+				Description: tool.Function.Description,
+				Parameters:  tool.Function.Parameters,
+			})
 		}
-		out.Tools = append(out.Tools, antigravity.Tool{
-			Name:        tool.Function.Name,
-			Description: tool.Function.Description,
-			Parameters:  tool.Function.Parameters,
-		})
 	}
 	for _, m := range req.Messages {
 		role := strings.ToLower(m.Role)
@@ -700,25 +712,36 @@ func toAntigravityRequest(req model.ChatRequest, projectID string) *antigravity.
 		case "system":
 			continue
 		case "tool":
-			out.Messages = append(out.Messages, antigravity.Message{
-				Role:       "tool",
-				Text:       m.Text(),
-				ToolCallID: m.ToolCallID,
-				ToolName:   m.Name,
-			})
+			if withTools {
+				out.Messages = append(out.Messages, antigravity.Message{
+					Role:       "tool",
+					Text:       m.Text(),
+					ToolCallID: m.ToolCallID,
+					ToolName:   m.Name,
+				})
+			} else {
+				// 无工具通道时把 tool 结果折成普通 user 文本，避免上游拒收。
+				text := m.Text()
+				if name := strings.TrimSpace(m.Name); name != "" {
+					text = "[" + name + "] " + text
+				}
+				out.Messages = append(out.Messages, antigravity.Message{Role: "user", Text: text})
+			}
 		case "assistant":
 			msg := antigravity.Message{
 				Role:      "assistant",
 				Text:      m.Text(),
 				ImageURLs: subImageURLs(m.Content),
 			}
-			for _, call := range m.ToolCalls {
-				msg.ToolCalls = append(msg.ToolCalls, antigravity.ToolCall{
-					ID:         call.ID,
-					Name:       call.Function.Name,
-					Arguments:  call.Function.Arguments,
-					ThoughtSig: thoughtSigFromExtra(call.ExtraContent),
-				})
+			if withTools {
+				for _, call := range m.ToolCalls {
+					msg.ToolCalls = append(msg.ToolCalls, antigravity.ToolCall{
+						ID:         call.ID,
+						Name:       call.Function.Name,
+						Arguments:  call.Function.Arguments,
+						ThoughtSig: thoughtSigFromExtra(call.ExtraContent),
+					})
+				}
 			}
 			out.Messages = append(out.Messages, msg)
 		default:
@@ -748,27 +771,42 @@ func thoughtSigFromExtra(extra json.RawMessage) string {
 	return ""
 }
 
-// chatOnce 单账号一次请求（401 刷新重试）。
+// chatOnce 单账号一次请求（401 刷新重试；带 tools 的 400 会无工具再试一次）。
 func (e *AntigravityEngine) chatOnce(ctx context.Context, acc *antigravityAccount, req *antigravity.Request, onDelta func(string) error, onTool func(antigravity.ToolCallDelta) error) (*antigravity.Result, error) {
-	attempt := func() (*antigravity.Result, error) {
+	attempt := func(r *antigravity.Request, toolsCB func(antigravity.ToolCallDelta) error) (*antigravity.Result, error) {
 		accessToken, projectID, err := e.token(acc)
 		if err != nil {
 			return nil, err
 		}
-		req.ProjectID = projectID
-		req.Model = e.resolveModel(acc, req.Model)
-		return antigravity.StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, req, onDelta, onTool)
+		r.ProjectID = projectID
+		r.Model = e.resolveModel(acc, r.Model)
+		return antigravity.StreamWithTools(ctx, acc.proxy(e.proxy), accessToken, r, onDelta, toolsCB)
 	}
-	res, err := attempt()
+	res, err := attempt(req, onTool)
 	if err != nil && antigravity.IsUnauthorized(err) {
 		if refreshErr := e.ensureToken(acc); refreshErr != nil {
 			return nil, fmt.Errorf("token 已失效且刷新失败: %w", refreshErr)
 		}
-		res, err = attempt()
+		res, err = attempt(req, onTool)
+	}
+	// Gemini 工具协议偶发不被上游接受（schema / 模型档位）：去掉 tools 再试，
+	// 恢复成 v0.3.7「静默丢工具、纯文本仍可用」的行为，避免整请求挂死。
+	if err != nil && len(req.Tools) > 0 && antigravity.IsBadRequest(err) {
+		stripped := *req
+		stripped.Tools = nil
+		stripped.ToolChoice = nil
+		for i := range stripped.Messages {
+			stripped.Messages[i].ToolCalls = nil
+			if strings.EqualFold(stripped.Messages[i].Role, "tool") {
+				stripped.Messages[i].Role = "user"
+			}
+		}
+		if retry, retryErr := attempt(&stripped, nil); retryErr == nil {
+			return retry, nil
+		}
 	}
 	if err != nil && antigravity.IsResourceExhausted(err) {
 		e.markCooldown(acc, "上游 429 限流", 5*time.Minute)
-		// 429 多为配额/模型档位问题：拉一次目录与官方用量刷新额度认知
 		go e.refreshCatalog(acc)
 		go e.refreshQuotaSummary(acc)
 	}

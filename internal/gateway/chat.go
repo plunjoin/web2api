@@ -192,15 +192,17 @@ func (s *Server) recordChat(r *http.Request, req model.ChatRequest, res *model.C
 	if info, ok := keyInfoFrom(r); ok {
 		rec.KeyID = info.ID
 	}
+	if res != nil && strings.TrimSpace(res.Engine) != "" {
+		rec.Engine = res.Engine
+	} else if s.mgr != nil {
+		rec.Engine = s.mgr.EngineForModel(req.Model)
+	}
 	if runErr != nil {
 		rec.Error = runErr.Error()
 	} else {
 		usage := resolveUsage(req, res)
 		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 		rec.Estimated = usage.Estimated
-		if res != nil {
-			rec.Engine = res.Engine
-		}
 	}
 	saved, err := s.st.RecordRequest(rec)
 	if err != nil {

@@ -1254,6 +1254,15 @@ func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("上游 HTTP %d: %s", e.Status, strings.TrimSpace(msg))
 }
 
+// IsBadRequest 上游 400：常见于 tools / schema 不被该模型接受。
+func IsBadRequest(err error) bool {
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		return ue.Status == http.StatusBadRequest
+	}
+	return false
+}
+
 // IsUnauthorized 判断是否需要刷新 token 重试。
 func IsUnauthorized(err error) bool {
 	var ue *UpstreamError

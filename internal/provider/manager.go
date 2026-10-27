@@ -496,6 +496,16 @@ func (m *Manager) EngineB() engine.Engine {
 	return m.engineB
 }
 
+// EngineForModel 按当前路由规则预览模型会落到哪个引擎（用量失败记录用）。
+// 不保证该引擎此刻 Ready；引擎未命中时返回空串。
+func (m *Manager) EngineForModel(modelName string) string {
+	eng, _ := m.pickEngine(modelName)
+	if eng == nil {
+		return ""
+	}
+	return eng.Name()
+}
+
 // EngineReady 指定引擎是否就绪（未注册返回 false）。
 func (m *Manager) EngineReady(name string) bool {
 	eng, ok := m.engines[name]

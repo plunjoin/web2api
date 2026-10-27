@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"web2api/internal/model"
@@ -40,5 +41,51 @@ func TestToAntigravityRequestMapsToolsAndToolMessages(t *testing.T) {
 	}
 	if out.Messages[2].Role != "tool" || out.Messages[2].ToolCallID != "call_1" {
 		t.Fatalf("tool msg=%+v", out.Messages[2])
+	}
+}
+
+func TestToAntigravityRequestStripsToolsForClaude(t *testing.T) {
+	req := model.ChatRequest{
+		Model: "claude-sonnet-4-5",
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: &model.ToolFunc{Name: "exec_command", Parameters: json.RawMessage(`{}`)},
+		}},
+		ToolChoice: json.RawMessage(`"auto"`),
+		Messages: []model.ChatMessage{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "c1", Type: "function", Function: model.ToolFunction{Name: "exec_command", Arguments: `{}`}}}},
+			{Role: "tool", Name: "exec_command", ToolCallID: "c1", Content: "ok"},
+		},
+	}
+	out := toAntigravityRequest(req, "proj")
+	if len(out.Tools) != 0 {
+		t.Fatalf("claude should not receive tools, got %d", len(out.Tools))
+	}
+	if len(out.ToolChoice) != 0 {
+		t.Fatalf("claude should not receive tool_choice")
+	}
+	for _, m := range out.Messages {
+		if len(m.ToolCalls) != 0 {
+			t.Fatalf("assistant tool_calls should be stripped for claude")
+		}
+		if strings.EqualFold(m.Role, "tool") {
+			t.Fatalf("tool role should be flattened for claude")
+		}
+	}
+}
+
+func TestToAntigravityRequestKeepsToolsForGemini(t *testing.T) {
+	req := model.ChatRequest{
+		Model: "gemini-3-flash-preview",
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: &model.ToolFunc{Name: "exec_command", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		Messages: []model.ChatMessage{{Role: "user", Content: "hi"}},
+	}
+	out := toAntigravityRequest(req, "")
+	if len(out.Tools) != 1 || out.Tools[0].Name != "exec_command" {
+		t.Fatalf("gemini tools=%v", out.Tools)
 	}
 }

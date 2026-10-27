@@ -93,3 +93,12 @@ func TestParseSSEFunctionCallOnly(t *testing.T) {
 		t.Fatalf("unexpected text %q", res.Text)
 	}
 }
+
+func TestIsBadRequest(t *testing.T) {
+	if !IsBadRequest(&UpstreamError{Status: 400, Body: `{"error":{"message":"bad tools"}}`}) {
+		t.Fatal("want true for 400")
+	}
+	if IsBadRequest(&UpstreamError{Status: 429, Body: "limit"}) {
+		t.Fatal("429 should not be bad request")
+	}
+}
