@@ -8,7 +8,7 @@ import "strings"
 //
 // 首版能力表（完整背景见 docs/web2api-responses-adapter-plan.md §3）：
 //
-//	能力                        antigravity+Gemini  antigravity+其他  custom/MiniMax  b/codex(OpenAI 兼容)
+//	能力                        antigravity+Gemini   antigravity+其他   custom/MiniMax   aistudio/codex(OpenAI 兼容)
 //	透传 function tools         是                  否（先剥）        是              是
 //	assistant content=null      不适用(Text 协议)   折文本时清洗      出站改 ""       出站改 ""
 //	空 tool-only assistant      保留                去掉              按上游          按上游
@@ -40,7 +40,7 @@ var (
 	plainTextCaps         = EngineCaps{FlattenToolHistory: true}
 )
 
-// CapsFor 查询能力表。engine 是引擎注册名（a/b/codex/antigravity/kiro/
+// CapsFor 查询能力表。engine 是引擎注册名（geminiweb/aistudio/codex/antigravity/kiro/
 // workbuddy/custom），未知引擎一律取保守值：不透传工具、折纯文本。
 func CapsFor(engine, modelName string) EngineCaps {
 	switch engine {
@@ -55,7 +55,7 @@ func CapsFor(engine, modelName string) EngineCaps {
 		// MiniMax 等第三方 OpenAI 兼容上游能收 function tools，但 Codex
 		// 自带的复杂 schema 常被整请求 400，需要无工具降级兜底。
 		return customCaps
-	case "b", "codex":
+	case "aistudio", "codex":
 		// AI Studio / Codex 官方端点：协议标准，直接透传。
 		return openaiCompatCaps
 	default:

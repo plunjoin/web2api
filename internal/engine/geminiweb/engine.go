@@ -54,7 +54,7 @@ func New(cfg config.EngineAConfig) (*Engine, error) {
 		cfg.TimeoutSeconds = 300
 	}
 	return &Engine{
-		name:    "a",
+		name:    "geminiweb",
 		proxy:   cfg.Proxy,
 		refresh: time.Duration(cfg.RefreshSeconds) * time.Second,
 		timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
@@ -280,7 +280,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 				Object:      "model",
 				DisplayName: m.DisplayName,
 				Available:   m.Available,
-				Engine:      "a",
+				Engine:      "geminiweb",
 				Kind:        model.ClassifyKind(m.Name, m.DisplayName, nil),
 			})
 		}
@@ -356,7 +356,7 @@ func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 		}
 		text, err := acc.client.Generate(ctx, prompt, req.Model)
 		if err == nil {
-			return &model.ChatResult{Text: text, Engine: "a", Model: req.Model}, nil
+			return &model.ChatResult{Text: text, Engine: "geminiweb", Model: req.Model}, nil
 		}
 		lastErr = err
 	}
@@ -378,7 +378,7 @@ func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 		}
 		text, err := acc.client.GenerateStream(ctx, prompt, req.Model, onDelta)
 		if err == nil {
-			return &model.ChatResult{Text: text, Engine: "a", Model: req.Model}, nil
+			return &model.ChatResult{Text: text, Engine: "geminiweb", Model: req.Model}, nil
 		}
 		lastErr = err
 	}
@@ -412,7 +412,7 @@ func (e *Engine) Status() map[string]any {
 		errMsg = err.Error()
 	}
 	return map[string]any{
-		"engine":   "a",
+		"engine":   "geminiweb",
 		"ready":    e.Ready(),
 		"accounts": accounts,
 		"error":    errMsg,

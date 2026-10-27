@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,11 +14,47 @@ import (
 type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	Routing   RoutingConfig   `yaml:"routing"`
-	EngineA   EngineAConfig   `yaml:"engine_a"`
-	EngineB   EngineBConfig   `yaml:"engine_b"`
+	GeminiWeb EngineAConfig   `yaml:"engine_geminiweb"`
+	AIStudio  EngineBConfig   `yaml:"engine_aistudio"`
 	Engines   EnginesConfig   `yaml:"engines"`
 	GeminiAPI GeminiAPIConfig `yaml:"gemini_api"`
 }
+
+// UnmarshalYAML 兼容 v0.3.8 及之前的配置键：engine_a/engine_b 分别映射到
+// engine_geminiweb/engine_aistudio（新键优先）。
+func (c *Config) UnmarshalYAML(value *yaml.Node) error {
+	var raw struct {
+		Server    ServerConfig    `yaml:"server"`
+		Routing   RoutingConfig   `yaml:"routing"`
+		GeminiWeb EngineAConfig   `yaml:"engine_geminiweb"`
+		AIStudio  EngineBConfig   `yaml:"engine_aistudio"`
+		Engines   EnginesConfig   `yaml:"engines"`
+		GeminiAPI GeminiAPIConfig `yaml:"gemini_api"`
+		EngineAOld EngineAConfig  `yaml:"engine_a"`
+		EngineBOld EngineBConfig  `yaml:"engine_b"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*c = Config{
+		Server:    raw.Server,
+		Routing:   raw.Routing,
+		GeminiWeb: raw.GeminiWeb,
+		AIStudio:  raw.AIStudio,
+		Engines:   raw.Engines,
+		GeminiAPI: raw.GeminiAPI,
+	}
+	if isZero(c.GeminiWeb) {
+		c.GeminiWeb = raw.EngineAOld
+	}
+	if isZero(c.AIStudio) {
+		c.AIStudio = raw.EngineBOld
+	}
+	return nil
+}
+
+// isZero 判定配置段是否完全未设置（用于旧键回退）。
+func isZero(v any) bool { return v == nil || reflect.DeepEqual(v, reflect.Zero(reflect.TypeOf(v)).Interface()) }
 
 // EnginesConfig 订阅引擎 + 第三方 Key 引擎配置。
 // 每个引擎独立账号池，账号在管理台运行时增删，也可用静态种子导入。
@@ -123,12 +160,54 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine string   `yaml:"default_engine"`  // auto | a | b | codex | antigravity | kiro | workbuddy | custom
-	EngineAModels []string `yaml:"engine_a_models"` // 强制走引擎A 的模型名（前缀匹配）
-	EngineBModels []string `yaml:"engine_b_models"` // 强制走引擎B 的模型名（前缀匹配）
+	DefaultEngine   string   `yaml:"default_engine"`    // auto | geminiweb | aistudio | codex | antigravity | kiro | workbuddy | custom
+	GeminiWebModels []string `yaml:"engine_geminiweb_models"` // 强制走 Gemini Web 的模型名（前缀匹配）
+	AIStudioModels  []string `yaml:"engine_aistudio_models"`  // 强制走 AI Studio 的模型名（前缀匹配）
 	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），
-	// 优先级高于 engine_a/b_models。
+	// 优先级高于 engine_geminiweb/aistudio_models。
 	EngineModels map[string][]string `yaml:"engine_models"`
+}
+
+// UnmarshalYAML 兼容旧键 engine_a_models/engine_b_models，并把 default_engine
+// 的历史值 a/b 归一成 geminiweb/aistudio。
+func (r *RoutingConfig) UnmarshalYAML(value *yaml.Node) error {
+	var raw struct {
+		DefaultEngine   string              `yaml:"default_engine"`
+		GeminiWebModels []string            `yaml:"engine_geminiweb_models"`
+		AIStudioModels  []string            `yaml:"engine_aistudio_models"`
+		EngineAOld      []string            `yaml:"engine_a_models"`
+		EngineBOld      []string            `yaml:"engine_b_models"`
+		EngineModels    map[string][]string `yaml:"engine_models"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*r = RoutingConfig{
+		DefaultEngine:   NormalizeEngineName(raw.DefaultEngine),
+		GeminiWebModels: raw.GeminiWebModels,
+		AIStudioModels:  raw.AIStudioModels,
+		EngineModels:    raw.EngineModels,
+	}
+	if len(r.GeminiWebModels) == 0 {
+		r.GeminiWebModels = raw.EngineAOld
+	}
+	if len(r.AIStudioModels) == 0 {
+		r.AIStudioModels = raw.EngineBOld
+	}
+	return nil
+}
+
+// NormalizeEngineName 把历史引擎名归一为当前标识：a→geminiweb、b→aistudio。
+// gemini 是 a 的既有别名。未知值原样返回，交由上层校验。
+func NormalizeEngineName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "a", "gemini":
+		return "geminiweb"
+	case "b":
+		return "aistudio"
+	default:
+		return strings.ToLower(strings.TrimSpace(name))
+	}
 }
 
 // EngineAConfig 引擎A：gemini.google.com 网页版（原生 Go 逆向）。
@@ -191,12 +270,12 @@ func Default() *Config {
 			WorkBuddy:   WorkBuddyConfig{Enabled: true, BaseURL: "https://www.codebuddy.ai"},
 			Custom:      CustomConfig{Enabled: true},
 		},
-		EngineA: EngineAConfig{
+		GeminiWeb: EngineAConfig{
 			Enabled:        true,
 			RefreshSeconds: 600,
 			TimeoutSeconds: 300,
 		},
-		EngineB: EngineBConfig{
+		AIStudio: EngineBConfig{
 			Enabled:               true,
 			Mode:                  "native",
 			AuthStates:            "auth",
@@ -260,16 +339,16 @@ func applyEnv(cfg *Config) {
 		cfg.Server.DBPath = v
 	}
 	if v := os.Getenv("WEB2API_DEFAULT_ENGINE"); v != "" {
-		cfg.Routing.DefaultEngine = v
+		cfg.Routing.DefaultEngine = NormalizeEngineName(v)
 	}
 	if v := os.Getenv("WEB2API_ENGINE_B_URL"); v != "" {
-		cfg.EngineB.BaseURL = v
+		cfg.AIStudio.BaseURL = v
 	}
 	if v := os.Getenv("WEB2API_ENGINE_B_KEY"); v != "" {
-		cfg.EngineB.APIKey = v
+		cfg.AIStudio.APIKey = v
 	}
 	if v := os.Getenv("WEB2API_PROXY"); v != "" {
-		cfg.EngineA.Proxy = v
+		cfg.GeminiWeb.Proxy = v
 	}
 
 	// 默认值
@@ -282,14 +361,14 @@ func applyEnv(cfg *Config) {
 	if cfg.Routing.DefaultEngine == "" {
 		cfg.Routing.DefaultEngine = "auto"
 	}
-	if cfg.EngineA.RefreshSeconds == 0 {
-		cfg.EngineA.RefreshSeconds = 600
+	if cfg.GeminiWeb.RefreshSeconds == 0 {
+		cfg.GeminiWeb.RefreshSeconds = 600
 	}
-	if cfg.EngineA.TimeoutSeconds == 0 {
-		cfg.EngineA.TimeoutSeconds = 300
+	if cfg.GeminiWeb.TimeoutSeconds == 0 {
+		cfg.GeminiWeb.TimeoutSeconds = 300
 	}
-	if cfg.EngineB.BaseURL == "" {
-		cfg.EngineB.BaseURL = "http://127.0.0.1:2048"
+	if cfg.AIStudio.BaseURL == "" {
+		cfg.AIStudio.BaseURL = "http://127.0.0.1:2048"
 	}
 }
 

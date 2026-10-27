@@ -17,7 +17,7 @@ func TestCapsForAntigravitySplitsByModelFamily(t *testing.T) {
 }
 
 func TestCapsForOpenAICompatFamily(t *testing.T) {
-	for _, eng := range []string{"custom", "b", "codex"} {
+	for _, eng := range []string{"custom", "aistudio", "codex"} {
 		caps := CapsFor(eng, "whatever-model")
 		if !caps.Tools || caps.FlattenToolHistory {
 			t.Fatalf("%s caps=%#v", eng, caps)
@@ -25,7 +25,7 @@ func TestCapsForOpenAICompatFamily(t *testing.T) {
 		if eng == "custom" && !caps.RetryNoToolsOn400 {
 			t.Fatalf("custom must retry without tools on 400: %#v", caps)
 		}
-		if (eng == "b" || eng == "codex") && caps.RetryNoToolsOn400 {
+		if (eng == "aistudio" || eng == "codex") && caps.RetryNoToolsOn400 {
 			t.Fatalf("%s should not silently drop tools: %#v", eng, caps)
 		}
 	}

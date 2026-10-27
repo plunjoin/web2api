@@ -527,6 +527,7 @@ func (s *Store) ListUsageRecords(filter UsageFilter) ([]UsageRecord, int64, erro
 			&r.ChargedTokens, &r.Error, &r.LatencyMs, &r.UserID, &r.UserEmail, &r.UserMultiplier, &r.Refunded); err != nil {
 			return nil, 0, err
 		}
+		r.Engine = legacyEngineName(r.Engine)
 		r.Stream, r.Success, r.Estimated = stream != 0, success != 0, estimated != 0
 		r.KeyMasked = MaskKey(r.APIKey)
 		out = append(out, r)

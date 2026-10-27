@@ -82,7 +82,7 @@ func NewNative(cfg config.EngineBConfig) (*NativeEngine, error) {
 	if cfg.RoutingStrategy == "" {
 		cfg.RoutingStrategy = "round-robin"
 	}
-	return &NativeEngine{name: "b", cfg: cfg, stopCh: make(chan struct{}),
+	return &NativeEngine{name: "aistudio", cfg: cfg, stopCh: make(chan struct{}),
 		idMap: map[string]string{}}, nil
 }
 
@@ -276,7 +276,7 @@ func (e *NativeEngine) ListModels() []model.ModelInfo {
 			Object:      "model",
 			DisplayName: m.Name,
 			Available:   canServe && declared[id],
-			Engine:      "b",
+			Engine:      "aistudio",
 			Kind:        model.ClassifyKind(m.ID, m.Name, m.Capabilities),
 		})
 	}
@@ -553,7 +553,7 @@ func (e *NativeEngine) generate(ctx context.Context, req model.ChatRequest, sink
 	}
 	return &model.ChatResult{
 		Text:         full.String(),
-		Engine:       "b",
+		Engine:       "aistudio",
 		Model:        req.Model,
 		Usage:        usage,
 		ToolCalls:    toolCalls,
@@ -653,7 +653,7 @@ func (e *NativeEngine) Status() map[string]any {
 		}
 	}
 	return map[string]any{
-		"engine":       "b",
+		"engine":       "aistudio",
 		"mode":         "native",
 		"ready":        e.Ready(),
 		"auth_states":  e.cfg.AuthStates,

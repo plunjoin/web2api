@@ -24,13 +24,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"status":     "ok",
 		"uptime":     time.Since(s.startAt).String(),
-		"engine_a":   s.mgr.EngineReady("a"),
-		"engine_b":   s.mgr.EngineReady("b"),
+		"engine_geminiweb": s.mgr.EngineReady("geminiweb"),
+		"engine_aistudio": s.mgr.EngineReady("aistudio"),
 		"gemini_api": s.gemini.Enabled(),
 	}
 	// 订阅引擎就绪状态（engine_codex / engine_antigravity / ...）
 	for name, ready := range s.mgr.EngineReadyMap() {
-		if name == "a" || name == "b" {
+		if name == "geminiweb" || name == "aistudio" {
 			continue
 		}
 		out["engine_"+name] = ready

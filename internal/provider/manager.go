@@ -41,8 +41,8 @@ type Manager struct {
 	pools map[string]accountPool
 
 	defaultEngine string
-	engineAModels []string
-	engineBModels []string
+	geminiWebModels []string
+	aiStudioModels []string
 	// 新引擎（codex/antigravity/kiro/workbuddy）的模型路由配置。
 	engineModels map[string][]string
 }
@@ -131,8 +131,8 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		st:            st,
 		cfg:           cfg,
 		defaultEngine: strings.ToLower(cfg.Routing.DefaultEngine),
-		engineAModels: cfg.Routing.EngineAModels,
-		engineBModels: cfg.Routing.EngineBModels,
+		geminiWebModels: cfg.Routing.GeminiWebModels,
+		aiStudioModels: cfg.Routing.AIStudioModels,
 		engineModels:  cfg.Routing.EngineModels,
 		engines:       map[string]engine.Engine{},
 		pools:         map[string]accountPool{},
@@ -141,29 +141,29 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		m.defaultEngine = "auto"
 	}
 
-	if cfg.EngineA.Enabled {
-		ea, err := geminiweb.New(cfg.EngineA)
+	if cfg.GeminiWeb.Enabled {
+		ea, err := geminiweb.New(cfg.GeminiWeb)
 		if err != nil {
 			return nil, fmt.Errorf("引擎A 初始化失败: %w", err)
 		}
 		m.engineA = ea
 		ea.SetStore(st)
-		m.register("a", ea, ea)
+		m.register("geminiweb", ea, ea)
 	}
-	if cfg.EngineB.Enabled {
-		mode := strings.ToLower(strings.TrimSpace(cfg.EngineB.Mode))
+	if cfg.AIStudio.Enabled {
+		mode := strings.ToLower(strings.TrimSpace(cfg.AIStudio.Mode))
 		if mode == "" {
 			mode = "native"
 		}
 		var eb initializableEngine
 		if mode == "native" {
-			native, err := aistudio.NewNative(cfg.EngineB)
+			native, err := aistudio.NewNative(cfg.AIStudio)
 			if err != nil {
 				return nil, err
 			}
 			eb = native
 		} else {
-			upstreamEngine, err := aistudio.New(cfg.EngineB, 300*time.Second)
+			upstreamEngine, err := aistudio.New(cfg.AIStudio, 300*time.Second)
 			if err != nil {
 				return nil, err
 			}
@@ -171,10 +171,10 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		}
 		if eb != nil {
 			m.engineB = eb
-			m.register("b", eb, nil)
+			m.register("aistudio", eb, nil)
 			// native 模式的账号池能力在具体实例上
 			if native, ok := eb.(*aistudio.NativeEngine); ok && native != nil {
-				m.pools["b"] = native
+				m.pools["aistudio"] = native
 			}
 		}
 	}
@@ -232,12 +232,12 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 
 	// 首次启动：把 config 里的静态账号迁移进存储（作为种子）
 	if len(accounts) == 0 {
-		for _, acc := range m.cfg.EngineA.Accounts {
+		for _, acc := range m.cfg.GeminiWeb.Accounts {
 			if strings.TrimSpace(acc.PSID) == "" {
 				continue
 			}
 			creds, _ := json.Marshal(geminiweb.Credentials{PSID: acc.PSID, PSIDTS: acc.PSIDTS})
-			if _, err := m.st.CreateAccount("a", seedLabel("a", acc.Name), string(creds), true); err != nil {
+			if _, err := m.st.CreateAccount("geminiweb", seedLabel("geminiweb", acc.Name), string(creds), true); err != nil {
 				continue
 			}
 		}
@@ -285,7 +285,7 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 
 	for _, acc := range accounts {
 		switch acc.Engine {
-		case "a":
+		case "a", "geminiweb":
 			if m.engineA == nil {
 				continue
 			}
@@ -297,7 +297,7 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 			if !acc.Enabled {
 				_ = m.engineA.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
 			}
-		case "b":
+		case "b", "aistudio":
 			native, ok := m.engineB.(*aistudio.NativeEngine)
 			if !ok || native == nil {
 				continue
@@ -323,10 +323,10 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 	// 反向导入：auth 目录已存在但存储没有的账号（已有的 auth 目录直接复用）
 	if native, ok := m.engineB.(*aistudio.NativeEngine); ok && native != nil {
 		for _, poolID := range native.PoolAccountIDs() {
-			if _, err := m.st.GetAccountByLabel("b", poolID); err == nil {
+			if _, err := m.st.GetAccountByLabel("aistudio", poolID); err == nil {
 				continue
 			}
-			if _, err := m.st.CreateAccount("b", poolID, "{}", true); err == nil {
+			if _, err := m.st.CreateAccount("aistudio", poolID, "{}", true); err == nil {
 				native.RegisterAccountID(fmt.Sprintf("%d", lastAccountID(m.st)), poolID)
 			}
 		}
@@ -471,14 +471,14 @@ func firstNonEmpty(vals ...string) string {
 }
 
 // EngineA / EngineB 返回引擎（未启用时返回 nil 接口）。
-func (m *Manager) EngineA() engine.Engine {
+func (m *Manager) GeminiWeb() engine.Engine {
 	if m.engineA == nil {
 		return nil
 	}
 	return m.engineA
 }
 
-func (m *Manager) EngineB() engine.Engine {
+func (m *Manager) AIStudio() engine.Engine {
 	if m.engineB == nil {
 		return nil
 	}
@@ -516,10 +516,10 @@ func (m *Manager) EngineReadyMap() map[string]bool {
 // EngineProxy 返回引擎的全局代理配置（账号级代理优先级在引擎内部处理）。
 func (m *Manager) EngineProxy(name string) string {
 	switch name {
-	case "a":
-		return m.cfg.EngineA.Proxy
-	case "b":
-		return m.cfg.EngineB.Proxy
+	case "a", "geminiweb":
+		return m.cfg.GeminiWeb.Proxy
+	case "b", "aistudio":
+		return m.cfg.AIStudio.Proxy
 	case "codex":
 		return m.cfg.Engines.Codex.Proxy
 	case "antigravity":
@@ -599,16 +599,16 @@ func TakeOAuthSession(engine, sessionID string) (*OAuthPendingSession, error) {
 func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, error) {
 	engineName := strings.ToLower(strings.TrimSpace(req.Engine))
 	if engineName == "" {
-		engineName = "b"
+		engineName = "aistudio"
 	}
 	switch engineName {
-	case "a", "gemini", "b", "aistudio":
+	case "a", "gemini", "geminiweb", "b", "aistudio":
 		if strings.TrimSpace(req.StorageState) == "" {
 			return store.Account{}, errors.New("storage_state 不能为空")
 		}
 	}
 	switch engineName {
-	case "a", "gemini":
+	case "a", "gemini", "geminiweb":
 		label := strings.TrimSpace(req.Label)
 		if label == "" {
 			label = strings.TrimSpace(req.Email)
@@ -934,7 +934,7 @@ func (m *Manager) addGeminiCredentials(label, psid, psidts string) (store.Accoun
 		return store.Account{}, errors.New("引擎A 未启用")
 	}
 	creds, _ := json.Marshal(geminiweb.Credentials{PSID: psid, PSIDTS: psidts})
-	acc, err := m.st.CreateAccount("a", label, string(creds), true)
+	acc, err := m.st.CreateAccount("geminiweb", label, string(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -951,13 +951,13 @@ func (m *Manager) AddGeminiAccount(label, psid, psidts string) (store.Account, e
 		{"name": "__Secure-1PSID", "value": psid},
 		{"name": "__Secure-1PSIDTS", "value": psidts},
 	}})
-	return m.AddAccountFromStorageState(AccountInput{Engine: "a", Label: label, StorageState: string(state)})
+	return m.AddAccountFromStorageState(AccountInput{Engine: "geminiweb", Label: label, StorageState: string(state)})
 }
 
 // AddAIStudioAccount 添加引擎B 账号（AI Studio 号）。
 func (m *Manager) AddAIStudioAccount(email, storageJSON, locale, timezone, proxy string) (store.Account, error) {
 	return m.AddAccountFromStorageState(AccountInput{
-		Engine: "b", Email: email, StorageState: storageJSON,
+		Engine: "aistudio", Email: email, StorageState: storageJSON,
 		Locale: locale, Timezone: timezone, Proxy: proxy,
 	})
 }
@@ -974,7 +974,7 @@ func (m *Manager) addAIStudioAccount(email, storageJSON, locale, timezone, proxy
 	creds, _ := json.Marshal(aistudio.Credentials{
 		StorageState: state, Locale: locale, Timezone: timezone, Proxy: proxy,
 	})
-	acc, err := m.st.CreateAccount("b", email, string(creds), true)
+	acc, err := m.st.CreateAccount("aistudio", email, string(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -1041,7 +1041,7 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 	}
 	engineID := fmt.Sprintf("%d", id)
 	switch acc.Engine {
-	case "a":
+	case "a", "geminiweb":
 		if m.engineA == nil {
 			return errors.New("引擎A 未启用")
 		}
@@ -1054,7 +1054,7 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 		}
 		_ = m.st.UpdateAccountStatus(id, "initializing", "重新初始化中")
 		return nil
-	case "b":
+	case "b", "aistudio":
 		native, ok := m.engineB.(*aistudio.NativeEngine)
 		if !ok || native == nil {
 			return errors.New("引擎B 原生模式未启用")
@@ -1120,13 +1120,13 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	// 1) 显式模型路由：engine_a/b_models + routing.engine_models.<engine>
 	//    配置命中即为「专属」：写了就是点名要这个引擎，它挂了就报它的真实错误，
 	//    不再被 alternate 带去别的引擎（换过去只会拿到假 404 或错模型）。
-	if len(m.engineAModels) > 0 && matchAny(name, m.engineAModels) {
-		if eng, ok := m.engines["a"]; ok {
+	if len(m.geminiWebModels) > 0 && matchAny(name, m.geminiWebModels) {
+		if eng, ok := m.engines["geminiweb"]; ok {
 			return eng, true
 		}
 	}
-	if len(m.engineBModels) > 0 && matchAny(name, m.engineBModels) {
-		if eng, ok := m.engines["b"]; ok {
+	if len(m.aiStudioModels) > 0 && matchAny(name, m.aiStudioModels) {
+		if eng, ok := m.engines["aistudio"]; ok {
 			return eng, true
 		}
 	}
@@ -1151,7 +1151,7 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	//    交给引擎B 并标为专属，引擎B 不可用时直接报引擎B 的真实错误，
 	//    绝不再走 default/auto 兜底改投第三方 Key（lyria 打到 MiniMax 的根因）。
 	if isMultimodalModel(name) {
-		if eng, ok := m.engines["b"]; ok {
+		if eng, ok := m.engines["aistudio"]; ok {
 			return eng, true
 		}
 		// 引擎B 未启用：这类模型没有任何承接方，交给上层返回 model_not_found。
@@ -1169,10 +1169,10 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	}
 
 	// 6) auto 回退：引擎B协议是主协议，其次引擎A，最后任意 Ready 引擎
-	if eng, ok := m.engines["b"]; ok {
+	if eng, ok := m.engines["aistudio"]; ok {
 		return eng, false
 	}
-	if eng, ok := m.engines["a"]; ok {
+	if eng, ok := m.engines["geminiweb"]; ok {
 		return eng, false
 	}
 	for _, engName := range m.engineOrder {
@@ -1202,7 +1202,7 @@ func (m *Manager) matchConfiguredModels(name string) (engine.Engine, bool) {
 // matchSubscriptionCatalog 按模型 id 精确命中订阅/custom 引擎目录。
 func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, bool) {
 	for _, engName := range m.engineOrder {
-		if engName == "a" || engName == "b" {
+		if engName == "geminiweb" || engName == "aistudio" {
 			continue
 		}
 		eng, ok := m.engines[engName]
@@ -1227,7 +1227,7 @@ func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, boo
 // 具体错误，而不是切换引擎后产生误导性错误。
 func (m *Manager) matchCoreCatalog(modelName string) (engine.Engine, bool) {
 	for _, engName := range m.engineOrder {
-		if engName != "a" && engName != "b" {
+		if engName != "geminiweb" && engName != "aistudio" {
 			continue
 		}
 		eng, ok := m.engines[engName]
@@ -1622,7 +1622,7 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 		}
 		// 公开目录（/v1/models、Codex 目录）不展示没有可用账号的订阅/custom 引擎
 		// 的静态模型，免得客户端选到一个必然失败的模型；管理台仍可看到全部。
-		if publicOnly && name != "a" && name != "b" && !eng.Ready() {
+		if publicOnly && name != "geminiweb" && name != "aistudio" && !eng.Ready() {
 			continue
 		}
 		for _, mi := range eng.ListModels() {
@@ -1666,7 +1666,7 @@ func (m *Manager) Status() map[string]any {
 	out := map[string]any{}
 	for name, eng := range m.engines {
 		key := "engine_" + name
-		if name == "a" || name == "b" {
+		if name == "geminiweb" || name == "aistudio" {
 			key = "engine_" + name
 		}
 		out[key] = eng.Status()
@@ -1677,8 +1677,8 @@ func (m *Manager) Status() map[string]any {
 // EngineMetaList 管理台引擎元数据列表。
 func (m *Manager) EngineMetaList() []EngineMeta {
 	metas := []EngineMeta{
-		{Name: "a", Describe: "Gemini Web（gemini.google.com 网页号，Cookie 会话）", Enabled: m.engines["a"] != nil, AccountPool: true, Credential: "psid/psidts Cookie"},
-		{Name: "b", Describe: "AI Studio（原生逆向 / OpenAI 兼容上游）", Enabled: m.engines["b"] != nil, AccountPool: true, Credential: "storage-state.json"},
+		{Name: "geminiweb", Describe: "Gemini Web（gemini.google.com 网页号，Cookie 会话）", Enabled: m.engines["geminiweb"] != nil, AccountPool: true, Credential: "psid/psidts Cookie"},
+		{Name: "aistudio", Describe: "AI Studio（原生逆向 / OpenAI 兼容上游）", Enabled: m.engines["aistudio"] != nil, AccountPool: true, Credential: "storage-state.json"},
 		{Name: "codex", Describe: "GPT（ChatGPT 订阅号）", Enabled: m.engines["codex"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（OAuth 授权或 Codex CLI auth.json 导入）"},
 		{Name: "antigravity", Describe: "Antigravity（Google Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
 		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},

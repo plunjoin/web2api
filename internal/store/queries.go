@@ -124,6 +124,7 @@ func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var acc Account
 	var enabled int
 	err := row.Scan(&acc.ID, &acc.Engine, &acc.Label, &acc.Credentials, &enabled, &acc.Status, &acc.Detail, &acc.CreatedAt, &acc.UpdatedAt)
+	acc.Engine = legacyEngineName(acc.Engine)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -297,6 +298,7 @@ func (s *Store) UsageSummary(sinceUnix int64) ([]UsageRow, error) {
 		if err := rows.Scan(&r.APIKey, &r.Engine, &r.Model, &r.Requests, &r.SuccessRequests, &r.PromptTokens, &r.CompletionTokens); err != nil {
 			return nil, err
 		}
+		r.Engine = legacyEngineName(r.Engine)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -307,4 +309,17 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// legacyEngineName 把存量库里的历史引擎名归一为当前标识：
+// a→geminiweb、b→aistudio（v0.3.9 起引擎改名，旧记录读出时统一显示新名）。
+func legacyEngineName(engine string) string {
+	switch engine {
+	case "a":
+		return "geminiweb"
+	case "b":
+		return "aistudio"
+	default:
+		return engine
+	}
 }

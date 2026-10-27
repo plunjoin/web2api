@@ -266,7 +266,7 @@ func openAPISpec() map[string]any {
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
 				"GeminiCredentialsInput": map[string]any{"type": "object", "required": []string{"psid", "psidts"}, "properties": map[string]any{"psid": map[string]any{"type": "string"}, "psidts": map[string]any{"type": "string"}}},
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
-				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"a", "b", "codex", "antigravity", "kiro", "workbuddy", "custom"}, "description": "a=Gemini Web，b=AI Studio；codex=GPT、antigravity 等为订阅引擎；custom 为第三方 OpenAI 兼容 Key"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "Gemini Web / AI Studio 的 storage-state.json 原文"}, "credentials": map[string]any{"type": "object", "description": "订阅引擎：codex/antigravity/kiro 传 {refresh_token}；workbuddy 传 {token}；custom 传 {base_url, api_key, models?, proxy?}"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
+				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"geminiweb", "aistudio", "codex", "antigravity", "kiro", "workbuddy", "custom"}, "description": "geminiweb=Gemini Web，aistudio=AI Studio；codex=GPT、antigravity 等为订阅引擎；custom 为第三方 OpenAI 兼容 Key"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "Gemini Web / AI Studio 的 storage-state.json 原文"}, "credentials": map[string]any{"type": "object", "description": "订阅引擎：codex/antigravity/kiro 传 {refresh_token}；workbuddy 传 {token}；custom 传 {base_url, api_key, models?, proxy?}"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 				"CustomProbeInput":       map[string]any{"type": "object", "required": []string{"base_url", "api_key"}, "properties": map[string]any{"base_url": map[string]any{"type": "string"}, "api_key": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 			"OAuthExchangeInput":     map[string]any{"type": "object", "required": []string{"session_id", "code"}, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "code": map[string]any{"type": "string", "description": "授权码或完整回调 URL"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string"}}},
 			},
@@ -328,11 +328,11 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	readyByEngine := map[string]int64{}
 	for _, acc := range accounts {
 		switch acc.Engine {
-		case "a":
+		case "a", "geminiweb":
 			if acc.Live.Ready {
 				readyA++
 			}
-		case "b":
+		case "b", "aistudio":
 			if acc.Live.Ready {
 				readyB++
 			}
@@ -437,7 +437,7 @@ func (a *API) handleAddGemini(w http.ResponseWriter, r *http.Request) {
 		{"name": "__Secure-1PSIDTS", "value": req.PSIDTS, "domain": ".google.com", "path": "/", "secure": true},
 	}})
 	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
-		Engine: "a", Label: req.Label, StorageState: string(state),
+		Engine: "geminiweb", Label: req.Label, StorageState: string(state),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -464,7 +464,7 @@ func (a *API) handleAddAIStudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
-		Engine: "b", Email: req.Email, StorageState: req.StorageState,
+		Engine: "aistudio", Email: req.Email, StorageState: req.StorageState,
 		Locale: req.Locale, Timezone: req.Timezone, Proxy: req.Proxy,
 	})
 	if err != nil {
@@ -514,7 +514,7 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 	switch acc.Engine {
-	case "a":
+	case "a", "geminiweb":
 		var req struct {
 			PSID   string `json:"psid"`
 			PSIDTS string `json:"psidts"`

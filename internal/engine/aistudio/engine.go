@@ -26,8 +26,8 @@ func New(cfg config.EngineBConfig, timeout time.Duration) (*Engine, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("引擎B 未配置 base_url")
 	}
-	up := upstream.New("b", cfg.BaseURL, cfg.APIKey, cfg.Passthrough, timeout)
-	return &Engine{name: "b", up: up}, nil
+	up := upstream.New("aistudio", cfg.BaseURL, cfg.APIKey, cfg.Passthrough, timeout)
+	return &Engine{name: "aistudio", up: up}, nil
 }
 
 // Init 探测引擎并拉取模型列表。
@@ -62,7 +62,7 @@ func (b *Engine) ListModels() []model.ModelInfo {
 	models := b.up.ListModels()
 	out := make([]model.ModelInfo, 0, len(models))
 	for _, m := range models {
-		m.Engine = "b"
+		m.Engine = "aistudio"
 		if m.Kind == "" {
 			m.Kind = model.ClassifyKind(m.ID, m.DisplayName, nil)
 		}
@@ -97,7 +97,7 @@ func (b *Engine) ServePassthrough(ctx context.Context, method, path string, body
 // Status 上游状态。
 func (b *Engine) Status() map[string]any {
 	return map[string]any{
-		"engine":      "b",
+		"engine":      "aistudio",
 		"ready":       b.Ready(),
 		"base_url":    b.up.BaseURL(),
 		"passthrough": b.Passthrough(),
