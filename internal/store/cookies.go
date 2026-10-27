@@ -36,7 +36,7 @@ func (s *Store) ImportLegacyCookies(directory string) (int, error) {
 	}
 	count := 0
 	for _, account := range accounts {
-		if account.Engine != "a" {
+		if account.Engine != "a" && account.Engine != "geminiweb" { // 存量行记 a，新行记 geminiweb
 			continue
 		}
 		var credentials struct {

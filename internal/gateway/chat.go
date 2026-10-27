@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
 	"web2api/internal/store"
@@ -32,6 +33,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "gemini-flash"
 	}
+	// 统一 IR 入口：与 /v1/responses 走同一套规范化不变量（非 function
+	// 工具丢弃、空 assistant content、tool name 回填）。
+	req = ir.NormalizeChat(req, s.logger.Printf)
 	if !s.modelAllowed(w, r, req.Model) {
 		return
 	}
@@ -79,7 +83,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		res, runErr := s.mgr.ChatStream(ctx, req, sink)
 		if runErr != nil {
 			s.logger.Printf("[chat] 流式请求失败 model=%q: %v", req.Model, runErr)
-			s.recordChat(r, req, nil, true, runErr, start, "/v1/chat/completions")
+			s.recordChat(r, req, res, true, runErr, start, "/v1/chat/completions")
 			stop := "stop"
 			_ = writeDelta(model.Delta{Content: "[Error] " + runErr.Error()}, &stop, nil)
 		} else {
@@ -116,7 +120,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	res, err := s.mgr.Chat(ctx, req)
 	if err != nil {
 		s.logger.Printf("[chat] 请求失败 model=%q: %v", req.Model, err)
-		s.recordChat(r, req, nil, false, err, start, "/v1/chat/completions")
+		s.recordChat(r, req, res, false, err, start, "/v1/chat/completions")
 		// 「没有任何账号/引擎声明该模型」是客户端问题，返回 404 + model_not_found，
 		// 不要包装成 502 让下游误以为可以重试。
 		if provider.IsModelNotFound(err) {

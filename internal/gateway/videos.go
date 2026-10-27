@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	aistudio "web2api/internal/aistudio"
+	aistudio "web2api/internal/engine/aistudio"
 	"web2api/internal/store"
 )
 
@@ -88,7 +88,7 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	if videoPrice > 0 {
 		info, _ := keyInfoFrom(r)
 		if _, err := s.st.RecordRequest(store.UsageRecord{
-			KeyID: info.ID, APIKey: s.currentKey(r), Engine: "b", Model: req.Model, Endpoint: "/v1/videos",
+			KeyID: info.ID, APIKey: s.currentKey(r), Engine: "aistudio", Model: req.Model, Endpoint: "/v1/videos",
 			Success: true, TotalTokens: int64(seconds) * videoPrice, LatencyMs: time.Since(start).Milliseconds(),
 		}); err != nil {
 			s.logger.Printf("[video] 记录视频扣费失败 model=%q: %v", req.Model, err)

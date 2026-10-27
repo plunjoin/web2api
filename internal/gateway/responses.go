@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
 	"web2api/internal/store"
@@ -22,7 +23,8 @@ import (
 // temperature/top_p/max_output_tokens、usage、response.* 事件流，
 // 以及 function calling（tools / tool_choice / function_call 输出项）。
 // 未支持：previous_response_id 等有状态字段。
-// local_shell / apply_patch 等内置工具会降级成同名 function 下发；web_search 仍忽略。
+// local_shell / apply_patch / web_search 等非 function 工具在入口丢弃并记日志，
+// 不进入任何上游报文。
 
 // responsesRequest 是 Responses 请求体（网关支持的子集）。
 type responsesRequest struct {
@@ -82,11 +84,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error(), "invalid_request_error", nil)
 		return
 	}
-	chatReq, err := req.toChat()
+	chatReq, err := req.toChat(s.logger.Printf)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", nil)
 		return
 	}
+	// 统一 IR 入口：与 /v1/chat/completions 走同一套规范化不变量。
+	chatReq = ir.NormalizeChat(chatReq, s.logger.Printf)
 	if !s.modelAllowed(w, r, chatReq.Model) {
 		return
 	}
@@ -100,7 +104,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	res, err := s.mgr.Chat(r.Context(), chatReq)
 	if err != nil {
 		s.logger.Printf("[responses] 请求失败 model=%q: %v", chatReq.Model, err)
-		s.recordChat(r, chatReq, nil, false, err, start, "/v1/responses")
+		s.recordChat(r, chatReq, res, false, err, start, "/v1/responses")
 		s.writeResponsesError(w, err)
 		return
 	}
@@ -243,7 +247,7 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, req mod
 	res, runErr := s.mgr.ChatStream(r.Context(), req, sink)
 	if runErr != nil {
 		s.logger.Printf("[responses] 流式请求失败 model=%q: %v", req.Model, runErr)
-		s.recordChat(r, req, nil, true, runErr, start, "/v1/responses")
+		s.recordChat(r, req, res, true, runErr, start, "/v1/responses")
 		failed := responsesObject(respID, req.Model, "failed", []any{}, nil, createdAt)
 		failed["error"] = map[string]any{"code": "server_error", "message": runErr.Error()}
 		emit("response.failed", map[string]any{"response": failed})
@@ -337,8 +341,9 @@ func (s *Server) writeResponsesError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 }
 
-// toChat 把 Responses 请求转换成内部 Chat 请求。
-func (req responsesRequest) toChat() (model.ChatRequest, error) {
+// toChat 把 Responses 请求转换成内部 Chat 请求（近 IR；不明工具类型的
+// 丢弃与日志在此处理，其余不变量由 ir.NormalizeChat 统一兜底）。
+func (req responsesRequest) toChat(logf ir.Logf) (model.ChatRequest, error) {
 	out := model.ChatRequest{
 		Model:             strings.TrimSpace(req.Model),
 		Stream:            req.Stream,
@@ -347,7 +352,7 @@ func (req responsesRequest) toChat() (model.ChatRequest, error) {
 		MaxTokens:         req.MaxOutputTokens,
 		User:              req.User,
 		StreamOptions:     req.StreamOptions,
-		Tools:             req.toChatTools(),
+		Tools:             req.toChatTools(logf),
 		ToolChoice:        toChatToolChoice(req.ToolChoice),
 		ParallelToolCalls: req.ParallelToolCalls,
 	}
@@ -368,15 +373,22 @@ func (req responsesRequest) toChat() (model.ChatRequest, error) {
 	return out, nil
 }
 
-// toChatTools 把 Responses 格式的工具定义转成 Chat 格式。
+// toChatTools 把 Responses 格式的工具定义转成 Chat（IR）格式。
 //
-// Codex 0.16x 起 shell 类工具已是 type=function（exec_command 等），可直接透传。
-// 更老的客户端仍可能发 local_shell / apply_patch 等内置类型；它们在 Chat/Gemini
-// 协议里没有同名形态，这里降级成同名 function，让非 OpenAI 上游也能发起调用，
-// 客户端再按 function_call 执行本地工具。web_search 仍丢弃（需服务端检索能力）。
-// namespace 嵌套工具会被拍平为独立 function。
-func (req responsesRequest) toChatTools() []model.Tool {
+// 只保留 type=function（namespace 嵌套拍平为独立 function）。local_shell /
+// apply_patch / web_search 等内置工具在入口丢弃并记日志：它们依赖 OpenAI
+// 服务端或客户端专用执行环境，任何上游报文里都不该出现（计划 §5.2）；
+// 降级成同名 function 只会把「模型发起了调用但客户端执行不了」的困惑
+// 从网关挪到上游。Codex 0.16x 起的 shell 工具本就是 type=function
+// （exec_command 等），不受影响。
+func (req responsesRequest) toChatTools(logf ir.Logf) []model.Tool {
 	out := make([]model.Tool, 0, len(req.Tools))
+	var dropped []string
+	drop := func(typ string) {
+		if typ != "" {
+			dropped = append(dropped, typ)
+		}
+	}
 	var appendTool func(tool responsesTool)
 	appendTool = func(tool responsesTool) {
 		typ := strings.ToLower(strings.TrimSpace(tool.Type))
@@ -384,6 +396,7 @@ func (req responsesRequest) toChatTools() []model.Tool {
 		case "", "function":
 			name := strings.TrimSpace(tool.Name)
 			if name == "" {
+				drop("function(name缺失)")
 				return
 			}
 			params := tool.Parameters
@@ -402,42 +415,16 @@ func (req responsesRequest) toChatTools() []model.Tool {
 			for _, nested := range tool.Tools {
 				appendTool(nested)
 			}
-		case "local_shell", "shell", "apply_patch", "shell_command":
-			name := strings.TrimSpace(tool.Name)
-			if name == "" {
-				name = typ
-			}
-			desc := strings.TrimSpace(tool.Description)
-			if desc == "" {
-				switch typ {
-				case "local_shell", "shell", "shell_command":
-					desc = "Run a shell command in the local session and return its output."
-				case "apply_patch":
-					desc = "Apply a patch to local files."
-				}
-			}
-			params := tool.Parameters
-			if len(params) == 0 || string(params) == "null" {
-				if typ == "apply_patch" {
-					params = json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"]}`)
-				} else {
-					params = json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"workdir":{"type":"string"}},"required":["command"]}`)
-				}
-			}
-			out = append(out, model.Tool{
-				Type: "function",
-				Function: &model.ToolFunc{
-					Name:        name,
-					Description: desc,
-					Parameters:  params,
-				},
-			})
 		default:
-			// web_search 等服务端内置工具：非 OpenAI 上游无法执行，丢弃。
+			// local_shell / web_search 等内置工具：入口丢弃。
+			drop(tool.Type)
 		}
 	}
 	for _, tool := range req.Tools {
 		appendTool(tool)
+	}
+	if len(dropped) > 0 && logf != nil {
+		logf("[responses] 丢弃非 function 工具（不进入上游报文）: %s", strings.Join(dropped, ", "))
 	}
 	return out
 }
@@ -502,6 +489,9 @@ func parseResponsesInput(raw json.RawMessage) ([]model.ChatMessage, error) {
 		return nil, fmt.Errorf("input 解析失败: %w", err)
 	}
 	out := make([]model.ChatMessage, 0, len(items))
+	// callID → 函数名：Responses 的 function_call_output 通常只有 call_id，
+	// 不含 name；MiniMax / Gemini functionResponse / AI Studio 都需要 name。
+	callNames := map[string]string{}
 	for _, item := range items {
 		switch item.Type {
 		case "", "message":
@@ -537,24 +527,36 @@ func parseResponsesInput(raw json.RawMessage) ([]model.ChatMessage, error) {
 			if callID == "" {
 				callID = "call_" + model.NewID(16)
 			}
+			name := strings.TrimSpace(item.Name)
+			if name != "" {
+				callNames[callID] = name
+			}
 			call := model.ToolCall{
 				ID:   callID,
 				Type: "function",
 				Function: model.ToolFunction{
-					Name:      item.Name,
+					Name:      name,
 					Arguments: rawJSONString(item.Arguments),
 				},
 			}
 			// 连续的 function_call 属于同一个 assistant 回合，归并成一条消息。
+			// Content 必须是 "" 而不是 nil：encoding/json 会把 nil any 编成
+			// null，MiniMax 等第三方上游对 assistant.content=null 直接 400。
 			if n := len(out); n > 0 && out[n-1].Role == "assistant" && out[n-1].ToolCallID == "" {
 				out[n-1].ToolCalls = append(out[n-1].ToolCalls, call)
 				continue
 			}
-			out = append(out, model.ChatMessage{Role: "assistant", ToolCalls: []model.ToolCall{call}})
+			out = append(out, model.ChatMessage{Role: "assistant", Content: "", ToolCalls: []model.ToolCall{call}})
 		case "function_call_output":
+			callID := strings.TrimSpace(item.CallID)
+			name := strings.TrimSpace(item.Name)
+			if name == "" && callID != "" {
+				name = callNames[callID]
+			}
 			out = append(out, model.ChatMessage{
 				Role:       "tool",
-				ToolCallID: item.CallID,
+				Name:       name,
+				ToolCallID: callID,
 				Content:    rawText(item.Output),
 			})
 		case "reasoning":

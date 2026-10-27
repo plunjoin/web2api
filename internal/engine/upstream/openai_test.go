@@ -8,6 +8,28 @@ import (
 	"web2api/internal/model"
 )
 
+func TestChatPayloadAssistantToolCallsContentNotNull(t *testing.T) {
+	o := New("t", "http://x", "", false, 0)
+	req := model.ChatRequest{
+		Model: "MiniMax-M2",
+		Messages: []model.ChatMessage{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "c1", Type: "function", Function: model.ToolFunction{Name: "exec_command", Arguments: "{}"}}}},
+			{Role: "tool", Name: "exec_command", ToolCallID: "c1", Content: "ok"},
+		},
+	}
+	data, err := json.Marshal(o.chatPayload(req, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"content":null`) {
+		t.Fatalf("assistant content must not be null: %s", data)
+	}
+	if !strings.Contains(string(data), `"content":""`) {
+		t.Fatalf("assistant content should be empty string: %s", data)
+	}
+}
+
 func TestChatPayloadToolChoiceNotBase64(t *testing.T) {
 	o := New("t", "http://x", "", false, 0)
 	req := model.ChatRequest{

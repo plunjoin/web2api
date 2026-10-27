@@ -133,7 +133,7 @@ go build -o web2api.exe .
 - **Gemini Web**：多号轮询 + 配额/认证异常自动切换下一个号
 - **AI Studio**：轮询（`round-robin`）或会话粘性（`account-sticky`），单号并发槽位，
   Playground+Build 双额度通道自动降级，模型资格与冷却由池管理
-- **模型路由**：`routing.engine_a/b_models` 显式指定 > 订阅/custom 目录按模型 id 精确命中 >
+- **模型路由**：`routing.engine_geminiweb/aistudio_models` 显式指定（旧键 engine_a/b_models 仍可读） > 订阅/custom 目录按模型 id 精确命中 >
   Gemini Web / AI Studio 实时目录精确命中（裸名模型归属拥有它的引擎，如 `gemini-argon` → Gemini Web）>
   多模态关键词（image/veo/lyria…）走 AI Studio > `default_engine` > `auto`（AI Studio 优先，
   不可用自动降级 Gemini Web）。除 `default_engine` 与 `auto` 外，命中即「专属」：引擎不可用时

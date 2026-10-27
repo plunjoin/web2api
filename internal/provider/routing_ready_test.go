@@ -10,9 +10,11 @@ import (
 )
 
 type fakeEngine struct {
-	name   string
-	ready  bool
-	models []string
+	name      string
+	ready     bool
+	models    []string
+	chatErr   error
+	streamErr error
 }
 
 func (f *fakeEngine) Name() string     { return f.name }
@@ -26,9 +28,15 @@ func (f *fakeEngine) ListModels() []model.ModelInfo {
 	return out
 }
 func (f *fakeEngine) Chat(context.Context, model.ChatRequest) (*model.ChatResult, error) {
+	if f.chatErr != nil {
+		return nil, f.chatErr
+	}
 	return nil, nil
 }
 func (f *fakeEngine) ChatStream(context.Context, model.ChatRequest, model.ChatStreamFunc) (*model.ChatResult, error) {
+	if f.streamErr != nil {
+		return nil, f.streamErr
+	}
 	return nil, nil
 }
 func (f *fakeEngine) Passthrough() bool { return false }
