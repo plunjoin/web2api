@@ -103,7 +103,7 @@ Antigravity / OpenAI-compat / Custom 各自 IR→上游、结果→Chat。把现
 - [x] 契约测试矩阵进 CI（`.github/workflows/test.yml`，go test ./...）
 - [x] 引擎目录统一（同分支 refactor/engine-packages）：实现收进 `internal/engine/<name>/`，
   引擎标识 a/b 改名 geminiweb/aistudio（config 旧键与存量 DB 行读时兼容）
-- [ ] 发版与 bllii 真号验收
+- [x] 发版（v0.3.9）与 bllii 真号验收
 
 ---
 
