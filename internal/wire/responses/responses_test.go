@@ -1,4 +1,4 @@
-package gateway
+package responses
 
 import (
 	"encoding/json"
@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-func TestParseResponsesInputFillsToolNameAndEmptyAssistantContent(t *testing.T) {
+func TestParseInputFillsToolNameAndEmptyAssistantContent(t *testing.T) {
 	raw := json.RawMessage(`[
 		{"type":"message","role":"user","content":"hi"},
 		{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
 		{"type":"function_call_output","call_id":"call_1","output":"ok"}
 	]`)
-	msgs, err := parseResponsesInput(raw)
+	msgs, err := parseInput(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,11 +32,10 @@ func TestParseResponsesInputFillsToolNameAndEmptyAssistantContent(t *testing.T) 
 	}
 }
 
-
 func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
-	req := responsesRequest{Tools: []responsesTool{
+	req := Request{Tools: []Tool{
 		{Type: "function", Name: "exec_command", Description: "run", Parameters: json.RawMessage(`{"type":"object"}`)},
-		{Type: "namespace", Name: "multi_agent_v1", Tools: []responsesTool{
+		{Type: "namespace", Name: "multi_agent_v1", Tools: []Tool{
 			{Type: "function", Name: "spawn_agent", Parameters: json.RawMessage(`{"type":"object"}`)},
 		}},
 		{Type: "web_search"},
@@ -47,7 +46,7 @@ func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 	logf := func(format string, args ...any) {
 		logs = append(logs, fmt.Sprintf(format, args...))
 	}
-	tools := req.toChatTools(logf)
+	tools := toChatTools(req.Tools, logf)
 	names := map[string]bool{}
 	for _, tool := range tools {
 		if tool.Function == nil {
@@ -70,5 +69,15 @@ func TestToChatToolsKeepsFunctionAndFlattensNamespace(t *testing.T) {
 		if !strings.Contains(joined, gone) {
 			t.Fatalf("dropped tool %s should be logged, got %v", gone, logs)
 		}
+	}
+}
+
+func TestToolChoiceStaysJSON(t *testing.T) {
+	if got := string(toChatToolChoice(json.RawMessage(`"auto"`))); got != `"auto"` {
+		t.Fatalf(`tool_choice "auto" = %s`, got)
+	}
+	got := string(toChatToolChoice(json.RawMessage(`{"type":"function","name":"shell"}`)))
+	if got != `{"function":{"name":"shell"},"type":"function"}` {
+		t.Fatalf("function tool_choice = %s", got)
 	}
 }

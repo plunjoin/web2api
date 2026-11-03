@@ -22,13 +22,3 @@ func TestCodexCatalogSlug(t *testing.T) {
 		}
 	}
 }
-
-func TestResponsesToolChoiceStaysJSON(t *testing.T) {
-	if got := string(toChatToolChoice([]byte(`"auto"`))); got != `"auto"` {
-		t.Fatalf(`tool_choice "auto" = %s`, got)
-	}
-	got := string(toChatToolChoice([]byte(`{"type":"function","name":"shell"}`)))
-	if got != `{"function":{"name":"shell"},"type":"function"}` {
-		t.Fatalf("function tool_choice = %s", got)
-	}
-}
