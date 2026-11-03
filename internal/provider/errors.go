@@ -7,6 +7,9 @@ import "web2api/internal/engine"
 // IsModelNotFound 判定错误是否为「无人声明该模型」。
 func IsModelNotFound(err error) bool { return engine.IsModelNotFound(err) }
 
+// IsModelDisabled 判定错误是否为「模型已下架」。
+func IsModelDisabled(err error) bool { return engine.IsModelDisabled(err) }
+
 // IsUnsupportedEndpoint 判定错误是否为「端点与模型用途不匹配」。
 func IsUnsupportedEndpoint(err error) bool { return engine.IsUnsupportedEndpoint(err) }
 

@@ -1134,7 +1134,12 @@ func customProvider(credentials string) string {
 // （配置显式指定、任一引擎目录命中、多模态关键词）：专属模型引擎不可用时
 // 不做跨引擎切换——其他引擎不认识该模型，切换只会产生误导性错误。
 func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
-	name := strings.ToLower(strings.TrimSpace(modelName))
+	name := model.CanonicalModelID(modelName)
+	// 下架是「这个模型不对下游开放」，不是「换一个引擎再试」。
+	// 先于目录匹配判断，否则同名模型会从已下架的第三方 Key 目录里被认领出去。
+	if m.modelDisabled(name) {
+		return nil, false
+	}
 
 	// 1) 显式模型路由：engine_a/b_models + routing.engine_models.<engine>
 	//    配置命中即为「专属」：写了就是点名要这个引擎，它挂了就报它的真实错误，
@@ -1267,17 +1272,30 @@ func engineHasModel(eng engine.Engine, modelName string) bool {
 	if eng == nil {
 		return false
 	}
-	name := strings.TrimPrefix(strings.TrimSpace(modelName), "models/")
+	name := model.CanonicalModelID(modelName)
 	if name == "" {
 		return false
 	}
 	for _, mi := range eng.ListModels() {
-		id := strings.TrimPrefix(strings.TrimSpace(mi.ID), "models/")
-		if id != "" && strings.EqualFold(id, name) {
+		if id := model.CanonicalModelID(mi.ID); id != "" && id == name {
 			return true
 		}
 	}
 	return false
+}
+
+// modelDisabled 报告模型是否被管理台下架。读失败时不拦截：下架名单拿不到
+// 不该把全部请求变成 404，目录与入口还有各自的校验兜底。
+func (m *Manager) modelDisabled(modelName string) bool {
+	if m.st == nil {
+		return false
+	}
+	name := model.CanonicalModelID(modelName)
+	if name == "" {
+		return false
+	}
+	enabled, err := m.st.ModelEnabled(name)
+	return err == nil && !enabled
 }
 
 // isSubscriptionEngine 是否为「模型专属」引擎（订阅号池或第三方 Key）。
@@ -1487,6 +1505,10 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 		return nil, req, engine.NewUnsupportedEndpoint(req.Model, kind)
 	}
 
+	if m.modelDisabled(req.Model) {
+		return nil, req, engine.NewModelDisabled(req.Model)
+	}
+
 	eng, owned := m.pickEngine(req.Model)
 	if eng == nil {
 		return nil, req, engine.NewModelNotFound(req.Model, m.ownershipHint(req.Model))
@@ -1624,6 +1646,10 @@ func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (aistudi
 // 转发，模型是透传的），不再因「目录未命中」被整体跳过而错失唯一的可用引擎。
 // 切换成功即视为正常请求，不会把「换引擎」本身汇报成失败。
 func (m *Manager) alternate(cur engine.Engine, modelName string) engine.Engine {
+	// 下架的模型没有备胎：换到同名的第三方 Key 上，正是下架被绕过的那条路。
+	if m.modelDisabled(modelName) {
+		return nil
+	}
 	var fallback engine.Engine
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]
@@ -1680,7 +1706,7 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 			if id == "" {
 				continue
 			}
-			if _, skip := disabled[id]; skip {
+			if _, skip := disabled[model.CanonicalModelID(id)]; skip {
 				continue
 			}
 			mi = withModelKind(mi)
@@ -1762,6 +1788,10 @@ func (m *Manager) ServeModelPassthrough(ctx context.Context, modelID, method, pa
 	name := strings.TrimSpace(modelID)
 	if name == "" {
 		return false, nil
+	}
+	// 下架的模型不走透传：否则 embeddings / images 会按目录命中直接打到第三方 Key。
+	if m.modelDisabled(name) {
+		return true, engine.NewModelDisabled(name)
 	}
 	eng, ok := m.matchSubscriptionCatalog(name)
 	if !ok {

@@ -70,6 +70,14 @@ func kindRank(kind string) int {
 	}
 }
 
+// CanonicalModelID 把模型 ID 归一成路由与下架共用的键：去空白、去 models/ 前缀、小写。
+// Google 的 OpenAI 兼容端点目录带 models/ 前缀，调用方通常只写裸名；两边不归一的话，
+// 下架记的是带前缀的名字，请求写裸名就会绕过下架直接打到同名的第三方 Key。
+func CanonicalModelID(id string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	return strings.TrimPrefix(id, "models/")
+}
+
 func kindFromName(name string) string {
 	n := strings.ToLower(name)
 	base := n[strings.LastIndex(n, "/")+1:] // 去掉 models/ 之类的前缀

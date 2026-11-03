@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"web2api/internal/provider"
 )
 
 // handlePassthrough 将多模态端点透传到上游。
@@ -25,7 +27,9 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 		if handled {
 			if err != nil {
 				s.logger.Printf("[passthrough] %s %s 模型路由失败 model=%q: %v", r.Method, path, modelID, err)
-				if !rw.wrote {
+				if !rw.wrote && provider.IsModelDisabled(err) {
+					writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_unavailable")
+				} else if !rw.wrote {
 					writeError(w, http.StatusBadGateway, "上游转发失败: "+err.Error(), "api_error", nil)
 				}
 			}

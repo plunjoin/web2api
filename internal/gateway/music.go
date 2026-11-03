@@ -103,6 +103,10 @@ func (s *Server) handleMusicGeneration(w http.ResponseWriter, r *http.Request) {
 	if chatErr != nil {
 		s.logger.Printf("[music] 请求失败 model=%q: %v", chatReq.Model, chatErr)
 		s.recordChat(r, chatReq, res, false, chatErr, start, path)
+		if provider.IsModelDisabled(chatErr) {
+			writeError(w, http.StatusNotFound, chatErr.Error(), "invalid_request_error", "model_unavailable")
+			return
+		}
 		if provider.IsModelNotFound(chatErr) {
 			writeError(w, http.StatusNotFound, chatErr.Error(), "invalid_request_error", "model_not_found")
 			return

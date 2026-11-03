@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"web2api/internal/model"
 )
 
 // ModelSetting 管理台对模型上下架与最近一次检查结果的持久化。
@@ -17,24 +19,60 @@ type ModelSetting struct {
 	LastCheckDetail string `json:"last_check_detail,omitempty"`
 }
 
+// modelKey 下架记录的键。带 models/ 前缀、大小写不同的写法都归到同一个裸名，
+// 否则管理台按下架的是上游目录原样（models/gpt-4o），调用方写 gpt-4o 就查不到。
+func modelKey(name string) string { return model.CanonicalModelID(name) }
+
 // ModelEnabled 模型是否对下游开放。无记录或 enabled=1 视为开放。
+// 带 models/ 前缀或大小写不同的写法与裸名是同一条记录。
 func (s *Store) ModelEnabled(model string) (bool, error) {
-	model = strings.TrimSpace(model)
-	if model == "" {
+	key := modelKey(model)
+	if key == "" {
 		return false, errors.New("model 不能为空")
 	}
-	var enabled int
-	err := s.db.QueryRow(`SELECT enabled FROM model_settings WHERE model = ?`, model).Scan(&enabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
+	enabled, found, err := s.modelEnabledExact(key)
+	if err != nil || found {
+		return enabled, err
 	}
+	// 旧库可能存着带前缀或原始大小写的键，归一化查询对不上时按裸名再对一次。
+	return s.modelEnabledLoose(key)
+}
+
+func (s *Store) modelEnabledExact(key string) (enabled bool, found bool, err error) {
+	var v int
+	err = s.db.QueryRow(`SELECT enabled FROM model_settings WHERE model = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return v != 0, true, nil
+}
+
+// modelEnabledLoose 在精确键没有记录时，按归一化后的裸名扫一遍已有记录。
+// 记录不多（一个模型一行），全表扫描只发生在缓存未命中的冷路径上。
+func (s *Store) modelEnabledLoose(key string) (bool, error) {
+	rows, err := s.db.Query(`SELECT model, enabled FROM model_settings`)
 	if err != nil {
 		return false, err
 	}
-	return enabled != 0, nil
+	defer rows.Close()
+	for rows.Next() {
+		var stored string
+		var v int
+		if err := rows.Scan(&stored, &v); err != nil {
+			return false, err
+		}
+		if modelKey(stored) == key {
+			return v != 0, nil
+		}
+	}
+	return true, rows.Err()
 }
 
-// DisabledModels 返回所有被标记为不可用的模型 ID 集合。
+// DisabledModels 返回所有被标记为不可用的模型，键是归一化后的裸名。
+// 路由与公开目录用它判断「这个模型还能不能接单」，所以必须和请求里的写法无关。
 func (s *Store) DisabledModels() (map[string]struct{}, error) {
 	rows, err := s.db.Query(`SELECT model FROM model_settings WHERE enabled = 0`)
 	if err != nil {
@@ -43,11 +81,13 @@ func (s *Store) DisabledModels() (map[string]struct{}, error) {
 	defer rows.Close()
 	out := map[string]struct{}{}
 	for rows.Next() {
-		var model string
-		if err := rows.Scan(&model); err != nil {
+		var stored string
+		if err := rows.Scan(&stored); err != nil {
 			return nil, err
 		}
-		out[model] = struct{}{}
+		if key := modelKey(stored); key != "" {
+			out[key] = struct{}{}
+		}
 	}
 	return out, rows.Err()
 }
@@ -72,52 +112,149 @@ func (s *Store) ListModelSettings() ([]ModelSetting, error) {
 }
 
 // ModelSettingFor 读取单个模型设置；无记录时返回默认启用视图。
+// 带 models/ 前缀或大小写不同的写法与裸名是同一条记录，返回的 Model 是实际存储的键。
 func (s *Store) ModelSettingFor(model string) (ModelSetting, error) {
-	model = strings.TrimSpace(model)
-	if model == "" {
+	key := modelKey(model)
+	if key == "" {
 		return ModelSetting{}, errors.New("model 不能为空")
 	}
 	row := s.db.QueryRow(`SELECT model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail
-		FROM model_settings WHERE model = ?`, model)
+		FROM model_settings WHERE model = ?`, key)
 	item, err := scanModelSetting(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ModelSetting{Model: model, Enabled: true}, nil
+	if err == nil {
+		return item, nil
 	}
-	return item, err
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ModelSetting{}, err
+	}
+	if item, ok, err := s.modelSettingLoose(key); err != nil || ok {
+		return item, err
+	}
+	return ModelSetting{Model: key, Enabled: true}, nil
 }
 
-// SetModelEnabled 设置模型是否对下游开放。
+// modelSettingLoose 按归一化裸名找旧库里大小写或前缀不同的那一行。
+func (s *Store) modelSettingLoose(key string) (ModelSetting, bool, error) {
+	rows, err := s.db.Query(`SELECT model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail
+		FROM model_settings`)
+	if err != nil {
+		return ModelSetting{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		item, err := scanModelSetting(rows)
+		if err != nil {
+			return ModelSetting{}, false, err
+		}
+		if modelKey(item.Model) == key {
+			return item, true, nil
+		}
+	}
+	return ModelSetting{}, false, rows.Err()
+}
+
+// SetModelEnabled 设置模型是否对下游开放。写入一律用归一化裸名，
+// 旧库里同一模型的带前缀记录会被合并过来，避免出现两行互相矛盾的开关。
 func (s *Store) SetModelEnabled(model string, enabled bool) (ModelSetting, error) {
-	model = strings.TrimSpace(model)
-	if model == "" {
+	key := modelKey(model)
+	if key == "" {
 		return ModelSetting{}, errors.New("model 不能为空")
 	}
 	ts := now()
-	_, err := s.db.Exec(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
-		VALUES (?, ?, ?, 0, 0, '')
-		ON CONFLICT(model) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
-		model, boolToInt(enabled), ts)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return ModelSetting{}, err
 	}
-	return s.ModelSettingFor(model)
+	defer func() { _ = tx.Rollback() }()
+	if err := upsertModelEnabled(tx, key, enabled, ts); err != nil {
+		return ModelSetting{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ModelSetting{}, err
+	}
+	return s.ModelSettingFor(key)
 }
 
-// SetModelsEnabled 批量设置模型是否对下游开放，返回生效条数（去重、去空白后）。
+// upsertModelEnabled 以归一化裸名为键写入开关，并把同一裸名的旧记录合并掉。
+// 合并时取「更晚更新」的检查结果，开关本身以这次写入为准。
+func upsertModelEnabled(tx *sql.Tx, key string, enabled bool, ts int64) error {
+	rows, err := tx.Query(`SELECT model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail
+		FROM model_settings`)
+	if err != nil {
+		return err
+	}
+	type stored struct {
+		setting ModelSetting
+		ok      int
+	}
+	var same []stored
+	for rows.Next() {
+		item, err := scanModelSetting(rows)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		if modelKey(item.Model) != key {
+			continue
+		}
+		ok := 0
+		if item.LastCheckOK {
+			ok = 1
+		}
+		same = append(same, stored{setting: item, ok: ok})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	var keep ModelSetting
+	for _, item := range same {
+		if item.setting.Model == key {
+			keep = item.setting
+		}
+	}
+	for _, item := range same {
+		if item.setting.LastCheckAt > keep.LastCheckAt {
+			keep.LastCheckAt = item.setting.LastCheckAt
+			keep.LastCheckOK = item.setting.LastCheckOK
+			keep.LastCheckDetail = item.setting.LastCheckDetail
+		}
+		if item.setting.Model != key {
+			if _, err := tx.Exec(`DELETE FROM model_settings WHERE model = ?`, item.setting.Model); err != nil {
+				return err
+			}
+		}
+	}
+	ok := 0
+	if keep.LastCheckOK {
+		ok = 1
+	}
+	_, err = tx.Exec(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(model) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at,
+			last_check_at = excluded.last_check_at, last_check_ok = excluded.last_check_ok,
+			last_check_detail = excluded.last_check_detail`,
+		key, boolToInt(enabled), ts, keep.LastCheckAt, ok, keep.LastCheckDetail)
+	return err
+}
+
+// SetModelsEnabled 批量设置模型是否对下游开放，返回生效条数（去重、去空白、按裸名合并后）。
 // 单事务写入；任一失败整体回滚。不改变已记录的检查结果。
 func (s *Store) SetModelsEnabled(models []string, enabled bool) (int, error) {
 	seen := map[string]struct{}{}
 	ids := make([]string, 0, len(models))
-	for _, model := range models {
-		model = strings.TrimSpace(model)
-		if model == "" {
+	for _, raw := range models {
+		key := modelKey(raw)
+		if key == "" {
 			continue
 		}
-		if _, ok := seen[model]; ok {
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[model] = struct{}{}
-		ids = append(ids, model)
+		seen[key] = struct{}{}
+		ids = append(ids, key)
 	}
 	if len(ids) == 0 {
 		return 0, errors.New("models 不能为空")
@@ -128,15 +265,8 @@ func (s *Store) SetModelsEnabled(models []string, enabled bool) (int, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.Prepare(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
-		VALUES (?, ?, ?, 0, 0, '')
-		ON CONFLICT(model) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`)
-	if err != nil {
-		return 0, err
-	}
-	defer stmt.Close()
-	for _, model := range ids {
-		if _, err := stmt.Exec(model, boolToInt(enabled), ts); err != nil {
+	for _, key := range ids {
+		if err := upsertModelEnabled(tx, key, enabled, ts); err != nil {
 			return 0, err
 		}
 	}
@@ -147,8 +277,9 @@ func (s *Store) SetModelsEnabled(models []string, enabled bool) (int, error) {
 }
 
 // RecordModelCheck 写入最近一次模型检查结果（不改变 enabled，除非尚无记录则默认启用）。
+// 写入前先把同一裸名的旧记录合并到归一化键上，避免检查结果写到另一行。
 func (s *Store) RecordModelCheck(model string, ok bool, detail string) (ModelSetting, error) {
-	model = strings.TrimSpace(model)
+	model = modelKey(model)
 	if model == "" {
 		return ModelSetting{}, errors.New("model 不能为空")
 	}
@@ -157,7 +288,15 @@ func (s *Store) RecordModelCheck(model string, ok bool, detail string) (ModelSet
 		detail = detail[:500]
 	}
 	ts := now()
-	_, err := s.db.Exec(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
+	// 先按当前开关合并旧记录（带前缀的键并到裸名上），再只更新检查字段。
+	current, err := s.ModelEnabled(model)
+	if err != nil {
+		return ModelSetting{}, err
+	}
+	if _, err = s.SetModelEnabled(model, current); err != nil {
+		return ModelSetting{}, err
+	}
+	_, err = s.db.Exec(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
 		VALUES (?, 1, ?, ?, ?, ?)
 		ON CONFLICT(model) DO UPDATE SET
 			last_check_at = excluded.last_check_at,
@@ -220,7 +359,10 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 				rows.Close()
 				return 0, err
 			}
-			known[id] = struct{}{}
+			// 按裸名去重：models/gpt-4o 和 gpt-4o 是同一个模型，不该被当成「新出现」再下架一次。
+			if key := modelKey(id); key != "" {
+				known[key] = struct{}{}
+			}
 		}
 		err = rows.Err()
 		rows.Close()
@@ -267,10 +409,10 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 			return 0, err
 		}
 		// 任何供应商都没出现过的模型才算新的，默认下架；已开放或已下架的保持原状。
-		if _, exists := known[id]; exists {
+		if _, exists := known[modelKey(id)]; exists {
 			continue
 		}
-		if _, err := disable.Exec(id, ts); err != nil {
+		if _, err := disable.Exec(modelKey(id), ts); err != nil {
 			return 0, err
 		}
 		known[id] = struct{}{}

@@ -3,10 +3,12 @@ package provider
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"testing"
 
 	"web2api/internal/engine"
 	"web2api/internal/model"
+	"web2api/internal/store"
 )
 
 type fakeEngine struct {
@@ -100,8 +102,8 @@ func TestPublicModelsHideNotReadySubscriptionEngines(t *testing.T) {
 func TestChatWithToolsOnNonToolEngineRejected(t *testing.T) {
 	m := newTestManager(&fakeEngine{name: "geminiweb", ready: true, models: []string{"gemini-flash"}})
 	req := model.ChatRequest{
-		Model:  "gemini-flash",
-		Tools:  []model.Tool{{Type: "function", Function: &model.ToolFunc{Name: "exec_command"}}},
+		Model: "gemini-flash",
+		Tools: []model.Tool{{Type: "function", Function: &model.ToolFunc{Name: "exec_command"}}},
 	}
 	if _, err := m.Chat(context.Background(), req); err == nil {
 		t.Fatal("want tools_not_supported error, got nil")
@@ -168,5 +170,56 @@ func TestAlternateNoLongerSkipsCustomOnCatalogMiss(t *testing.T) {
 	}
 	if eng == nil || eng.Name() != "custom" {
 		t.Fatalf("custom (only Ready engine) should be chosen, got %v", eng)
+	}
+}
+
+// 下架按裸名生效：带 models/ 前缀下架后，裸名请求不能再被同名的 custom 目录认领。
+func TestDisabledModelNotClaimedByCustom(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.SetModelEnabled("models/GPT-4o", false); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(
+		&fakeEngine{name: "aistudio", ready: true, models: []string{"gemini-flash"}},
+		&fakeEngine{name: "custom", ready: true, models: []string{"models/gpt-4o"}},
+	)
+	m.st = st
+	eng, _ := m.pickEngine("gpt-4o")
+	if eng != nil {
+		t.Fatalf("下架的 gpt-4o 不应被任何引擎认领, got %s", eng.Name())
+	}
+	if _, _, err := m.resolveChatEngine(model.ChatRequest{Model: "gpt-4o"}); !engine.IsModelDisabled(err) {
+		t.Fatalf("下架模型应返回 model_unavailable, got %v", err)
+	}
+	// 公开目录同样不展示。
+	for _, mi := range m.ListModels() {
+		if model.CanonicalModelID(mi.ID) == "gpt-4o" {
+			t.Fatalf("下架模型不应出现在公开目录: %+v", mi)
+		}
+	}
+}
+
+// 主引擎挂了也不能把已下架的模型换到同名的第三方 Key 上。
+func TestAlternateSkipsDisabledModel(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.SetModelEnabled("gpt-4o", false); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(
+		&fakeEngine{name: "geminiweb", ready: false, models: []string{}},
+		&fakeEngine{name: "custom", ready: true, models: []string{"models/gpt-4o"}},
+	)
+	m.st = st
+	m.defaultEngine = "geminiweb"
+	if alt := m.alternate(m.engines["geminiweb"], "gpt-4o"); alt != nil {
+		t.Fatalf("下架模型不应有备胎引擎, got %s", alt.Name())
 	}
 }

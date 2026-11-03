@@ -77,6 +77,10 @@ func (s *Server) handleResponsesStream(w http.ResponseWriter, r *http.Request, r
 // writeResponsesError 复用 chat 的错误语义：模型无人声明 404、
 // 端点与模型用途不匹配 400，其余 502。
 func (s *Server) writeResponsesError(w http.ResponseWriter, err error) {
+	if provider.IsModelDisabled(err) {
+		writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_unavailable")
+		return
+	}
 	if provider.IsModelNotFound(err) {
 		writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_not_found")
 		return

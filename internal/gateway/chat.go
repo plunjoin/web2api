@@ -50,6 +50,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Printf("[chat] 请求失败 model=%q: %v", req.Model, err)
 		s.recordChat(r, req, res, false, err, start, "/v1/chat/completions")
+		if provider.IsModelDisabled(err) {
+			writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_unavailable")
+			return
+		}
 		if provider.IsModelNotFound(err) {
 			writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_not_found")
 			return

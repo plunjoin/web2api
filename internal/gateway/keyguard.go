@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	mdl "web2api/internal/model"
 	"web2api/internal/store"
 )
 
@@ -75,7 +76,7 @@ func (s *Server) modelCatalogAllowed(w http.ResponseWriter, model string) bool {
 	if s.st == nil || strings.TrimSpace(model) == "" {
 		return true
 	}
-	enabled, err := s.st.ModelEnabled(model)
+	enabled, err := s.st.ModelEnabled(mdl.CanonicalModelID(model))
 	if err != nil || enabled {
 		return true
 	}

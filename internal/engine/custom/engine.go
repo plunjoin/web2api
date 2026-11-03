@@ -590,7 +590,12 @@ func (e *Engine) candidates(modelName string) (usable []*customAccount, declared
 // pick 按模型精确选号：只返回目录里明确声明了该模型的可用账号。
 // 这里刻意不再保留「找不到就随便抓一个就绪号」的兜底——那会把 lyria / veo
 // 这类模型打到完全不相干的第三方供应商上，最后以误导性的上游 404 收场。
+// 下架的模型在这里也直接拒绝：路由层已经拦过一次，但这是请求真正发出去之前
+// 的最后一道门，避免任何绕过 pickEngine 的路径打到第三方 Key。
 func (e *Engine) pick(modelName string) (*customAccount, error) {
+	if e.modelDisabled(modelName) {
+		return nil, engine.NewModelDisabled(modelName)
+	}
 	usable, declared, total := e.candidates(modelName)
 	if len(usable) > 0 {
 		return usable[0], nil
@@ -604,6 +609,20 @@ func (e *Engine) pick(modelName string) (*customAccount, error) {
 		return nil, fmt.Errorf("custom: 声明了模型 %q 的 %d 个账号当前均不可用（已停用 / 初始化中 / 冷却中）",
 			strings.TrimPrefix(strings.TrimSpace(modelName), "models/"), declared)
 	}
+}
+
+// modelDisabled 报告模型是否被管理台下架。没有存储或读失败时不拦截，
+// 交给上游自己拒绝，而不是把一次存储故障变成全部模型 404。
+func (e *Engine) modelDisabled(modelName string) bool {
+	if e.st == nil {
+		return false
+	}
+	name := normalizeModelID(modelName)
+	if name == "" {
+		return false
+	}
+	enabled, err := e.st.ModelEnabled(name)
+	return err == nil && !enabled
 }
 
 // missError 生成「没有账号声明该模型」的明确错误，附带号池现状便于排查。

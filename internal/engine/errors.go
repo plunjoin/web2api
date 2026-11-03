@@ -37,6 +37,29 @@ func IsModelNotFound(err error) bool {
 	return errors.As(err, &target)
 }
 
+// ModelDisabledError 表示管理台已将该模型下架。
+// 与 ModelNotFoundError 分开：模型是存在的，只是管理员明确不对下游开放，
+// 网关据此返回 404 + code=model_unavailable，调用方不该把它当临时故障重试，
+// 也不该换一个引擎再打一次——同名的第三方 Key 同样不接。
+type ModelDisabledError struct {
+	Model string
+}
+
+func (e *ModelDisabledError) Error() string {
+	return fmt.Sprintf("model_unavailable: 模型 %q 已下架，下游不可调用", e.Model)
+}
+
+// NewModelDisabled 构造模型下架错误。
+func NewModelDisabled(model string) error {
+	return &ModelDisabledError{Model: strings.TrimPrefix(strings.TrimSpace(model), "models/")}
+}
+
+// IsModelDisabled 判定错误是否为「模型已下架」。
+func IsModelDisabled(err error) bool {
+	var target *ModelDisabledError
+	return errors.As(err, &target)
+}
+
 // UnsupportedEndpointError 模型存在，但当前端点产不出这种类型的输出。
 // 例如把音乐模型发到 /v1/chat/completions：chat 只能返回文本，上游必然拒绝。
 // 网关据此返回 400，并告诉调用方该换哪个端点。
