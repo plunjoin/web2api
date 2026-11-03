@@ -9,3 +9,6 @@ func IsModelNotFound(err error) bool { return engine.IsModelNotFound(err) }
 
 // IsUnsupportedEndpoint 判定错误是否为「端点与模型用途不匹配」。
 func IsUnsupportedEndpoint(err error) bool { return engine.IsUnsupportedEndpoint(err) }
+
+// IsToolsNotSupported 判定错误是否为「引擎不支持 function calling」。
+func IsToolsNotSupported(err error) bool { return engine.IsToolsNotSupported(err) }
