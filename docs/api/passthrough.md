@@ -16,7 +16,10 @@
 | `POST /v1/files/*` | 文件上传和处理 |
 | `POST /v1/embeddings/*` | Embedding 请求 |
 
-音乐模型**不要**发到 `/v1/chat/completions`：OpenAI 兼容的 chat 端点只能返回文本，上游会以 `Unhandled generated data mime type: audio/mpeg` 之类的 400 拒绝。网关现在会在发出请求前拦下这类用途不匹配的调用，返回 `400 unsupported_endpoint` 并提示正确端点；只有引擎 B `native` 模式（能把 inline data 转成 data URI 放进 chat 响应）才允许音乐/图片模型走 chat。
+音乐模型（Lyria 等）支持 **`/v1/chat/completions` 与 `/v1/music/generations` 双向互通**：
+- 调用 `/v1/chat/completions` 时，网关自动适配底层引擎（AI Studio `native`、Custom 的 Gemini API Key 或第三方音乐端点），将生成的音频以 `![media](data:audio/mpeg;base64,...)` 写入对话响应；
+- 调用 `POST /v1/music/generations` 时，若上游无原生音乐透传端点，网关会自动转为内部生成并提取音频返回。
+视频模型（Veo）为异步长任务，请走专用端点 `/v1/videos`，直接发到 `/v1/chat/completions`（非引擎 B `native`）会返回 `400 unsupported_endpoint`。
 
 透传请求仍然使用 `Authorization: Bearer sk-...`。JSON 请求使用 `Content-Type: application/json`，二进制内容使用 `application/octet-stream`。路径和请求体字段由对应上游协议决定，使用前请确认配置中的 `mode: upstream`（按模型路由不受此限制）。
 

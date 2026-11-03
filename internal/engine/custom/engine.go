@@ -818,7 +818,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		default:
 			// 上游以「产出不了这种 MIME」为由拒绝：说明模型用途和端点不匹配
 			// （把音乐/语音模型发到了只能返回文本的 chat 端点），换成能看懂的提示。
-			if kind := model.ClassifyKind(req.Model, "", nil); model.ChatIncompatibleKind(kind) && isMediaMimeRejection(msg) {
+			if kind := model.ClassifyKind(req.Model, "", nil); (model.ChatIncompatibleKind(kind) || kind == model.KindMusic) && isMediaMimeRejection(msg) {
 				return nil, engine.NewUnsupportedEndpoint(req.Model, kind)
 			}
 			// 模型不存在、参数非法等业务错误属于「这一次请求」的问题，不是账号健康问题：

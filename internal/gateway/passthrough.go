@@ -10,11 +10,15 @@ import (
 
 // handlePassthrough 将多模态端点透传到上游。
 // 覆盖路径：/v1/images/*、/v1/videos/*、/v1/audio/*、/v1/music/*、/v1/files/*、/v1/embeddings/*
-// 路由顺序：请求体 model 命中订阅/custom 引擎目录时，转发到对应第三方 Key 上游
-// （embedding / 音乐等模型由 OpenAI 兼容供应商提供）；否则回退引擎B（仅 upstream 模式）。
-// 音乐（Lyria 等）必须走这里而不是 /v1/chat/completions：chat 端点只能返回文本。
+// 路由顺序：请求体 model 命中订阅/custom 引擎目录时，转发到对应第三方 Key 上游；
+// 否则回退引擎B（仅 upstream 模式）。其中 POST /v1/music/generations 与 /v1/audio/generations
+// 支持双向打通：上游不支持原生透传时自动转为内部 Chat 调用生成音频。
 func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	if isMusicGenerationEndpoint(r.Method, path) {
+		s.handleMusicGeneration(w, r)
+		return
+	}
 	if modelID, body := passthroughModelFromBody(r); modelID != "" {
 		rw := &recordingWriter{ResponseWriter: w}
 		handled, err := s.mgr.ServeModelPassthrough(r.Context(), modelID, r.Method, path, bytes.NewReader(body), r.Header.Get("Content-Type"), rw)

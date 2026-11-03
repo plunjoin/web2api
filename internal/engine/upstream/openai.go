@@ -318,6 +318,9 @@ func (o *OpenAI) chatPayload(req model.ChatRequest, stream bool) map[string]any 
 
 // Chat 非流式对话。
 func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+	if isMusicModel(req.Model) && isGeminiOpenAIBase(o.baseURL) {
+		return o.chatMusic(ctx, req, nil)
+	}
 	payload := o.chatPayload(req, false)
 	data, status, err := o.do(ctx, http.MethodPost, "/v1/chat/completions", payload)
 	if err != nil {
@@ -325,6 +328,11 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 		return nil, err
 	}
 	if status != http.StatusOK {
+		if isMusicModel(req.Model) {
+			if res, mErr := o.chatMusic(ctx, req, nil); mErr == nil {
+				return res, nil
+			}
+		}
 		o.MarkDown(fmt.Errorf("上游 /v1/chat/completions 返回 HTTP %d", status))
 		return nil, fmt.Errorf("上游返回 HTTP %d: %s", status, truncate(data))
 	}
@@ -362,6 +370,9 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 	if sink == nil {
 		sink = model.TextSink(nil)
 	}
+	if isMusicModel(req.Model) && isGeminiOpenAIBase(o.baseURL) {
+		return o.chatMusic(ctx, req, sink)
+	}
 	data, err := json.Marshal(o.chatPayload(req, true))
 	if err != nil {
 		return nil, err
@@ -384,6 +395,11 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if isMusicModel(req.Model) {
+			if res, mErr := o.chatMusic(ctx, req, sink); mErr == nil {
+				return res, nil
+			}
+		}
 		o.MarkDown(fmt.Errorf("上游 /v1/chat/completions 返回 HTTP %d", resp.StatusCode))
 		return nil, fmt.Errorf("上游返回 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
