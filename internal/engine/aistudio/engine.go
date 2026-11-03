@@ -57,6 +57,17 @@ func (b *Engine) ProbeEmbedding(ctx context.Context, modelID string) (string, er
 	return b.up.ProbeEmbedding(ctx, modelID)
 }
 
+// RefreshCatalog 重新请求上游 /v1/models。
+func (b *Engine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) {
+	if got := b.up.RefreshModels(ctx); len(got) == 0 {
+		if err := b.up.ReadyErr(); err != "" {
+			return nil, errors.New(err)
+		}
+		return nil, errors.New("上游未返回模型列表")
+	}
+	return b.ListModels(), nil
+}
+
 // ListModels 上游模型列表。
 func (b *Engine) ListModels() []model.ModelInfo {
 	models := b.up.ListModels()

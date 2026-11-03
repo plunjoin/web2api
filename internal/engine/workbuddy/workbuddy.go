@@ -15,11 +15,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	xproxy "golang.org/x/net/proxy"
+
+	"web2api/internal/model"
 )
 
 // DefaultBaseURL 上游默认地址。
@@ -188,14 +191,17 @@ func JWTEmail(token string) string {
 
 // Message OpenAI 风格消息。
 type Message struct {
-	Role    string
-	Text    string
+	Role      string
+	Text      string
+	ToolCalls []model.ToolCall
 }
 
 // Request 推理请求。
 type Request struct {
 	Model       string
 	Messages     []Message
+	Tools        []model.Tool
+	ToolChoice   json.RawMessage
 	MaxTokens    int
 	Temperature  *float64
 }
@@ -203,18 +209,31 @@ type Request struct {
 // Result 推理结果。
 type Result struct {
 	Text             string
+	ToolCalls        []model.ToolCall
 	PromptTokens     int64
 	CompletionTokens int64
 }
 
+type chatToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function"`
+}
+
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string         `json:"role"`
+	Content   string         `json:"content"`
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatBody struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
+	Tools       []model.Tool  `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	Stream      bool          `json:"stream"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
@@ -228,6 +247,12 @@ func buildChatBody(req *Request) (*chatBody, error) {
 	if req.MaxTokens > 0 {
 		body.MaxTokens = req.MaxTokens
 	}
+	if len(req.Tools) > 0 {
+		body.Tools = req.Tools
+		if choice := bytes.TrimSpace(req.ToolChoice); len(choice) > 0 && string(choice) != "null" {
+			body.ToolChoice = req.ToolChoice
+		}
+	}
 	for _, msg := range req.Messages {
 		text := msg.Text
 		role := strings.ToLower(msg.Role)
@@ -240,10 +265,24 @@ func buildChatBody(req *Request) (*chatBody, error) {
 				text = strings.ReplaceAll(text, r.from, r.to)
 			}
 		}
-		if strings.TrimSpace(text) == "" {
+		cm := chatMessage{Role: role, Content: text}
+		// 把上游不认识的 tool_calls 也转成 OpenAI 形态（带工具的 assistant 历史）
+		for _, tc := range msg.ToolCalls {
+			cm.ToolCalls = append(cm.ToolCalls, chatToolCall{
+				ID:   tc.ID,
+				Type: tc.Type,
+				Function: struct {
+					Name      string `json:"name,omitempty"`
+					Arguments string `json:"arguments,omitempty"`
+				}{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+			})
+		}
+		// assistant 的纯工具调用回合 content 为空，靠 ToolCalls 保留，
+		// 不能因 TrimSpace 为空而被整条丢弃（否则工具调用历史断链）。
+		if strings.TrimSpace(text) == "" && len(cm.ToolCalls) == 0 {
 			continue
 		}
-		body.Messages = append(body.Messages, chatMessage{Role: role, Content: text})
+		body.Messages = append(body.Messages, cm)
 	}
 	// 上游要求至少 2 条消息：单条 user 前补 system
 	if len(body.Messages) == 1 {
@@ -255,8 +294,12 @@ func buildChatBody(req *Request) (*chatBody, error) {
 	return body, nil
 }
 
-// Stream 发起聊天补全（上游强制流式）并回调增量文本。
-func Stream(ctx context.Context, proxy, baseURL, accessToken, userID string, req *Request, onDelta func(string) error) (*Result, error) {
+// Stream 发起聊天补全（上游强制流式）。tools 非空时把工具调用增量通过 sink
+// 透传给上层；否则降级为仅文本回调（兼容既有非工具调用方）。
+func Stream(ctx context.Context, proxy, baseURL, accessToken, userID string, req *Request, sink model.StreamSink) (*Result, error) {
+	if sink == nil {
+		sink = model.TextSink(nil)
+	}
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -283,7 +326,7 @@ func Stream(ctx context.Context, proxy, baseURL, accessToken, userID string, req
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, &UpstreamError{Status: resp.StatusCode, Body: string(b)}
 	}
-	return parseSSE(resp.Body, onDelta)
+	return parseSSE(resp.Body, sink)
 }
 
 // UpstreamError 上游非 200 响应。
@@ -321,10 +364,13 @@ func IsRateLimited(err error) bool {
 	return false
 }
 
-func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
+func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 	result := &Result{}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
+	// 工具调用分块按 index 归并：上游把 id/name 放首块、参数按 JSON 片段逐块下发。
+	accs := map[int]*model.ToolCall{}
+	var indices []int
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -338,6 +384,7 @@ func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
+					ToolCalls []model.ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
 			Usage *struct {
@@ -351,10 +398,30 @@ func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
 		for _, ch := range chunk.Choices {
 			if ch.Delta.Content != "" {
 				result.Text += ch.Delta.Content
-				if onDelta != nil {
-					if err := onDelta(ch.Delta.Content); err != nil {
-						return nil, err
-					}
+				if err := sink.Text(ch.Delta.Content); err != nil {
+					return nil, err
+				}
+			}
+			for _, tc := range ch.Delta.ToolCalls {
+				acc := accs[tc.Index]
+				if acc == nil {
+					acc = &model.ToolCall{Type: "function"}
+					accs[tc.Index] = acc
+					indices = append(indices, tc.Index)
+				}
+				if tc.ID != "" {
+					acc.ID = tc.ID
+				}
+				if tc.Type != "" {
+					acc.Type = tc.Type
+				}
+				acc.Function.Name += tc.Function.Name
+				acc.Function.Arguments += tc.Function.Arguments
+				if len(tc.ExtraContent) > 0 {
+					acc.ExtraContent = tc.ExtraContent
+				}
+				if err := sink.ToolCall(tc); err != nil {
+					return nil, err
 				}
 			}
 		}
@@ -364,12 +431,25 @@ func parseSSE(r io.Reader, onDelta func(string) error) (*Result, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		if result.Text != "" {
+		if result.Text != "" || len(indices) > 0 {
 			return result, nil
 		}
 		return nil, err
 	}
-	if result.Text == "" {
+	if len(indices) > 0 {
+		sort.Ints(indices)
+		for _, index := range indices {
+			call := *accs[index]
+			if call.ID == "" {
+				call.ID = "call_" + model.NewID(16)
+			}
+			if call.Type == "" {
+				call.Type = "function"
+			}
+			result.ToolCalls = append(result.ToolCalls, call)
+		}
+	}
+	if result.Text == "" && len(result.ToolCalls) == 0 {
 		return nil, errors.New("上游没有返回任何内容")
 	}
 	return result, nil

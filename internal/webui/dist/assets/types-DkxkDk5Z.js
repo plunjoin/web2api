@@ -1,1 +1,0 @@
-var e={a:`Gemini Web`,b:`AI Studio`,codex:`GPT`,antigravity:`Antigravity`,kiro:`Kiro`,workbuddy:`WorkBuddy`,custom:`第三方 Key`};function t(t){return e[t]||t}export{t};

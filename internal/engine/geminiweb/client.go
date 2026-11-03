@@ -110,6 +110,23 @@ func (c *Client) SetCookieStore(store CookieStore) { c.cookieStore = store }
 // Name 账号名。
 func (c *Client) Name() string { return c.name }
 
+// SetModels 用一次重新拉取的结果替换已发现模型。
+func (c *Client) SetModels(models []*AvailableModel, status int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(models) > 0 {
+		c.models = models
+	}
+	if status != 0 {
+		c.accountStatus = status
+	}
+}
+
+// RefreshModels 重新执行初始化 RPC，返回账号当前的模型目录（不改动客户端状态）。
+func (c *Client) RefreshModels(ctx context.Context) ([]*AvailableModel, int, error) {
+	return c.initRPC(ctx)
+}
+
 // Models 返回已发现模型（未初始化时返回内置表）。
 func (c *Client) Models() []*AvailableModel {
 	c.mu.Lock()

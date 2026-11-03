@@ -258,6 +258,37 @@ func (e *Engine) Ready() bool {
 	return false
 }
 
+// RefreshCatalog 重新向 Gemini 网页拉取每个启用账号的模型目录，返回聚合结果。
+// 全部账号都拉失败才算失败；部分失败时用已有目录顶上。
+func (e *Engine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) {
+	e.mu.RLock()
+	accounts := append([]*geminiAccount(nil), e.accounts...)
+	e.mu.RUnlock()
+	if len(accounts) == 0 {
+		return nil, errors.New("geminiweb 没有账号，无法获取模型")
+	}
+	var failed []string
+	fetched := 0
+	for _, acc := range accounts {
+		if !acc.enabled || !acc.client.Ready() {
+			continue
+		}
+		models, status, err := acc.client.RefreshModels(ctx)
+		if err != nil || len(models) == 0 {
+			if err != nil {
+				failed = append(failed, acc.label+": "+err.Error())
+			}
+			continue
+		}
+		fetched++
+		acc.client.SetModels(models, status)
+	}
+	if fetched == 0 && len(failed) > 0 {
+		return nil, fmt.Errorf("geminiweb 模型目录刷新失败: %s", strings.Join(failed, "; "))
+	}
+	return e.ListModels(), nil
+}
+
 // ListModels 聚合全部账号的模型（去重）。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()

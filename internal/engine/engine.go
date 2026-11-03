@@ -52,6 +52,13 @@ type ToolEngine interface {
 	ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error)
 }
 
+// CatalogRefresher 可选能力：管理台点「获取模型」时，向供应商重新拉取一次
+// 模型目录并更新引擎内存里的目录。返回的是这次拉到的最新列表（ListModels
+// 的口径），空列表表示供应商确实没有模型，不是失败。
+type CatalogRefresher interface {
+	RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error)
+}
+
 // PassthroughWriter 抽象透传响应的写出目标（网关的 http.ResponseWriter）。
 type PassthroughWriter interface {
 	Header() http.Header

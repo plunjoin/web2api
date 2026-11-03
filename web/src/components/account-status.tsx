@@ -2,7 +2,7 @@ import { StatusDot, Pill } from '@/components/status'
 import { relative } from '@/lib/format'
 import type { Account, AccountCooldown } from '@/lib/types'
 
-/** 号池账号状态：busy（正在处理请求）、cooldown（限流冷却）不是故障。 */
+/** 供应商账号状态：busy（正在处理请求）、cooldown（限流冷却）不是故障。 */
 export const accountStatusMeta: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'muted' }> = {
   ok: { label: '就绪', tone: 'success' },
   ready: { label: '就绪', tone: 'success' },

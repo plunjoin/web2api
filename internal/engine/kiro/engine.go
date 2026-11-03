@@ -304,6 +304,29 @@ func (e *Engine) Ready() bool {
 	return false
 }
 
+// RefreshCatalog Kiro 上游没有模型列表接口（模型是固定枚举），有可用账号时
+// 返回内置目录作为快照。没有账号时返回错误，避免把写死的列表存下来。
+func (e *Engine) RefreshCatalog(context.Context) ([]model.ModelInfo, error) {
+	if !e.hasEnabledAccount() {
+		return nil, errors.New("kiro 没有可用账号，无法获取模型")
+	}
+	return e.ListModels(), nil
+}
+
+func (e *Engine) hasEnabledAccount() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		ok := acc.enabled
+		acc.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ListModels kiro 模型目录。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()

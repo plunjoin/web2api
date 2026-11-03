@@ -39,7 +39,7 @@ type codexAccount struct {
 	ready       bool
 	lastErr     string
 
-	quota           string // 5 小时窗用量百分比描述
+	quota          string // 5 小时窗用量百分比描述
 	cooldownUntil  time.Time
 	cooldownReason string
 }
@@ -267,6 +267,29 @@ func (e *Engine) Ready() bool {
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		ok := acc.enabled && acc.ready && time.Now().After(acc.cooldownUntil)
+		acc.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// RefreshCatalog Codex 上游没有模型列表接口，目录以账号实际权益为准、请求原样
+// 透传，这里返回内置目录作为快照。没有账号时返回错误，避免把写死的列表存下来。
+func (e *Engine) RefreshCatalog(context.Context) ([]model.ModelInfo, error) {
+	if !e.hasEnabledAccount() {
+		return nil, errors.New("codex 没有可用账号，无法获取模型")
+	}
+	return e.ListModels(), nil
+}
+
+func (e *Engine) hasEnabledAccount() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		ok := acc.enabled
 		acc.mu.Unlock()
 		if ok {
 			return true

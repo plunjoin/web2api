@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Boxes, Check, ChevronDown, ChevronRight, Pencil, RefreshCw, RotateCcw, Search, X } from 'lucide-react'
+import { Boxes, Check, ChevronDown, ChevronRight, Download, Pencil, RefreshCw, RotateCcw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -14,7 +14,7 @@ import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/mod
 import { CopyButton } from '@/components/copy'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
-import { multiplier, relative } from '@/lib/format'
+import { dateTime, multiplier, relative } from '@/lib/format'
 import { engineLabel, type ModelInfo } from '@/lib/types'
 
 interface MultItem {
@@ -50,12 +50,12 @@ type CheckResult = {
 
 type Group = { key: string; label: string; rows: Row[]; enabledCount: number }
 
-// 分组展示顺序：双引擎 → 订阅引擎 → 第三方 Key → 其他 → 不在当前目录
+// 分组展示顺序：Gemini Web / AI Studio → 订阅供应商 → 第三方 Key → 其他 → 不在已保存快照
 const ENGINE_ORDER = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
 
 export default function AdminModels() {
   const qc = useQueryClient()
-  const models = useQuery({ queryKey: ['admin', 'models'], queryFn: () => api<{ models: ModelInfo[] }>('/admin/api/models') })
+  const models = useQuery({ queryKey: ['admin', 'models'], queryFn: () => api<{ models: ModelInfo[]; fetched_at: number }>('/admin/api/models') })
   const mults = useQuery({ queryKey: ['admin', 'multipliers'], queryFn: () => api<{ multipliers: MultItem[]; default_multiplier: number; formula: string }>('/admin/api/multipliers') })
   const [search, setSearch] = useState('')
   const [kind, setKind] = useState('all')
@@ -68,9 +68,37 @@ export default function AdminModels() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [toggling, setToggling] = useState(false)
+  const [fetching, setFetching] = useState(false)
   const confirm = useConfirm()
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin', 'models'] })
+  // 从每个供应商重新拉取模型目录，成功的供应商整表替换已保存的快照。
+  const fetchModels = async () => {
+    setFetching(true)
+    try {
+      const res = await api<{ total: number; engines: { engine: string; models: number; new: number; saved: boolean; error?: string }[] }>(
+        '/admin/api/models/refresh',
+        { method: 'POST', json: {} },
+      )
+      const failed = (res.engines || []).filter((e) => !e.saved)
+      const saved = (res.engines || []).filter((e) => e.saved)
+      const added = saved.reduce((n, e) => n + (e.new || 0), 0)
+      if (saved.length) {
+        toast.success(
+          added
+            ? `已获取 ${res.total} 个模型，其中 ${added} 个是新的，默认未开放，勾选后点「批量开放」即可使用`
+            : `已获取 ${res.total} 个模型，没有新增`,
+        )
+      }
+      if (failed.length) toast.warning(`${failed.length} 个供应商获取失败，保留上次的列表：${failed.map((e) => `${engineLabel(e.engine)}（${e.error || '未知错误'}）`).join('、')}`)
+      if (!saved.length && !failed.length) toast.warning('没有可获取模型的供应商，请先添加供应商账号')
+      invalidate()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setFetching(false)
+    }
+  }
   const explicit = useMemo(() => new Map((mults.data?.multipliers || []).map((m) => [m.model, m])), [mults.data])
   const rows = useMemo(() => {
     const map = new Map<string, Row>()
@@ -375,7 +403,13 @@ export default function AdminModels() {
     <>
       <PageHeader
         title="模型与定价"
-        description="扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉。按引擎分组管理：可折叠分组、勾选批量上下架、整组一键开放/下架；检查模型会按结果自动上下架。下架后下游 /v1/models 不可见。"
+        description="扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉。点「获取模型」同时向每个供应商拉取最新列表；新出现的模型默认未开放，勾选后批量开放才对下游可见。"
+        actions={
+          <Button onClick={fetchModels} disabled={fetching}>
+            <Download className={fetching ? 'animate-pulse' : undefined} />
+            {fetching ? '各供应商获取中…' : '获取模型'}
+          </Button>
+        }
       />
       <Section title="默认倍率" description="适用于所有没有单独设置倍率的模型（键为 *）" className="mb-4">
         <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -428,13 +462,27 @@ export default function AdminModels() {
           </Button>
         </div>
       </Toolbar>
-      <Section title={`${rows.length} 个模型 · ${groups.length} 组`}>
+      <Section
+        title={`${rows.length} 个模型 · ${groups.length} 组`}
+        description={models.data?.fetched_at ? `上次获取于 ${dateTime(models.data.fetched_at)}` : '还没有获取过模型'}
+      >
         {models.isLoading || mults.isLoading ? (
           <TableSkeleton rows={8} cols={7} />
         ) : models.isError ? (
           <ErrorState error={models.error} onRetry={() => models.refetch()} />
         ) : !rows.length ? (
-          <EmptyState icon={<Boxes />} title={search || kind !== 'all' || status !== 'all' ? '没有匹配的模型' : '模型目录为空'} description={search || kind !== 'all' || status !== 'all' ? undefined : '添加上游账号并就绪后，模型会自动出现在这里。'} />
+          <EmptyState
+            icon={<Boxes />}
+            title={search || kind !== 'all' || status !== 'all' ? '没有匹配的模型' : '还没有模型'}
+            description={search || kind !== 'all' || status !== 'all' ? undefined : '点右上角「获取模型」，同时向每个供应商拉取最新列表。新模型默认未开放，勾选后批量开放。'}
+            action={
+              search || kind !== 'all' || status !== 'all' ? undefined : (
+                <Button size="sm" onClick={fetchModels} disabled={fetching}>
+                  <Download className={fetching ? 'animate-pulse' : undefined} /> 获取模型
+                </Button>
+              )
+            }
+          />
         ) : (
           <div className="overflow-x-auto">
             <Table>
@@ -450,7 +498,7 @@ export default function AdminModels() {
                   </TableHead>
                   <TableHead>模型 ID</TableHead>
                   <TableHead>用途</TableHead>
-                  <TableHead>引擎</TableHead>
+                  <TableHead>供应商</TableHead>
                   <TableHead className="w-[16rem]">状态 / 开放</TableHead>
                   <TableHead className="w-48 text-right">倍率</TableHead>
                   <TableHead className="w-24 text-right">操作</TableHead>
