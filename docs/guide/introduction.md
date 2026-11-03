@@ -36,8 +36,7 @@ web2api 是一个自托管的 AI 号池网关。它把账号池、请求调度�
 路由按「**谁声明谁接**」：显式配置（`routing.engine_a/b_models`、`routing.engine_models`）
 优先，其次按订阅/custom 目录与引擎实时目录精确命中。命中即专属——引擎不可用时返回该引擎
 的真实错误，不会换到别的引擎；多模态关键词（image / veo / lyria…）只交给引擎 B；
-没有任何引擎声明该模型时返回 `404 model_not_found`。音乐和视频模型不能走
-`/v1/chat/completions`（引擎 B native 除外），请使用 `/v1/music/generations` 与 `/v1/videos`。
+没有任何引擎声明该模型时返回 `404 model_not_found`。音乐模型支持 `/v1/chat/completions` 与 `/v1/music/generations` 双向调用；视频模型不能走 `/v1/chat/completions`（引擎 B native 除外），请使用 `/v1/videos`。
 
 ## 数据和安全边界
 

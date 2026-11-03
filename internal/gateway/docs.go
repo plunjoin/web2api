@@ -79,7 +79,7 @@ func publicAPISpec() map[string]any {
 			},
 			"/v1/images/{path}":     passthroughPath("图片透传：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式"),
 			"/v1/audio/{path}":      passthroughPath("音频透传：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式"),
-			"/v1/music/{path}":      passthroughPath("音乐透传（/v1/music/generations）：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式。音乐模型不能走 /v1/chat/completions，chat 端点只能返回文本"),
+			"/v1/music/{path}":      passthroughPath("音乐生成与透传（/v1/music/generations）：支持所有引擎（AI Studio native / custom / upstream），音乐模型同时支持走 /v1/chat/completions 与 /v1/music/generations 双向互转"),
 			"/v1/files/{path}":      passthroughPath("文件透传：模型命中 custom 目录时转发对应上游，否则 AI Studio upstream 模式"),
 			"/v1/embeddings/{path}": passthroughPath("Embedding 透传：模型命中 custom 目录时转发对应上游（如 Google OpenAI 兼容端的 gemini-embedding-*），否则 AI Studio upstream 模式"),
 		},

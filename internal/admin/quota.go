@@ -10,8 +10,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"web2api/internal/engine"
+	"web2api/internal/engine/custom"
+	"web2api/internal/model"
 	"web2api/internal/store"
 	"web2api/internal/version"
 )
@@ -236,7 +240,200 @@ func (a *API) handleUsageExport(w http.ResponseWriter, r *http.Request) {
 	out.Flush()
 }
 
-// handleModels GET /admin/api/models：聚合模型目录（含不可用），附带生效倍率与检查状态。
+// handleRefreshModels POST /admin/api/models/refresh：向每个供应商重新拉取模型
+// 目录，成功的供应商用新列表整表替换已保存的快照；失败的保留上次快照。
+func (a *API) handleRefreshModels(w http.ResponseWriter, r *http.Request) {
+	if a.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "引擎未初始化"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	type engineResult struct {
+		Engine string `json:"engine"`
+		Models int    `json:"models"`
+		New    int    `json:"new"`
+		Saved  bool   `json:"saved"`
+		Error  string `json:"error,omitempty"`
+	}
+	// 各供应商同时拉取：慢的上游只拖慢自己，不挡住别的供应商。
+	var (
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+		results []engineResult
+		total   int
+	)
+	for name, eng := range a.mgr.Engines() {
+		if _, ok := eng.(engine.CatalogRefresher); !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(name string, eng engine.Engine) {
+			defer wg.Done()
+			// 第三方 Key 不是一个供应商：每个上游地址单独拉取、单独保存快照。
+			// 慢的地址只拖慢自己，失败的地址保留上次快照。
+			if ce, ok := eng.(*custom.Engine); ok {
+				_ = a.st.DeleteEngineCatalog("custom")
+				var inner sync.WaitGroup
+				for _, base := range ce.ProviderBaseURLs() {
+					inner.Add(1)
+					go func(base string) {
+						defer inner.Done()
+						res := engineResult{Engine: "custom|" + base}
+						got, err := ce.RefreshProviderCatalog(ctx, base)
+						if err != nil {
+							res.Error = err.Error()
+							a.logger.Printf("[models] 供应商 %s 获取模型失败: %v", base, err)
+						} else if catalog := catalogFromModels(got); true {
+							added, saveErr := a.st.ReplaceEngineCatalog(res.Engine, catalog)
+							if saveErr != nil {
+								res.Error = saveErr.Error()
+							} else {
+								res.Models = len(catalog)
+								res.New = added
+								res.Saved = true
+							}
+						}
+						mu.Lock()
+						results = append(results, res)
+						if res.Saved {
+							total += res.Models
+						}
+						mu.Unlock()
+					}(base)
+				}
+				inner.Wait()
+				return
+			}
+			res := engineResult{Engine: name}
+			refresher, ok := eng.(engine.CatalogRefresher)
+			if !ok {
+				return
+			}
+			got, err := refresher.RefreshCatalog(ctx)
+			if err != nil {
+				res.Error = err.Error()
+				a.logger.Printf("[models] 供应商 %s 获取模型失败: %v", name, err)
+			} else if catalog := catalogFromModels(got); true {
+				added, saveErr := a.st.ReplaceEngineCatalog(name, catalog)
+				if saveErr != nil {
+					res.Error = saveErr.Error()
+				} else {
+					res.Models = len(catalog)
+					res.New = added
+					res.Saved = true
+				}
+			}
+			mu.Lock()
+			results = append(results, res)
+			if res.Saved {
+				total += res.Models
+			}
+			mu.Unlock()
+		}(name, eng)
+	}
+	wg.Wait()
+	sort.Slice(results, func(i, j int) bool { return results[i].Engine < results[j].Engine })
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "total": total, "engines": results})
+}
+
+// handleRefreshEngineModels POST /admin/api/engines/{engine}/models/refresh：
+// 只向一个供应商拉取模型目录并整表替换它自己的快照，不影响其他供应商。
+// 第三方 Key 不是一个供应商：body 里带 provider（上游 base_url）时只拉该地址的账号，
+// 快照单独存为 "custom|<base_url>"。
+func (a *API) handleRefreshEngineModels(w http.ResponseWriter, r *http.Request) {
+	if a.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "引擎未初始化"})
+		return
+	}
+	name := strings.TrimSpace(r.PathValue("engine"))
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	provider := strings.TrimSpace(req.Provider)
+
+	eng, ok := a.mgr.Engines()[name]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "供应商 " + name + " 未启用"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	var got []model.ModelInfo
+	var err error
+	if name == "custom" && provider != "" {
+		ce, ok := eng.(*custom.Engine)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "供应商 " + name + " 不支持获取模型"})
+			return
+		}
+		got, err = ce.RefreshProviderCatalog(ctx, provider)
+	} else {
+		refresher, ok := eng.(engine.CatalogRefresher)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "供应商 " + name + " 不支持获取模型"})
+			return
+		}
+		got, err = refresher.RefreshCatalog(ctx)
+	}
+	if err != nil {
+		a.logger.Printf("[models] 供应商 %s 获取模型失败: %v", name, err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "engine": name})
+		return
+	}
+	grouped := groupCatalog(name, got)
+	if name == "custom" && provider == "" {
+		// 没指定地址时拉的是全部第三方供应商，旧的整包快照一并清掉。
+		_ = a.st.DeleteEngineCatalog("custom")
+	}
+	total, added := 0, 0
+	for key, list := range grouped {
+		n, saveErr := a.st.ReplaceEngineCatalog(key, list)
+		if saveErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": saveErr.Error()})
+			return
+		}
+		total += len(list)
+		added += n
+	}
+	key := name
+	if len(grouped) == 1 {
+		for k := range grouped {
+			key = k
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "engine": key, "models": total, "new": added})
+}
+
+func catalogFromModels(models []model.ModelInfo) []store.CatalogModel {
+	out := make([]store.CatalogModel, 0, len(models))
+	for _, m := range models {
+		out = append(out, store.CatalogModel{
+			Engine: m.Engine, Model: strings.TrimSpace(m.ID), DisplayName: m.DisplayName, Kind: m.Kind,
+		})
+	}
+	return out
+}
+
+// groupCatalog 把一次拉取的结果按快照键分组。第三方 Key 的模型自带上游地址
+// （Engine 形如 "custom|<base_url>"），每个地址单独成组；其余引擎整组归到引擎名下。
+func groupCatalog(engineName string, models []model.ModelInfo) map[string][]store.CatalogModel {
+	out := map[string][]store.CatalogModel{}
+	for _, item := range catalogFromModels(models) {
+		key := engineName
+		if engineName == "custom" && strings.HasPrefix(item.Engine, "custom|") {
+			key = item.Engine
+		}
+		out[key] = append(out[key], item)
+	}
+	return out
+}
+
+// handleModels GET /admin/api/models：读已保存的模型快照（含不可用），附带生效倍率与
+// 检查状态。还没点过「获取模型」时快照为空，页面上提示去获取，而不是展示引擎写死
+// 的默认目录。
 func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 	type modelView struct {
 		ID              string  `json:"id"`
@@ -257,14 +454,18 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := []modelView{}
-	if a.mgr != nil {
-		for _, m := range a.mgr.ListAllModels() {
-			multiplier, _ := a.st.ModelMultiplierFor(m.ID)
-			view := modelView{
-				ID: m.ID, DisplayName: m.DisplayName, Engine: m.Engine,
-				Available: m.Available, Enabled: true, Kind: m.Kind, Multiplier: multiplier,
+	var fetchedAt int64
+	if catalog, err := a.st.CatalogModels(); err == nil {
+		for _, m := range catalog {
+			if m.FetchedAt > fetchedAt {
+				fetchedAt = m.FetchedAt
 			}
-			if s, ok := settings[m.ID]; ok {
+			multiplier, _ := a.st.ModelMultiplierFor(m.Model)
+			view := modelView{
+				ID: m.Model, DisplayName: m.DisplayName, Engine: m.Engine,
+				Available: true, Enabled: true, Kind: m.Kind, Multiplier: multiplier,
+			}
+			if s, ok := settings[m.Model]; ok {
 				view.Enabled = s.Enabled
 				view.LastCheckAt = s.LastCheckAt
 				view.LastCheckOK = s.LastCheckOK
@@ -273,7 +474,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			out = append(out, view)
 		}
 	}
-	// 已单独设置过上下架/检查、但不在当前引擎目录中的模型也展示。
+	// 已单独设置过上下架/检查、但不在已保存快照中的模型也展示。
 	seen := map[string]struct{}{}
 	for _, m := range out {
 		seen[m.ID] = struct{}{}
@@ -289,7 +490,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+	writeJSON(w, http.StatusOK, map[string]any{"models": out, "fetched_at": fetchedAt})
 }
 
 // handlePatchModel PATCH /admin/api/models/{model...}：设置模型是否对下游开放。
@@ -349,9 +550,9 @@ func (a *API) handleBatchModels(w http.ResponseWriter, r *http.Request) {
 // body: { model?, models?, sync_status? }；sync_status 默认 true（失败下架、成功开放）。
 func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Model       string   `json:"model"`
-		Models      []string `json:"models"`
-		SyncStatus  *bool    `json:"sync_status"`
+		Model      string   `json:"model"`
+		Models     []string `json:"models"`
+		SyncStatus *bool    `json:"sync_status"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 JSON"})

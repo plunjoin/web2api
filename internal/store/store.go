@@ -214,6 +214,16 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_ts ON usage_records(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_key ON usage_records(key_id, ts)`,
+		// 模型目录快照：「获取模型」从供应商拉到的列表按引擎整表替换后存在这里，
+		// 管理台模型页下次打开直接读它，不再用引擎写死的默认目录。
+		`CREATE TABLE IF NOT EXISTS model_catalog (
+				engine TEXT NOT NULL,
+				model TEXT NOT NULL,
+				display_name TEXT NOT NULL DEFAULT '',
+				kind TEXT NOT NULL DEFAULT '',
+				fetched_at INTEGER NOT NULL,
+				PRIMARY KEY (engine, model)
+			)`,
 	}
 	statements = append(statements, platformSchema...)
 	for _, stmt := range statements {

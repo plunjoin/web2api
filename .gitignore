@@ -7,7 +7,6 @@ config.yaml
 .env
 !deploy/config.yaml
 !docker/config.yaml
-cookies/
 auth/
 data/
 
@@ -24,6 +23,9 @@ docs/.vitepress/cache/
 
 # 测试用例仅本地保留，不随仓库分发
 /test/
+
+# 本地工具脚本不入库
+/scripts/
 
 # 本地构建/下载产物
 *.tar.gz

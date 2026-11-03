@@ -20,7 +20,7 @@ import (
 
 // Credentials workbuddy 引擎凭据（accounts.credentials JSON）。
 type Credentials struct {
-	Token        string `json:"token"`           // Bearer accessToken
+	Token        string `json:"token"` // Bearer accessToken
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Email        string `json:"email,omitempty"`
 	ExpiresAt    int64  `json:"expires_at,omitempty"` // Unix 秒，0 表示未知
@@ -214,6 +214,29 @@ func (e *Engine) Ready() bool {
 	return false
 }
 
+// RefreshCatalog WorkBuddy 上游没有模型列表接口（model 原样透传），有可用账号
+// 时返回内置目录作为快照。没有账号时返回错误，避免把写死的列表存下来。
+func (e *Engine) RefreshCatalog(context.Context) ([]model.ModelInfo, error) {
+	if !e.hasEnabledAccount() {
+		return nil, errors.New("workbuddy 没有可用账号，无法获取模型")
+	}
+	return e.ListModels(), nil
+}
+
+func (e *Engine) hasEnabledAccount() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		ok := acc.enabled
+		acc.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ListModels workbuddy 模型目录。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
@@ -267,21 +290,26 @@ func (e *Engine) markCooldown(acc *workbuddyAccount, reason string, d time.Durat
 	acc.mu.Unlock()
 }
 
-// toWorkBuddyRequest ChatRequest → Request。
+// toWorkBuddyRequest ChatRequest → Request。tool_calls 历史随消息透传，
+// 顶层 tools / tool_choice 在工具会话里下发（ChatRequest 已按 IR 规范只保留
+// function 工具，非 function 工具在 wire 层被剥离）。
 func toWorkBuddyRequest(req model.ChatRequest) *Request {
 	out := &Request{
 		Model:       req.Model,
 		MaxTokens:   engine.DerefInt(req.MaxTokens),
 		Temperature: req.Temperature,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 	}
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, Message{Role: m.PlainRole(), Text: m.Text()})
+		msg := Message{Role: m.PlainRole(), Text: m.Text(), ToolCalls: m.ToolCalls}
+		out.Messages = append(out.Messages, msg)
 	}
 	return out
 }
 
-// chatLoop 轮询账号直到成功或池耗尽。
-func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta func(string) error) (*model.ChatResult, error) {
+// chatLoop 轮询账号直到成功或池耗尽。sink 非空时走工具透传路径（ChatStreamSink）。
+func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	if !e.Ready() {
 		return nil, engine.UnavailableError(e)
 	}
@@ -297,13 +325,14 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta fu
 		userID := acc.creds.Email
 		proxy := acc.proxy(e.proxy)
 		acc.mu.Unlock()
-		res, err := Stream(ctx, proxy, e.baseURL, token, userID, cReq, onDelta)
+		res, err := Stream(ctx, proxy, e.baseURL, token, userID, cReq, sink)
 		if err == nil {
 			return &model.ChatResult{
-				Text:   res.Text,
-				Engine: e.name,
-				Model:  req.Model,
-				Usage:  engine.SubResultUsage(res.PromptTokens, res.CompletionTokens, 0),
+				Text:      res.Text,
+				ToolCalls: res.ToolCalls,
+				Engine:    e.name,
+				Model:     req.Model,
+				Usage:     engine.SubResultUsage(res.PromptTokens, res.CompletionTokens, 0),
 			}, nil
 		}
 		lastErr = err
@@ -347,17 +376,19 @@ func (e *Engine) usableCount() int {
 
 // Chat 非流式对话。
 func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
-	return e.chatLoop(ctx, req, nil)
+	return e.chatLoop(ctx, req, model.TextSink(nil))
 }
 
 // ChatStream 流式对话。
 func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
-	return e.chatLoop(ctx, req, func(delta string) error {
-		if onDelta != nil {
-			return onDelta(delta)
-		}
-		return nil
-	})
+	return e.chatLoop(ctx, req, model.TextSink(onDelta))
+}
+
+// ChatStreamSink 流式对话并透传工具调用增量。实现 engine.ToolEngine，使带
+// function calling 的请求（Codex / CC-Switch / Responses）能真正调用工具，
+// 而非被静默吞掉（见 Manager.requireToolSupport）。
+func (e *Engine) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
+	return e.chatLoop(ctx, req, sink)
 }
 
 func (e *Engine) setErr(err error) {

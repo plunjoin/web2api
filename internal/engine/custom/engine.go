@@ -14,11 +14,11 @@ import (
 
 	"web2api/internal/config"
 	"web2api/internal/engine"
+	"web2api/internal/engine/codex"
+	"web2api/internal/engine/custombalance"
 	"web2api/internal/engine/upstream"
 	"web2api/internal/model"
 	"web2api/internal/store"
-	"web2api/internal/engine/codex"
-	"web2api/internal/engine/custombalance"
 )
 
 // Credentials 第三方 Key 凭据（accounts.credentials JSON）。
@@ -383,6 +383,146 @@ func (e *Engine) Ready() bool {
 	return false
 }
 
+// RefreshCatalog 重新向每个第三方供应商请求 /v1/models，返回合并后的目录。
+// 全部供应商都失败才算失败；单个失败的账号保留它原来的目录。
+func (e *Engine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) {
+	return e.RefreshProviderCatalog(ctx, "")
+}
+
+// RefreshProviderCatalog 只向某一个上游地址拉取模型目录。provider 为空时拉全部账号。
+// 同一地址的多个 Key 属于同一个供应商，目录取它们的并集；别的上游地址不受影响。
+// 返回的模型带上该供应商地址（ModelInfo.Engine = "custom|<base_url>"），
+// 供管理台按供应商分开保存。
+func (e *Engine) RefreshProviderCatalog(ctx context.Context, provider string) ([]model.ModelInfo, error) {
+	provider = strings.TrimRight(strings.TrimSpace(provider), "/")
+	if provider != "" {
+		provider = upstream.NormalizeBaseURL(provider)
+	}
+	e.mu.RLock()
+	accounts := append([]*customAccount(nil), e.accounts...)
+	e.mu.RUnlock()
+	if len(accounts) == 0 {
+		return nil, errors.New("custom 没有供应商账号，无法获取模型")
+	}
+	var failed []string
+	fetched := 0
+	matched := 0
+	for _, acc := range accounts {
+		acc.mu.Lock()
+		up := acc.up
+		label := acc.label
+		base := upstream.NormalizeBaseURL(acc.creds.BaseURL)
+		acc.mu.Unlock()
+		if provider != "" && base != provider {
+			continue
+		}
+		matched++
+		if up == nil {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		got := up.RefreshModels(probeCtx)
+		cancel()
+		if len(got) == 0 {
+			if err := up.ReadyErr(); err != "" {
+				failed = append(failed, label+": "+err)
+			}
+			continue
+		}
+		fetched++
+		acc.mu.Lock()
+		out := make([]model.ModelInfo, 0, len(got))
+		for _, m := range got {
+			m.Engine = catalogKey(base)
+			if m.Kind == "" {
+				m.Kind = model.ClassifyKind(m.ID, m.DisplayName, nil)
+			}
+			m.Available = acc.enabled
+			out = append(out, m)
+		}
+		acc.models = out
+		acc.ready = true
+		acc.lastErr = ""
+		acc.mu.Unlock()
+	}
+	if provider != "" && matched == 0 {
+		return nil, fmt.Errorf("没有地址为 %s 的供应商账号", provider)
+	}
+	if fetched == 0 && len(failed) > 0 {
+		return nil, fmt.Errorf("custom 模型目录刷新失败: %s", strings.Join(failed, "; "))
+	}
+	if provider != "" {
+		return e.providerModels(provider), nil
+	}
+	return e.ListModels(), nil
+}
+
+// ProviderBaseURLs 号池里第三方 Key 的上游地址（归一化、去重）。
+// 每个地址是一个供应商，管理台按它分开拉取和保存模型目录。
+func (e *Engine) ProviderBaseURLs() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		base := upstream.NormalizeBaseURL(acc.creds.BaseURL)
+		acc.mu.Unlock()
+		if base == "" {
+			continue
+		}
+		if _, ok := seen[base]; ok {
+			continue
+		}
+		seen[base] = struct{}{}
+		out = append(out, base)
+	}
+	return out
+}
+
+// catalogKey 第三方供应商在模型快照里的键：引擎名加上游地址，一个地址一份目录。
+func catalogKey(baseURL string) string {
+	return "custom|" + upstream.NormalizeBaseURL(baseURL)
+}
+
+// providerModels 只取某一上游地址的模型目录（去重）。
+func (e *Engine) providerModels(provider string) []model.ModelInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	seen := map[string]model.ModelInfo{}
+	order := make([]string, 0)
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		base := upstream.NormalizeBaseURL(acc.creds.BaseURL)
+		enabled := acc.usableLocked()
+		models := append([]model.ModelInfo(nil), acc.models...)
+		acc.mu.Unlock()
+		if base != provider {
+			continue
+		}
+		for _, m := range models {
+			id := m.ID
+			if id == "" {
+				continue
+			}
+			cp := m
+			cp.Engine = catalogKey(base)
+			cp.Available = enabled
+			if prev, ok := seen[id]; ok {
+				cp.Available = prev.Available || cp.Available
+			} else {
+				order = append(order, id)
+			}
+			seen[id] = cp
+		}
+	}
+	out := make([]model.ModelInfo, 0, len(order))
+	for _, id := range order {
+		out = append(out, seen[id])
+	}
+	return out
+}
+
 // ListModels 合并各供应商模型目录（去重）。
 // available 的口径：该模型至少出现在一个可用账号（启用、就绪、未冷却）的目录里。
 func (e *Engine) ListModels() []model.ModelInfo {
@@ -678,7 +818,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		default:
 			// 上游以「产出不了这种 MIME」为由拒绝：说明模型用途和端点不匹配
 			// （把音乐/语音模型发到了只能返回文本的 chat 端点），换成能看懂的提示。
-			if kind := model.ClassifyKind(req.Model, "", nil); model.ChatIncompatibleKind(kind) && isMediaMimeRejection(msg) {
+			if kind := model.ClassifyKind(req.Model, "", nil); (model.ChatIncompatibleKind(kind) || kind == model.KindMusic) && isMediaMimeRejection(msg) {
 				return nil, engine.NewUnsupportedEndpoint(req.Model, kind)
 			}
 			// 模型不存在、参数非法等业务错误属于「这一次请求」的问题，不是账号健康问题：

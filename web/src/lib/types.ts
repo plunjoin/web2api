@@ -205,12 +205,16 @@ export const ENGINE_LABELS: Record<string, string> = {
 }
 
 export function engineLabel(engine: string): string {
+  // 第三方 Key 的模型快照按上游地址分开存，键是 "custom|<base_url>"：展示地址本身。
+  if (engine.startsWith('custom|')) return engine.slice('custom|'.length) || ENGINE_LABELS.custom
   return ENGINE_LABELS[engine] || engine
 }
 
 export interface Account {
   id: number
   engine: string
+  /** 第三方 Key 的供应商地址（归一化 base_url）；同一地址的多个 Key 属于同一个供应商。 */
+  provider?: string
   label: string
   enabled: boolean
   status: string

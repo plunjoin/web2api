@@ -36,13 +36,12 @@ func ClassifyKind(id, display string, capabilities map[string]bool) string {
 }
 
 // ChatIncompatibleKind 该用途的模型无法通过 /v1/chat/completions 产出结果。
-// 音乐和视频必须走各自的专用端点：OpenAI 兼容的 chat 端点只能返回文本，
-// 把音乐模型发过去，上游会直接拒（如 Google 的
-// “Unhandled generated data mime type: audio/mpeg”）。
+// 视频（Veo）是异步长任务，必须走专用端点 /v1/videos。
+// 音乐模型已支持双向打通（/v1/chat/completions 与 /v1/music/generations 均可调用）。
 // 向量模型不在此列——历史上有调用方拿 chat 端点探活，保持原样不动。
 func ChatIncompatibleKind(kind string) bool {
 	switch kind {
-	case KindMusic, KindVideo:
+	case KindVideo:
 		return true
 	}
 	return false

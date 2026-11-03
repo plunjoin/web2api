@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-
 	"web2api/internal/config"
 	"web2api/internal/engine"
 	"web2api/internal/model"
@@ -258,6 +257,19 @@ func (e *NativeEngine) Ready() bool {
 // ChatSupportsMedia 原生协议可以在 chat 响应里直接带回音频/图片（转 data URI），
 // 所以音乐（Lyria）、生图这类模型可以走 /v1/chat/completions。
 func (e *NativeEngine) ChatSupportsMedia() bool { return true }
+
+// RefreshCatalog 立即重新拉取模型目录。
+func (e *NativeEngine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) {
+	e.refreshModels(ctx)
+	e.mu.RLock()
+	err := e.lastErr
+	n := len(e.models)
+	e.mu.RUnlock()
+	if n == 0 && err != nil {
+		return nil, err
+	}
+	return e.ListModels(), nil
+}
 
 // ListModels 模型列表。
 // available 的口径：该模型至少出现在一个可用账号的目录里，且引擎当前可接单。

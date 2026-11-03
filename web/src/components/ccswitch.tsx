@@ -248,7 +248,7 @@ export function CcSwitchImportDialog({ keyItem, onOpenChange }: { keyItem: ApiKe
                 </Button>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
                   {app === 'codex'
-                    ? <>点击后浏览器会请求打开 CC Switch，确认导入即完成。配置使用 wire_api=responses 直连网关 /v1/responses；Codex 经 model_catalog_url 动态拉取模型目录，号池变化无需重新导入。需 CC Switch v4+。</>
+                    ? <>点击后浏览器会请求打开 CC Switch，确认导入即完成。配置使用 wire_api=responses 直连网关 /v1/responses；Codex 经 model_catalog_url 动态拉取模型目录，供应商变化无需重新导入。需 CC Switch v4+。</>
                     : <>Claude Code 原生使用 Anthropic Messages 协议，CC Switch 导入时会开启本地路由，自动把它转换成 web2api 的 Chat Completions 接口。需 CC Switch v4+。</>}
                 </p>
                 <details className="group min-w-0">

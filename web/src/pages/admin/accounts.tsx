@@ -2,19 +2,19 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Ban, CheckCircle2, ChevronDown, KeyRound, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, ChevronDown, ChevronRight, KeyRound, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PageHeader, Section } from '@/components/page'
 import { StatStrip } from '@/components/stat'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { RowMenu, type RowAction } from '@/components/row-menu'
-import { Pill, StatusDot } from '@/components/status'
+import { StatusDot } from '@/components/status'
 import { AccountStatus, CooldownLines, TierPill, accountHealth } from '@/components/account-status'
 import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
@@ -22,6 +22,10 @@ import { api } from '@/lib/api'
 import { relative } from '@/lib/format'
 import { engineLabel, type Account, type EngineName } from '@/lib/types'
 import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddKiroDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
+import { ProviderModelsDialog } from './provider-models'
+
+// 供应商分组顺序：一个供应商下可以挂多个账号，请求在就绪账号间轮询。
+const PROVIDER_ORDER: EngineName[] = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
 
 export default function AdminAccounts() {
   const qc = useQueryClient()
@@ -42,6 +46,8 @@ export default function AdminAccounts() {
   const [subCreds, setSubCreds] = useState<Account | null>(null)
   const [customCreds, setCustomCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
+  const [openProvider, setOpenProvider] = useState<{ engine: string; provider?: string } | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin'] })
 
   const check = async (a: Account) => {
@@ -149,7 +155,7 @@ export default function AdminAccounts() {
 
   return (
     <>
-      <PageHeader title="上游账号" description="网关用来访问上游模型的账号池。请求在就绪的账号之间轮询，异常账号会自动跳过。" actions={addMenu} />
+      <PageHeader title="供应商" description="按供应商分组，一个供应商下可以添加多个账号，请求在就绪账号之间轮询。点开供应商即可获取它的模型、勾选要开放的、并直接测试哪些可用。" actions={addMenu} />
       <div className="space-y-4">
         <StatStrip
           className="lg:grid-cols-3"
@@ -166,32 +172,133 @@ export default function AdminAccounts() {
           ) : q.isError ? (
             <ErrorState error={q.error} onRetry={() => q.refetch()} />
           ) : accounts.length === 0 ? (
-            <EmptyState icon={<Server />} title="还没有上游账号" description="至少添加一个账号，网关才能处理请求。" action={addMenu} />
+            <EmptyState icon={<Server />} title="还没有供应商账号" description="至少添加一个账号，网关才能处理请求。" action={addMenu} />
           ) : (
-            <div className="overflow-x-auto">
+            <ProviderGroups
+              accounts={accounts}
+              checking={checking}
+              collapsed={collapsed}
+              onToggle={(key) =>
+                setCollapsed((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(key)) next.delete(key)
+                  else next.add(key)
+                  return next
+                })
+              }
+              onOpen={setOpenProvider}
+              onCheck={check}
+              actions={actions}
+            />
+          )}
+        </Section>
+        {accounts.length > 0 && <p className="text-xs text-muted-foreground">点开供应商管理它的模型；点某个账号立即检查该账号。</p>}
+      </div>
+      <AddGeminiDialog open={adding === 'a'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
+      <AddStudioDialog open={adding === 'b'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
+      <AddCodexDialog open={adding === 'codex'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddWorkBuddyDialog open={adding === 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddCustomKeyDialog open={adding === 'custom'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />
+      <SubCredsDialog account={subCreds} onOpenChange={(o) => !o && setSubCreds(null)} onDone={invalidate} />
+      <CustomCredsDialog account={customCreds} onOpenChange={(o) => !o && setCustomCreds(null)} onDone={invalidate} />
+      <ProviderModelsDialog
+        target={openProvider}
+        onOpenChange={(o) => !o && setOpenProvider(null)}
+        onAddAccount={(engine) => setAdding(engine as EngineName)}
+      />
+    </>
+  )
+}
+
+// 第三方 Key 不是一个供应商：每个上游地址是一个供应商，其下挂多个 Key。
+// 分组键用归一化后的 base_url；地址缺失时单独成组，避免和真供应商混在一起。
+const UNKNOWN_PROVIDER = 'custom|unknown'
+
+function providerOf(a: Account): string {
+  return a.engine === 'custom' ? a.provider || UNKNOWN_PROVIDER : a.engine
+}
+
+function providerLabel(key: string, engine: string): string {
+  if (engine !== 'custom') return engineLabel(engine)
+  return key === UNKNOWN_PROVIDER ? '第三方 Key（未识别地址）' : key.replace(/^custom\|/, '')
+}
+
+function ProviderGroups({
+  accounts,
+  checking,
+  collapsed,
+  onToggle,
+  onOpen,
+  onCheck,
+  actions,
+}: {
+  accounts: Account[]
+  checking: number | null
+  collapsed: Set<string>
+  onToggle: (key: string) => void
+  onOpen: (target: { engine: string; provider?: string }) => void
+  onCheck: (a: Account) => void
+  actions: (a: Account) => RowAction[]
+}) {
+  const groups = new Map<string, Account[]>()
+  for (const a of accounts) {
+    const key = providerOf(a)
+    const list = groups.get(key) || []
+    list.push(a)
+    groups.set(key, list)
+  }
+  const keys = [...groups.keys()].sort((x, y) => {
+    const xe = groups.get(x)?.[0]?.engine || ''
+    const ye = groups.get(y)?.[0]?.engine || ''
+    const byEngine = (PROVIDER_ORDER.indexOf(xe as EngineName) + 1 || 99) - (PROVIDER_ORDER.indexOf(ye as EngineName) + 1 || 99)
+    return byEngine || providerLabel(x, xe).localeCompare(providerLabel(y, ye))
+  })
+  return (
+    <div className="divide-y">
+      {keys.map((key) => {
+        const list = groups.get(key) || []
+        const engine = list[0]?.engine || key
+        const up = list.filter((a) => accountHealth(a) === 'up').length
+        const isCollapsed = collapsed.has(key)
+        return (
+          <div key={key}>
+            <div className="flex items-center gap-2 bg-muted/30 px-4 py-2">
+              <button type="button" className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 hover:bg-accent" onClick={() => onToggle(key)} aria-expanded={!isCollapsed}>
+                {isCollapsed ? <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" /> : <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />}
+                <span className="truncate text-[13px] font-medium" title={providerLabel(key, engine)}>
+                  {providerLabel(key, engine)}
+                </span>
+              </button>
+              {engine === 'custom' && key !== UNKNOWN_PROVIDER && (
+                <span className="shrink-0 text-[11px] text-muted-foreground">第三方 Key</span>
+              )}
+              <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                {list.length} 个账号 · 可用 {up}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto h-6 shrink-0 px-2 text-xs"
+                disabled={key === UNKNOWN_PROVIDER}
+                title={key === UNKNOWN_PROVIDER ? '这些账号没有可识别的上游地址，先更新凭据再获取模型' : undefined}
+                onClick={() => onOpen({ engine, provider: engine === 'custom' ? key : undefined })}
+              >
+                模型
+              </Button>
+            </div>
+            {!isCollapsed && (
               <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead>账号</TableHead>
-                    <TableHead>引擎</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>权益</TableHead>
-                    <TableHead className="text-right">模型数</TableHead>
-                    <TableHead>更新时间</TableHead>
-                    <TableHead className="w-10" />
-                  </TableRow>
-                </TableHeader>
                 <TableBody>
-                  {accounts.map((a) => {
+                  {list.map((a) => {
                     const detail = a.live?.detail || a.detail
                     return (
-                      <TableRow key={a.id} className="cursor-pointer" onClick={() => check(a)}>
+                      <TableRow key={a.id} className="cursor-pointer" onClick={() => onCheck(a)}>
                         <TableCell>
                           <div className="font-medium">{a.label}</div>
                           <div className="text-[11px] text-muted-foreground">#{a.id}</div>
-                        </TableCell>
-                        <TableCell>
-                          <Pill tone={a.engine === 'a' ? 'primary' : a.engine === 'custom' ? 'warning' : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine) ? 'success' : 'muted'}>{engineLabel(a.engine)}</Pill>
                         </TableCell>
                         <TableCell className="max-w-[320px]">
                           {checking === a.id ? (
@@ -227,22 +334,11 @@ export default function AdminAccounts() {
                   })}
                 </TableBody>
               </Table>
-            </div>
-          )}
-        </Section>
-        {accounts.length > 0 && <p className="text-xs text-muted-foreground">提示：点击一行即可立即检查该账号。</p>}
-      </div>
-      <AddGeminiDialog open={adding === 'a'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
-      <AddStudioDialog open={adding === 'b'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
-      <AddCodexDialog open={adding === 'codex'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
-      <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
-      <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
-      <AddWorkBuddyDialog open={adding === 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
-      <AddCustomKeyDialog open={adding === 'custom'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
-      <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />
-      <SubCredsDialog account={subCreds} onOpenChange={(o) => !o && setSubCreds(null)} onDone={invalidate} />
-      <CustomCredsDialog account={customCreds} onOpenChange={(o) => !o && setCustomCreds(null)} onDone={invalidate} />
-    </>
+            )}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 

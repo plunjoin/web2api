@@ -71,6 +71,32 @@ func NewUnsupportedEndpoint(model, kind string) error {
 	}
 }
 
+// ToolsNotSupportedError 请求带了 function calling 工具，但选中的引擎没有
+// function calling 通道（如 Gemini 网页号、WorkBuddy、Kiro 这类纯文本上游）。
+// 以前这里会静默退化成「忽略 tools、仅回文本」，请求照常「成功」——调用方
+// 完全无从知道工具被吞了，排查极其困难（见 engines_tools.go 的编译期注释）。
+// 现在明确报错，让调用方立刻知道该换支持工具的引擎（custom / AI Studio /
+// Codex / Antigravity-Gemini 等）。
+type ToolsNotSupportedError struct {
+	Model  string
+	Engine string
+}
+
+func (e *ToolsNotSupportedError) Error() string {
+	return fmt.Sprintf("tools_not_supported: 模型 %q 经由引擎 %q，该引擎没有 function calling 通道，工具被忽略。请改用支持 function calling 的引擎（custom / aistudio / codex / antigravity-Gemini 等），或换用这些引擎上同族模型", e.Model, e.Engine)
+}
+
+// NewToolsNotSupported 构造「引擎不支持工具」错误。
+func NewToolsNotSupported(model, engine string) error {
+	return &ToolsNotSupportedError{Model: model, Engine: engine}
+}
+
+// IsToolsNotSupported 判定错误是否为「引擎不支持工具」。
+func IsToolsNotSupported(err error) bool {
+	var target *ToolsNotSupportedError
+	return errors.As(err, &target)
+}
+
 // EndpointForKind 该用途应使用的端点。
 func EndpointForKind(kind string) string {
 	switch kind {

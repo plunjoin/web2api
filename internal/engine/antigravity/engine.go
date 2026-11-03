@@ -41,10 +41,10 @@ type antigravityAccount struct {
 	expiresAt   time.Time
 	ready       bool
 	lastErr     string
-	planType    string                   // 订阅档位
-	credits     string                   // AI Credits 余额描述
+	planType    string       // 订阅档位
+	credits     string       // AI Credits 余额描述
 	models      []ModelMeta  // 上游真实模型目录（网关可路由的全量）
-	selector    []string                 // 官方下拉模型（agentModelSorts ∩ 目录）
+	selector    []string     // 官方下拉模型（agentModelSorts ∩ 目录）
 	quotaGroups []QuotaGroup // 官方用量分组（weekly + 5h 窗口）
 
 	cooldownUntil  time.Time
@@ -561,6 +561,48 @@ func (e *Engine) Ready() bool {
 		}
 	}
 	return false
+}
+
+// RefreshCatalog 重新向每个启用账号拉取真实模型目录。
+// Antigravity 上游没有目录接口的兜底是内置目录，所以全部失败时仍返回内置目录，
+// 并把失败原因带回去，由调用方决定是否保存。
+func (e *Engine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) {
+	e.mu.RLock()
+	accounts := append([]*antigravityAccount(nil), e.accounts...)
+	e.mu.RUnlock()
+	if len(accounts) == 0 {
+		return nil, errors.New("antigravity 没有账号，无法获取模型")
+	}
+	var failed []string
+	fetched := 0
+	for _, acc := range accounts {
+		acc.mu.Lock()
+		enabled := acc.enabled
+		proxy := acc.proxy(e.proxy)
+		accessToken := acc.accessToken
+		projectID := acc.creds.ProjectID
+		label := acc.label
+		acc.mu.Unlock()
+		if !enabled || accessToken == "" {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		catalog, err := FetchCatalog(probeCtx, proxy, accessToken, projectID)
+		cancel()
+		if err != nil {
+			failed = append(failed, label+": "+err.Error())
+			continue
+		}
+		fetched++
+		acc.mu.Lock()
+		acc.models = catalog.Models
+		acc.selector = catalog.SelectorModels
+		acc.mu.Unlock()
+	}
+	if fetched == 0 && len(failed) > 0 {
+		return e.ListModels(), fmt.Errorf("antigravity 模型目录刷新失败: %s", strings.Join(failed, "; "))
+	}
+	return e.ListModels(), nil
 }
 
 // ListModels antigravity 模型目录：优先上游真实目录（fetchAvailableModels），

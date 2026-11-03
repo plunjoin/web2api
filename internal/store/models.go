@@ -175,6 +175,124 @@ type modelSettingScanner interface {
 	Scan(dest ...any) error
 }
 
+// CatalogModel 某供应商快照里的一个模型。
+type CatalogModel struct {
+	Engine      string `json:"engine"`
+	Model       string `json:"model"`
+	DisplayName string `json:"display_name,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	FetchedAt   int64  `json:"fetched_at"`
+}
+
+// CatalogModels 全部已保存的模型快照（按引擎、模型名排序）。
+func (s *Store) CatalogModels() ([]CatalogModel, error) {
+	rows, err := s.db.Query(`SELECT engine, model, display_name, kind, fetched_at
+		FROM model_catalog ORDER BY engine, model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CatalogModel{}
+	for rows.Next() {
+		var item CatalogModel
+		if err := rows.Scan(&item.Engine, &item.Model, &item.DisplayName, &item.Kind, &item.FetchedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ReplaceEngineCatalog 用新拉到的列表整表替换某供应商的模型快照。
+// 空列表也是一次有效替换（清掉该供应商之前存下的模型）。
+// 第一次出现的模型默认下架：拉取只是把供应商能提供的模型列出来，
+// 是否对下游开放由管理员勾选决定。返回这次新出现（已下架）的模型数。
+func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int, error) {
+	engine = strings.TrimSpace(engine)
+	if engine == "" {
+		return 0, errors.New("engine 不能为空")
+	}
+	known := map[string]struct{}{}
+	if rows, err := s.db.Query(`SELECT DISTINCT model FROM model_catalog`); err == nil {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			known[id] = struct{}{}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		return 0, err
+	}
+	ts := now()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM model_catalog WHERE engine = ?`, engine); err != nil {
+		return 0, err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO model_catalog (engine, model, display_name, kind, fetched_at)
+		VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	disable, err := tx.Prepare(`INSERT INTO model_settings (model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail)
+		VALUES (?, 0, ?, 0, 0, '')
+		ON CONFLICT(model) DO NOTHING`)
+	if err != nil {
+		return 0, err
+	}
+	defer disable.Close()
+	seen := map[string]struct{}{}
+	added := 0
+	for _, m := range models {
+		id := strings.TrimSpace(m.Model)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, err := stmt.Exec(engine, id, strings.TrimSpace(m.DisplayName), strings.TrimSpace(m.Kind), ts); err != nil {
+			return 0, err
+		}
+		// 任何供应商都没出现过的模型才算新的，默认下架；已开放或已下架的保持原状。
+		if _, exists := known[id]; exists {
+			continue
+		}
+		if _, err := disable.Exec(id, ts); err != nil {
+			return 0, err
+		}
+		known[id] = struct{}{}
+		added++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return added, nil
+}
+
+// DeleteEngineCatalog 删除某个供应商键下的全部模型快照。
+// 第三方 Key 拆成按上游地址存储后，用来清掉旧的整包 "custom" 快照。
+func (s *Store) DeleteEngineCatalog(engine string) error {
+	engine = strings.TrimSpace(engine)
+	if engine == "" {
+		return errors.New("engine 不能为空")
+	}
+	_, err := s.db.Exec(`DELETE FROM model_catalog WHERE engine = ?`, engine)
+	return err
+}
+
 func scanModelSetting(row modelSettingScanner) (ModelSetting, error) {
 	var item ModelSetting
 	var enabled, checkOK int

@@ -18,6 +18,7 @@ import (
 	"web2api/internal/engine/custom"
 	"web2api/internal/engine/geminiweb"
 	"web2api/internal/engine/kiro"
+	"web2api/internal/engine/upstream"
 	"web2api/internal/engine/workbuddy"
 	"web2api/internal/model"
 	"web2api/internal/store"
@@ -40,9 +41,9 @@ type Manager struct {
 	// 有账号池的引擎（号池动态管理统一分发）。
 	pools map[string]accountPool
 
-	defaultEngine string
+	defaultEngine   string
 	geminiWebModels []string
-	aiStudioModels []string
+	aiStudioModels  []string
 	// 新引擎（codex/antigravity/kiro/workbuddy）的模型路由配置。
 	engineModels map[string][]string
 }
@@ -110,6 +111,10 @@ type initializableEngine interface {
 type AccountOverview struct {
 	store.Account
 	Live engine.AccountState `json:"live"`
+	// Provider 是第三方 Key 的供应商身份，即归一化后的 base_url。同一地址的
+	// 多个 Key 属于同一个供应商，管理台据此分组；内置引擎为空。
+	// 不使用余额查询返回的厂商名：那个名字取决于上游是否应答，会在刷新前后变化。
+	Provider string `json:"provider,omitempty"`
 }
 
 // AccountInput 是统一账号添加协议。引擎A/B 沿用 storage-state JSON；
@@ -128,14 +133,14 @@ type AccountInput struct {
 // NewManager 构建引擎管理器。
 func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 	m := &Manager{
-		st:            st,
-		cfg:           cfg,
-		defaultEngine: strings.ToLower(cfg.Routing.DefaultEngine),
+		st:              st,
+		cfg:             cfg,
+		defaultEngine:   strings.ToLower(cfg.Routing.DefaultEngine),
 		geminiWebModels: cfg.Routing.GeminiWebModels,
-		aiStudioModels: cfg.Routing.AIStudioModels,
-		engineModels:  cfg.Routing.EngineModels,
-		engines:       map[string]engine.Engine{},
-		pools:         map[string]accountPool{},
+		aiStudioModels:  cfg.Routing.AIStudioModels,
+		engineModels:    cfg.Routing.EngineModels,
+		engines:         map[string]engine.Engine{},
+		pools:           map[string]accountPool{},
 	}
 	if m.defaultEngine == "" {
 		m.defaultEngine = "auto"
@@ -1097,6 +1102,10 @@ func (m *Manager) AccountOverview() []AccountOverview {
 		if states, ok := live[acc.Engine]; ok {
 			if st, ok := states[engineID]; ok {
 				ov.Live = st
+				// 第三方 Key 的供应商身份是它的 base_url：同一地址的多个 Key 归为一个供应商。
+				if acc.Engine == "custom" {
+					ov.Provider = customProvider(acc.Credentials)
+				}
 			} else {
 				ov.Live = engine.AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded"}
 			}
@@ -1107,6 +1116,16 @@ func (m *Manager) AccountOverview() []AccountOverview {
 		out = append(out, ov)
 	}
 	return out
+}
+
+// customProvider 从第三方 Key 的凭据里取出供应商身份：归一化后的 base_url。
+// 凭据缺失或没有地址时返回空，管理台会把这类账号归到「未识别地址」。
+func customProvider(credentials string) string {
+	var creds custom.Credentials
+	if err := json.Unmarshal([]byte(credentials), &creds); err != nil {
+		return ""
+	}
+	return upstream.NormalizeBaseURL(creds.BaseURL)
 }
 
 // ==================== 路由与对话 ====================
@@ -1411,6 +1430,9 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 	if err != nil {
 		return nil, err
 	}
+	if err := m.requireToolSupport(eng, req); err != nil {
+		return nil, err
+	}
 	res, err := eng.Chat(ctx, req)
 	if err != nil {
 		// 失败也带回引擎名，用量明细才不会显示「—」。
@@ -1432,6 +1454,9 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 	var (
 		res *model.ChatResult
 	)
+	if err := m.requireToolSupport(eng, req); err != nil {
+		return nil, err
+	}
 	if toolEng, ok := eng.(engine.ToolEngine); ok {
 		res, err = toolEng.ChatStreamSink(ctx, req, sink)
 	} else {
@@ -1481,6 +1506,20 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 		}
 	}
 	return eng, req, nil
+}
+
+// requireToolSupport 请求带 function calling 工具时，目标引擎必须实现
+// engine.ToolEngine（有 function calling 通道）。否则以前会静默退化成「忽略
+// tools、仅回文本」，调用方完全无从察觉工具被吞。现在明确报错（见
+// engine.ToolsNotSupportedError），让调用方改用支持工具的引擎。
+func (m *Manager) requireToolSupport(eng engine.Engine, req model.ChatRequest) error {
+	if len(req.Tools) == 0 {
+		return nil
+	}
+	if _, ok := eng.(engine.ToolEngine); ok {
+		return nil
+	}
+	return engine.NewToolsNotSupported(req.Model, eng.Name())
 }
 
 // chatMediaEngine 返回能在 /v1/chat/completions 里直接产出媒体的引擎
@@ -1577,7 +1616,15 @@ func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (aistudi
 // alternate 返回另一个引擎（按注册顺序优先就绪的）。
 // 声明式号池（第三方 Key）只认自己的模型目录：目标模型不在其目录里就不换过去，
 // 否则换过去只会拿到 model_not_found，把真正的故障源（如引擎B 挂了）盖掉。
+// alternate 在选中的引擎不可用（号池挂了）时，按「切换不算失败」的语义挑一个
+// 备胎引擎：优先选同样声明了该模型（同名模型）的 Ready 引擎，让请求落到承载
+// 同款模型的另一个号池；没有任何同模型引擎时，才退而求其次选任意 Ready 引擎。
+//
+// 与旧实现的关键区别：custom 引擎即使目录里没有该裸名也参与兜底（它按 base_url
+// 转发，模型是透传的），不再因「目录未命中」被整体跳过而错失唯一的可用引擎。
+// 切换成功即视为正常请求，不会把「换引擎」本身汇报成失败。
 func (m *Manager) alternate(cur engine.Engine, modelName string) engine.Engine {
+	var fallback engine.Engine
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]
 		if !ok || eng == cur {
@@ -1586,12 +1633,15 @@ func (m *Manager) alternate(cur engine.Engine, modelName string) engine.Engine {
 		if !eng.Ready() {
 			continue
 		}
-		if _, strict := eng.(*custom.Engine); strict && !engineHasModel(eng, modelName) {
-			continue
+		// 优先：同名模型直接命中（含 custom 的透传目录）。
+		if engineHasModel(eng, modelName) {
+			return eng
 		}
-		return eng
+		if fallback == nil {
+			fallback = eng
+		}
 	}
-	return nil
+	return fallback
 }
 
 // ListModels 聚合模型列表：按裸模型 ID 去重（同名跨引擎只保留一条，先出现的引擎优先）。

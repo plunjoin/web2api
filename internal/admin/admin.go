@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"web2api/internal/provider"
-	"web2api/internal/store"
-	"web2api/internal/upgrade"
 	"web2api/internal/engine/antigravity"
 	"web2api/internal/engine/codex"
 	"web2api/internal/engine/custom"
 	"web2api/internal/engine/workbuddy"
+	"web2api/internal/provider"
+	"web2api/internal/store"
+	"web2api/internal/upgrade"
 	"web2api/internal/version"
 )
 
@@ -77,6 +77,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/usage/export.csv", a.auth(a.handleUsageExport))
 	mux.HandleFunc("POST /admin/api/keys/{id}/regenerate", a.auth(a.handleRegenerateKey))
 	mux.HandleFunc("GET /admin/api/models", a.auth(a.handleModels))
+	mux.HandleFunc("POST /admin/api/models/refresh", a.auth(a.handleRefreshModels))
+	mux.HandleFunc("POST /admin/api/engines/{engine}/models/refresh", a.auth(a.handleRefreshEngineModels))
 	mux.HandleFunc("PATCH /admin/api/models/{model...}", a.auth(a.handlePatchModel))
 	mux.HandleFunc("POST /admin/api/models/check", a.auth(a.handleCheckModel))
 	mux.HandleFunc("POST /admin/api/models/batch", a.auth(a.handleBatchModels))
@@ -218,8 +220,8 @@ func openAPISpec() map[string]any {
 			"/admin/api/engines":                   map[string]any{"get": map[string]any{"tags": []string{"账号"}, "summary": "引擎元数据列表（添加账号表单数据驱动）", "responses": map[string]any{"200": response("engines")}}},
 			"/admin/api/custom/models":             map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "探测第三方供应商模型列表", "description": "用 base_url + api_key 调用上游 /v1/models，添加账号前预览可用模型。", "requestBody": body("CustomProbeInput"), "responses": map[string]any{"200": response("models"), "400": response("探测失败")}}},
 			"/admin/api/oauth/{engine}/authorize":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "生成订阅引擎 OAuth 授权链接", "description": "支持 codex（OpenAI）、antigravity（Google）、workbuddy（腾讯 CodeBuddy 设备授权）。返回 auth_url 供浏览器打开。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("session_id、auth_url"), "400": response("引擎不支持 OAuth")}}},
-			"/admin/api/oauth/{engine}/exchange":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "授权码换 token 并加号（codex/antigravity）", "description": "把浏览器回调 URL（含 code）或裸授权码回填，服务端交换 refresh_token 并入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "400": response("参数或授权错误")}}},
-			"/admin/api/oauth/{engine}/poll":      map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "轮询设备授权结果（workbuddy）", "description": "用户扫码/登录完成前返回 202 {pending: true}；完成后自动加号入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "202": response("pending"), "400": response("参数或授权错误")}}},
+			"/admin/api/oauth/{engine}/exchange":   map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "授权码换 token 并加号（codex/antigravity）", "description": "把浏览器回调 URL（含 code）或裸授权码回填，服务端交换 refresh_token 并入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "400": response("参数或授权错误")}}},
+			"/admin/api/oauth/{engine}/poll":       map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "轮询设备授权结果（workbuddy）", "description": "用户扫码/登录完成前返回 202 {pending: true}；完成后自动加号入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "202": response("pending"), "400": response("参数或授权错误")}}},
 			"/admin/api/keys": map[string]any{
 				"get":  map[string]any{"tags": []string{"API Key"}, "summary": "列出 API Key", "responses": map[string]any{"200": response("Key 列表")}},
 				"post": map[string]any{"tags": []string{"API Key"}, "summary": "创建 API Key", "requestBody": body("KeyInput"), "responses": map[string]any{"200": response("Key 已创建")}},
@@ -235,7 +237,12 @@ func openAPISpec() map[string]any {
 			"/admin/api/usage/timeseries":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "用量时间序列", "description": "days=1 按小时，其余按本地自然日分桶；空桶补零。每点含 requests、success_requests、total_tokens、charged_tokens、avg_latency_ms。", "parameters": usageParams(false), "responses": map[string]any{"200": response("bucket、points")}}},
 			"/admin/api/usage/export.csv":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "导出逐请求明细 CSV", "description": "UTF-8（带 BOM），最多 100000 行，Key 脱敏。", "parameters": usageParams(false), "responses": map[string]any{"200": map[string]any{"description": "CSV 文件", "content": map[string]any{"text/csv": map[string]any{}}}}}},
 			"/admin/api/models": map[string]any{
-				"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含用途分类、生效倍率、上下架与检查状态）", "description": "kind 为 chat、image、video、music、speech、embedding。enabled=false 的模型不会出现在下游 /v1/models。", "responses": map[string]any{"200": response("models")}},
+				"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含用途分类、生效倍率、上下架与检查状态）", "description": "读的是上次「获取模型」保存的快照，不是引擎写死的默认目录。kind 为 chat、image、video、music、speech、embedding。enabled=false 的模型不会出现在下游 /v1/models。", "responses": map[string]any{"200": response("models、fetched_at、engines")}},
+			},
+			"/admin/api/models/refresh": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "从供应商重新获取模型列表并整表替换已保存的快照", "description": "向每个已启用的供应商重新拉取模型目录，成功的供应商用新列表整表替换旧快照；某个供应商拉取失败时保留它上次的快照，并在结果里说明原因。", "responses": map[string]any{"200": response("ok、total、engines")}}},
+			"/admin/api/engines/{engine}/models/refresh": map[string]any{
+				"parameters": []any{map[string]any{"name": "engine", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
+				"post":       map[string]any{"tags": []string{"概览"}, "summary": "单供应商重新获取模型列表并整表替换其快照", "description": "仅向指定供应商重新拉取模型目录；第三方 Key 可在 body 中指定 provider（上游 base_url）。", "responses": map[string]any{"200": response("ok、engine、models、new"), "400": response("参数或引擎错误"), "404": response("供应商未启用"), "502": response("拉取失败")}},
 			},
 			"/admin/api/models/{model}": map[string]any{
 				"parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}},
@@ -243,7 +250,7 @@ func openAPISpec() map[string]any {
 			},
 			"/admin/api/models/check": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "检查模型是否可用（支持批量）", "description": "按用途探测：对话走 chat/completions，生图走 images/generations，向量走 embeddings；视频/音乐/语音只做目录检查。可传 model 或 models[]。sync_status 默认 true：失败下架、成功开放。", "requestBody": body("ModelCheckInput"), "responses": map[string]any{"200": response("ok、total、passed、failed、results"), "502": response("单个模型探测失败")}}},
 			"/admin/api/models/batch": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "批量设置模型上下架", "description": "models 去重后单事务写入，单次最多 500 个；enabled=false 时下游无法获取这些模型，调用也会被拒绝。适合按引擎批量精简目录。", "requestBody": body("ModelBatchInput"), "responses": map[string]any{"200": response("ok、total、enabled"), "400": response("参数错误")}}},
-			"/admin/api/version": map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
+			"/admin/api/version":      map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
 			"/admin/api/multipliers": map[string]any{
 				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率 × 用户倍率)，用户倍率只对用户 Key 生效。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
 				"put": map[string]any{"tags": []string{"用量"}, "summary": "设置模型倍率", "requestBody": body("MultiplierInput"), "responses": map[string]any{"200": response("已保存"), "400": response("参数错误")}},
@@ -268,7 +275,7 @@ func openAPISpec() map[string]any {
 				"AIStudioAccountInput":   map[string]any{"type": "object", "required": []string{"email", "storage_state"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "storage-state.json 原文"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 				"AccountInput":           map[string]any{"type": "object", "required": []string{"engine"}, "properties": map[string]any{"engine": map[string]any{"type": "string", "enum": []string{"geminiweb", "aistudio", "codex", "antigravity", "kiro", "workbuddy", "custom"}, "description": "geminiweb=Gemini Web，aistudio=AI Studio；codex=GPT、antigravity 等为订阅引擎；custom 为第三方 OpenAI 兼容 Key"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string", "format": "email"}, "storage_state": map[string]any{"type": "string", "description": "Gemini Web / AI Studio 的 storage-state.json 原文"}, "credentials": map[string]any{"type": "object", "description": "订阅引擎：codex/antigravity/kiro 传 {refresh_token}；workbuddy 传 {token}；custom 传 {base_url, api_key, models?, proxy?}"}, "locale": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
 				"CustomProbeInput":       map[string]any{"type": "object", "required": []string{"base_url", "api_key"}, "properties": map[string]any{"base_url": map[string]any{"type": "string"}, "api_key": map[string]any{"type": "string"}, "proxy": map[string]any{"type": "string"}}},
-			"OAuthExchangeInput":     map[string]any{"type": "object", "required": []string{"session_id", "code"}, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "code": map[string]any{"type": "string", "description": "授权码或完整回调 URL"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string"}}},
+				"OAuthExchangeInput":     map[string]any{"type": "object", "required": []string{"session_id", "code"}, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "code": map[string]any{"type": "string", "description": "授权码或完整回调 URL"}, "label": map[string]any{"type": "string"}, "email": map[string]any{"type": "string"}}},
 			},
 		},
 	})
@@ -630,8 +637,8 @@ func (a *API) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SessionID string `json:"session_id"`
 		Code      string `json:"code"` // 授权码或完整回调 URL
-		Label      string `json:"label"`
-		Email      string `json:"email"`
+		Label     string `json:"label"`
+		Email     string `json:"email"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
