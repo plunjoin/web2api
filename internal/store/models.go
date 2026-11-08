@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 
 	"web2api/internal/model"
@@ -53,46 +54,65 @@ func (s *Store) modelEnabledExact(key string) (enabled bool, found bool, err err
 // modelEnabledLoose 在精确键没有记录时，按归一化后的裸名扫一遍已有记录。
 // 记录不多（一个模型一行），全表扫描只发生在缓存未命中的冷路径上。
 func (s *Store) modelEnabledLoose(key string) (bool, error) {
-	rows, err := s.db.Query(`SELECT model, enabled FROM model_settings`)
+	item, found, err := s.modelSettingLoose(key)
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var stored string
-		var v int
-		if err := rows.Scan(&stored, &v); err != nil {
-			return false, err
-		}
-		if modelKey(stored) == key {
-			return v != 0, nil
-		}
+	if !found {
+		return true, nil
 	}
-	return true, rows.Err()
+	return item.Enabled, nil
+}
+
+// preferSetting 判断 candidate 是否比 current 更适合作为某个归一化键的生效记录：
+// 精确的归一化键优先，其次取最近更新的一行。旧库可能同时存着 models/x 与 x 两行，
+// 只有所有读取路径都用同一优先级，管理台开关、公开目录与请求拦截才会得出同一个结论。
+func preferSetting(key string, current, candidate ModelSetting) bool {
+	currentExact := current.Model == key
+	candidateExact := candidate.Model == key
+	if candidateExact != currentExact {
+		return candidateExact
+	}
+	return candidate.UpdatedAt > current.UpdatedAt
+}
+
+// mergeSetting 把同一归一化键的两条记录合成一条生效记录：开关等基础字段取
+// preferSetting 选中的那一行，检查结果取两条中较晚的一次。旧库升级后可能同时存在
+// 裸名行与 models/x 旧行，检查结果往往只写在其中一行上；只挑一行会把真实检查状态
+// 丢掉（与 upsertModelEnabled 写入时的合并规则保持一致）。
+func mergeSetting(key string, a, b ModelSetting) ModelSetting {
+	keep, other := a, b
+	if preferSetting(key, a, b) {
+		keep, other = b, a
+	}
+	if other.LastCheckAt > keep.LastCheckAt {
+		keep.LastCheckAt = other.LastCheckAt
+		keep.LastCheckOK = other.LastCheckOK
+		keep.LastCheckDetail = other.LastCheckDetail
+	}
+	return keep
 }
 
 // DisabledModels 返回所有被标记为不可用的模型，键是归一化后的裸名。
-// 路由与公开目录用它判断「这个模型还能不能接单」，所以必须和请求里的写法无关。
+// 路由与公开目录用它判断「这个模型还能不能接单」，所以必须和请求里的写法无关，
+// 也必须和 ModelEnabled 使用同一套生效记录。
 func (s *Store) DisabledModels() (map[string]struct{}, error) {
-	rows, err := s.db.Query(`SELECT model FROM model_settings WHERE enabled = 0`)
+	list, err := s.ListModelSettings()
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := map[string]struct{}{}
-	for rows.Next() {
-		var stored string
-		if err := rows.Scan(&stored); err != nil {
-			return nil, err
-		}
-		if key := modelKey(stored); key != "" {
+	for _, item := range list {
+		if key := modelKey(item.Model); key != "" && !item.Enabled {
 			out[key] = struct{}{}
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListModelSettings 全部已持久化的模型设置（含启用与不可用）。
+// 同一归一化裸名只返回一条生效记录（精确键优先，其次最近更新），
+// 避免旧库里 models/x 与 x 并存时管理台展示或读取到互相矛盾的两行。
 func (s *Store) ListModelSettings() ([]ModelSetting, error) {
 	rows, err := s.db.Query(`SELECT model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail
 		FROM model_settings ORDER BY model`)
@@ -100,15 +120,31 @@ func (s *Store) ListModelSettings() ([]ModelSetting, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []ModelSetting{}
+	best := map[string]ModelSetting{}
 	for rows.Next() {
 		item, err := scanModelSetting(rows)
 		if err != nil {
 			return nil, err
 		}
+		key := modelKey(item.Model)
+		if key == "" {
+			continue
+		}
+		if current, ok := best[key]; !ok {
+			best[key] = item
+		} else {
+			best[key] = mergeSetting(key, current, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]ModelSetting, 0, len(best))
+	for _, item := range best {
 		out = append(out, item)
 	}
-	return out, rows.Err()
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out, nil
 }
 
 // ModelSettingFor 读取单个模型设置；无记录时返回默认启用视图。
@@ -133,24 +169,34 @@ func (s *Store) ModelSettingFor(model string) (ModelSetting, error) {
 	return ModelSetting{Model: key, Enabled: true}, nil
 }
 
-// modelSettingLoose 按归一化裸名找旧库里大小写或前缀不同的那一行。
+// modelSettingLoose 按归一化裸名找旧库里大小写或前缀不同的那条生效记录。
 func (s *Store) modelSettingLoose(key string) (ModelSetting, bool, error) {
+	// ORDER BY 让 updated_at 相同的旧行也有确定顺序：mergeSetting 只在严格更新时
+	// 换检查结果，没有排序时平手取哪一行取决于 SQLite 的扫描顺序，重启后可能翻转。
 	rows, err := s.db.Query(`SELECT model, enabled, updated_at, last_check_at, last_check_ok, last_check_detail
-		FROM model_settings`)
+		FROM model_settings ORDER BY model`)
 	if err != nil {
 		return ModelSetting{}, false, err
 	}
 	defer rows.Close()
+	var best ModelSetting
+	found := false
 	for rows.Next() {
 		item, err := scanModelSetting(rows)
 		if err != nil {
 			return ModelSetting{}, false, err
 		}
-		if modelKey(item.Model) == key {
-			return item, true, nil
+		if modelKey(item.Model) != key {
+			continue
+		}
+		if !found {
+			best = item
+			found = true
+		} else {
+			best = mergeSetting(key, best, item)
 		}
 	}
-	return ModelSetting{}, false, rows.Err()
+	return best, found, rows.Err()
 }
 
 // SetModelEnabled 设置模型是否对下游开放。写入一律用归一化裸名，
@@ -352,7 +398,18 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 		return 0, errors.New("engine 不能为空")
 	}
 	known := map[string]struct{}{}
-	if rows, err := s.db.Query(`SELECT DISTINCT model FROM model_catalog`); err == nil {
+	// 「已知」必须同时包含目录快照和已有的上下架记录。只看 model_catalog 时，
+	// 某个模型若只在 model_settings 里有记录（旧供应商键、旧库的 models/x 写法、
+	// 目录被清空过），刷新会把它当成新模型再写一条 enabled=0 的归一化记录；
+	// 精确键优先的读取规则会让这条新记录压过原来已开放的那行，模型被静默下架。
+	for _, query := range []string{
+		`SELECT DISTINCT model FROM model_catalog`,
+		`SELECT model FROM model_settings`,
+	} {
+		rows, err := s.db.Query(query)
+		if err != nil {
+			return 0, err
+		}
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
@@ -369,8 +426,6 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 		if err != nil {
 			return 0, err
 		}
-	} else {
-		return 0, err
 	}
 	ts := now()
 	tx, err := s.db.Begin()
@@ -415,7 +470,9 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 		if _, err := disable.Exec(modelKey(id), ts); err != nil {
 			return 0, err
 		}
-		known[id] = struct{}{}
+		// 记归一化键：后面另一个供应商用不同写法（models/xxx / xxx）列出同一模型时，
+		// 不能再算一次「新出现」。
+		known[modelKey(id)] = struct{}{}
 		added++
 	}
 	if err := tx.Commit(); err != nil {

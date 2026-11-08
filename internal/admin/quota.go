@@ -384,8 +384,10 @@ func (a *API) handleRefreshEngineModels(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	grouped := groupCatalog(name, got)
-	if name == "custom" && provider == "" {
-		// 没指定地址时拉的是全部第三方供应商，旧的整包快照一并清掉。
+	if name == "custom" {
+		// 整包 "custom" 快照是按上游地址分桶前的旧键：单供应商刷新时清掉它，
+		// 避免模型页把同一个模型同时标成「第三方 Key」和具体供应商；全量刷新
+		// 若这次没拉到任何模型，也靠这次删除清空旧快照。
 		_ = a.st.DeleteEngineCatalog("custom")
 	}
 	total, added := 0, 0
@@ -450,7 +452,9 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 	settings := map[string]store.ModelSetting{}
 	if list, err := a.st.ListModelSettings(); err == nil {
 		for _, s := range list {
-			settings[s.Model] = s
+			// 快照里的模型 ID 保留上游原始写法（如 models/gemini-2.5-flash），
+			// 上下架设置却按归一化裸名存。按裸名建索引，两种写法才能对上。
+			settings[model.CanonicalModelID(s.Model)] = s
 		}
 	}
 	out := []modelView{}
@@ -465,7 +469,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 				ID: m.Model, DisplayName: m.DisplayName, Engine: m.Engine,
 				Available: true, Enabled: true, Kind: m.Kind, Multiplier: multiplier,
 			}
-			if s, ok := settings[m.Model]; ok {
+			if s, ok := settings[model.CanonicalModelID(m.Model)]; ok {
 				view.Enabled = s.Enabled
 				view.LastCheckAt = s.LastCheckAt
 				view.LastCheckOK = s.LastCheckOK
@@ -475,17 +479,18 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 已单独设置过上下架/检查、但不在已保存快照中的模型也展示。
+	// 去重同样按归一化裸名：否则 models/xxx 是快照行、xxx 是设置行，会重复展示。
 	seen := map[string]struct{}{}
 	for _, m := range out {
-		seen[m.ID] = struct{}{}
+		seen[model.CanonicalModelID(m.ID)] = struct{}{}
 	}
-	for modelID, s := range settings {
-		if _, ok := seen[modelID]; ok {
+	for key, s := range settings {
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		multiplier, _ := a.st.ModelMultiplierFor(modelID)
+		multiplier, _ := a.st.ModelMultiplierFor(s.Model)
 		out = append(out, modelView{
-			ID: modelID, Enabled: s.Enabled, Multiplier: multiplier,
+			ID: s.Model, Enabled: s.Enabled, Multiplier: multiplier,
 			LastCheckAt: s.LastCheckAt, LastCheckOK: s.LastCheckOK, LastCheckDetail: s.LastCheckDetail,
 		})
 	}
@@ -547,7 +552,8 @@ func (a *API) handleBatchModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCheckModel POST /admin/api/models/check：探测单个或多个模型。
-// body: { model?, models?, sync_status? }；sync_status 默认 true（失败下架、成功开放）。
+// body: { model?, models?, sync_status? }；sync_status 默认 true（检查通过则开放，
+// 失败只记录、不改上下架——临时故障不该把模型永久关掉）。
 func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Model      string   `json:"model"`
@@ -639,9 +645,17 @@ func (a *API) probeModel(parent context.Context, modelID string, syncStatus bool
 	setting, saveErr := a.st.RecordModelCheck(modelID, ok, detail)
 	if saveErr != nil {
 		a.logger.Printf("[models] 保存检查结果失败 model=%q: %v", modelID, saveErr)
+		// 检查结果没写进去，也不能返回零值 ModelSetting（Enabled=false）：
+		// 前端会据此把开关显示成「已下架」，而实际状态根本没变。
+		if current, err := a.st.ModelSettingFor(modelID); err == nil {
+			setting = current
+		}
 	}
-	if syncStatus {
-		if synced, err := a.st.SetModelEnabled(modelID, ok); err == nil {
+	// 只有检查通过才同步为开放。失败可能只是上游超时、限流、账号冷却等临时故障，
+	// 不能据此下架：一旦下架，探测会被入口拦成「已下架」，一次「批量检查」就能
+	// 把全部模型关死，而且再也测不通、无法恢复。失败只记录检查结果，不动开关。
+	if syncStatus && ok {
+		if synced, err := a.st.SetModelEnabled(modelID, true); err == nil {
 			setting = synced
 		} else {
 			a.logger.Printf("[models] 同步上下架失败 model=%q: %v", modelID, err)
