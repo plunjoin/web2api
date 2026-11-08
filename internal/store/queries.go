@@ -15,6 +15,9 @@ import (
 // ErrNotFound 记录不存在。
 var ErrNotFound = errors.New("记录不存在")
 
+// ErrAccountLabelExists 同一引擎下的显示名称冲突；不能据此覆盖旧账号凭据。
+var ErrAccountLabelExists = errors.New("该引擎下已有同名账号，请更换账号名称")
+
 // CreateAccount 新增账号。
 // 引擎合法性由 provider.Manager 统一校验（历史仅允许 a/b，
 // 现还包括 codex/antigravity/kiro/workbuddy 等订阅引擎）。
@@ -37,10 +40,31 @@ func (s *Store) CreateAccount(engine, label, credentials string, enabled bool) (
 		 VALUES (?, ?, ?, ?, ?, '', ?, ?)`,
 		engine, label, credentials, boolToInt(enabled), status, ts, ts)
 	if err != nil {
+		var sqliteErr interface{ Code() int }
+		if errors.As(err, &sqliteErr) && sqliteErr.Code() == 2067 { // SQLITE_CONSTRAINT_UNIQUE
+			return Account{}, ErrAccountLabelExists
+		}
 		return Account{}, fmt.Errorf("新增账号失败: %w", err)
 	}
 	id, _ := res.LastInsertId()
 	return s.GetAccount(id)
+}
+
+// CreateAccountWithUniqueLabel 创建独立账号，显示名称冲突时自动编号。
+// 以数据库唯一约束为准重试，避免“先查名称再插入”的并发竞争；绝不覆盖旧凭据。
+func (s *Store) CreateAccountWithUniqueLabel(engine, label, credentials string, enabled bool) (Account, error) {
+	base := strings.TrimSpace(label)
+	for n := 1; n <= 1000; n++ {
+		candidate := base
+		if n > 1 {
+			candidate = fmt.Sprintf("%s (%d)", base, n)
+		}
+		acc, err := s.CreateAccount(engine, candidate, credentials, enabled)
+		if !errors.Is(err, ErrAccountLabelExists) {
+			return acc, err
+		}
+	}
+	return Account{}, fmt.Errorf("%w（自动编号已用尽）", ErrAccountLabelExists)
 }
 
 // GetAccount 按 ID 查询。

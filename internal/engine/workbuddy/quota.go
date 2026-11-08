@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"web2api/internal/engine"
 )
 
 // Window 是账号的一个额度窗口。
@@ -84,6 +86,38 @@ func (q *Quota) RunsOutAt() time.Time {
 		}
 	}
 	return at
+}
+
+// Snapshot 保留结构化额度用于展示；不改变原有路由使用的 Quota。
+func (q *Quota) Snapshot(now time.Time) *engine.QuotaSnapshot {
+	if q == nil {
+		return nil
+	}
+	s := &engine.QuotaSnapshot{Error: q.Err, Stale: q.ReadAt.IsZero() || now.Sub(q.ReadAt) > 15*time.Minute}
+	if !q.ReadAt.IsZero() {
+		s.ReadAt = q.ReadAt.Unix()
+	}
+	for _, w := range q.Windows {
+		// A component expiry also changes Total credits. Retain all values as
+		// history until refreshed instead of presenting a guessed new balance.
+		for _, boundary := range []string{w.ResetsAt, w.RunsOutAt} {
+			if boundary != "" {
+				at, err := time.Parse(time.RFC3339, boundary)
+				if err != nil || !at.After(now) {
+					s.Stale = true
+				}
+			}
+		}
+		remaining := w.Limit - w.Amount
+		if remaining < 0 {
+			remaining = 0
+		}
+		s.Windows = append(s.Windows, engine.QuotaWindow{
+			ID: w.Name, Name: w.Name, Unit: w.Unit, Limit: w.Limit, Remaining: remaining,
+			ResetsAt: w.ResetsAt, ExpiresAt: w.RunsOutAt, Expiring: w.RunsOut, Aside: w.Aside,
+		})
+	}
+	return s
 }
 
 // Display 把额度压成一行给管理台看。

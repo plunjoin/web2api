@@ -238,17 +238,22 @@ func (e *Engine) AccountStates() []engine.AccountState {
 		acc.mu.Lock()
 		endpoint, site := e.resolve(acc.creds)
 		tier, models := site.Name, len(site.Models)
+		if acc.quota != nil && acc.quota.Plan != "" {
+			tier = acc.quota.Plan
+		}
 		if IsLegacyCodeBuddy(endpoint) {
 			tier, models = "CodeBuddy（旧）", len(legacyModels)
 		}
 		state := engine.AccountState{
-			ID:      acc.id,
-			Label:   acc.label,
-			Enabled: acc.enabled,
-			Detail:  acc.lastErr,
-			Tier:    tier,
-			Models:  models,
-			Quota:   acc.quota.Display(),
+			ID:            acc.id,
+			Label:         acc.label,
+			Enabled:       acc.enabled,
+			Detail:        acc.lastErr,
+			Tier:          tier,
+			Models:        models,
+			Quota:         acc.quota.Display(),
+			Service:       site.ID,
+			QuotaSnapshot: acc.quota.Snapshot(now),
 		}
 		switch {
 		case !acc.enabled:
@@ -257,7 +262,7 @@ func (e *Engine) AccountStates() []engine.AccountState {
 			state.Status = "error"
 			state.Detail = "额度已用尽: " + acc.quota.Display()
 		case now.Before(acc.cooldownUntil):
-			state.Status = "error"
+			state.Status = "cooldown"
 			state.Detail = "冷却中: " + acc.cooldownReason
 			state.Cooldowns = append(state.Cooldowns, engine.AccountCooldown{
 				Scope: "account", Until: acc.cooldownUntil.Unix(), Reason: acc.cooldownReason,

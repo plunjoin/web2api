@@ -1,10 +1,134 @@
 package provider
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
+	"web2api/internal/config"
 	"web2api/internal/engine/workbuddy"
+	"web2api/internal/store"
 )
+
+func TestAddWorkBuddyWithoutLabel(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "workbuddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	e := workbuddy.New(config.WorkBuddyConfig{BaseURL: server.URL}, st)
+	defer e.Close()
+	m := newTestManager(e)
+	m.st = st
+	jwt := "header." + base64.RawURLEncoding.EncodeToString([]byte(`{"email":"jwt@example.com"}`)) + ".signature"
+	for _, tc := range []struct{ token, email string }{{jwt, "jwt@example.com"}, {"opaque-secret-token", ""}} {
+		creds, _ := json.Marshal(workbuddy.Credentials{Token: tc.token, Site: "workbuddy-ai", BaseURL: server.URL})
+		acc, err := m.AddAccountFromStorageState(AccountInput{Engine: "workbuddy", Credentials: creds})
+		if err != nil {
+			t.Fatalf("empty label rejected: %v", err)
+		}
+		var saved workbuddy.Credentials
+		if err := json.Unmarshal([]byte(acc.Credentials), &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved.Email != tc.email || acc.Label == "" || strings.Contains(acc.Label, tc.token) {
+			t.Fatalf("unsafe or missing identity: label=%q email=%q", acc.Label, saved.Email)
+		}
+		if tc.email != "" && acc.Label != tc.email {
+			t.Fatalf("JWT email should name account: %q", acc.Label)
+		}
+	}
+}
+
+func TestAddWorkBuddySameEmailAcrossSites(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "workbuddy-labels.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	e := workbuddy.New(config.WorkBuddyConfig{BaseURL: server.URL}, st)
+	defer e.Close()
+	m := newTestManager(e)
+	m.st = st
+	original, err := st.CreateAccount("workbuddy", "same@example.com", `{"token":"original"}`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, site := range []string{"workbuddy", "workbuddy-ai", "workbuddy"} {
+		creds, _ := json.Marshal(workbuddy.Credentials{Token: "fixture-token", Email: "same@example.com", Site: site, UID: "uid-" + site, BaseURL: server.URL})
+		label := ""
+		if i == 2 {
+			label = "same@example.com" // Explicit names have the same safe behavior.
+		}
+		acc, err := m.AddAccountFromStorageState(AccountInput{Engine: "workbuddy", Label: label, Credentials: creds})
+		if err != nil {
+			t.Fatalf("same label rejected for %s: %v", site, err)
+		}
+		want := "same@example.com (" + strconv.Itoa(i+2) + ")"
+		if acc.Label != want || acc.ID == original.ID {
+			t.Fatalf("label=%q want %q", acc.Label, want)
+		}
+		var saved workbuddy.Credentials
+		if err := json.Unmarshal([]byte(acc.Credentials), &saved); err != nil || saved.Site != site || saved.UID != "uid-"+site {
+			t.Fatal("new account identity lost")
+		}
+		found := false
+		for _, live := range e.AccountStates() {
+			if live.ID == strconv.FormatInt(acc.ID, 10) {
+				found = live.Label == acc.Label
+			}
+		}
+		if !found {
+			t.Fatal("pool must use the stored unique label")
+		}
+	}
+	old, err := st.GetAccount(original.ID)
+	if err != nil || old != original {
+		t.Fatal("adding a namesake must not update the old account")
+	}
+}
+
+func TestAccountOverviewUnloadedWorkBuddyService(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "workbuddy-overview.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	acc, err := st.CreateAccount("workbuddy", "intl", `{"site":"workbuddy-ai","token":"test"}`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager()
+	m.st = st
+	e := workbuddy.New(config.WorkBuddyConfig{BaseURL: "http://127.0.0.1:1"}, st)
+	defer e.Close()
+	for _, pools := range []map[string]accountPool{nil, {"workbuddy": e}} {
+		m.pools = pools
+		got := m.AccountOverview()
+		if len(got) != 1 || got[0].Live.Service != "workbuddy-ai" || got[0].Live.Status != "unloaded" {
+			t.Fatalf("unloaded overview=%+v", got)
+		}
+	}
+	// 已加载账号保留 resolve 实际采用的发行版（引擎配置 URL 优先于默认站点）。
+	if err := e.AddAccount(strconv.FormatInt(acc.ID, 10), acc.Label, workbuddy.Credentials{Token: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	got := m.AccountOverview()
+	if got[0].Live.Service != "workbuddy" {
+		t.Fatalf("loaded service overwritten: %+v", got[0].Live)
+	}
+}
 
 // TestMergeWorkBuddyCredsKeepsSite 管理台只提交新 token 时，站点/身份/代理
 // 必须保留——否则国际服账号会被悄悄打回国服端点。

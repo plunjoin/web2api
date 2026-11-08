@@ -168,6 +168,25 @@ export interface AccountCooldown {
   reason?: string
 }
 
+export interface QuotaWindow {
+  id: string
+  name: string
+  unit: string
+  limit: number
+  remaining: number
+  resets_at?: string
+  expires_at?: string
+  expiring?: number
+  aside?: boolean
+}
+
+export interface QuotaSnapshot {
+  read_at: number
+  error?: string
+  stale?: boolean
+  windows?: QuotaWindow[]
+}
+
 export interface AccountLive {
   id: string
   label: string
@@ -178,11 +197,17 @@ export interface AccountLive {
   models: number
   tier?: string
   quota?: string
+  service?: string
+  quota_snapshot?: QuotaSnapshot
   cooldowns?: AccountCooldown[]
 }
 
 // 引擎标识：a=Gemini Web、b=AI Studio；codex=GPT、antigravity、订阅引擎 + custom 第三方 Key。
-export type EngineName = 'a' | 'b' | 'codex' | 'antigravity' | 'kiro' | 'workbuddy' | 'custom'
+export type EngineName = 'geminiweb' | 'aistudio' | 'codex' | 'antigravity' | 'kiro' | 'workbuddy' | 'custom'
+
+export function canonicalEngine(engine: string): string {
+  return engine === 'a' ? 'geminiweb' : engine === 'b' ? 'aistudio' : engine
+}
 
 export interface EngineMeta {
   name: string
@@ -197,6 +222,9 @@ export interface EngineMeta {
 export const ENGINE_LABELS: Record<string, string> = {
   a: 'Gemini Web',
   b: 'AI Studio',
+  geminiweb: 'Gemini Web',
+  aistudio: 'AI Studio',
+  'workbuddy-ai': 'WorkBuddy AI',
   codex: 'GPT',
   antigravity: 'Antigravity',
   kiro: 'Kiro',

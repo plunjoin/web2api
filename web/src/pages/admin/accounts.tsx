@@ -2,30 +2,24 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Ban, CheckCircle2, ChevronDown, ChevronRight, KeyRound, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, ChevronDown, KeyRound, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { PageHeader, Section } from '@/components/page'
+import { PageHeader } from '@/components/page'
 import { StatStrip } from '@/components/stat'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
-import { RowMenu, type RowAction } from '@/components/row-menu'
-import { StatusDot } from '@/components/status'
-import { AccountStatus, CooldownLines, TierPill, accountHealth } from '@/components/account-status'
+import { type RowAction } from '@/components/row-menu'
+import { accountHealth } from '@/components/account-status'
 import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
-import { relative } from '@/lib/format'
-import { engineLabel, type Account, type EngineName } from '@/lib/types'
+import { canonicalEngine, engineLabel, type Account, type EngineName } from '@/lib/types'
 import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddKiroDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
 import { ProviderModelsDialog } from './provider-models'
-
-// 供应商分组顺序：一个供应商下可以挂多个账号，请求在就绪账号间轮询。
-const PROVIDER_ORDER: EngineName[] = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
+import { ProviderGroups } from './accounts-provider-groups'
 
 export default function AdminAccounts() {
   const qc = useQueryClient()
@@ -33,8 +27,8 @@ export default function AdminAccounts() {
   const q = useQuery({ queryKey: ['admin', 'accounts'], queryFn: () => api<{ accounts: Account[] }>('/admin/api/accounts'), refetchInterval: 15_000 })
   // ?new=<engine> 来自命令面板或下拉菜单：直接打开对应的添加弹窗
   const [params, setParams] = useSearchParams()
-  const newParam = params.get('new')
-  const ENGINE_KEYS: EngineName[] = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
+  const newParam = canonicalEngine(params.get('new') || '')
+  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
   const adding = ENGINE_KEYS.includes(newParam as EngineName) ? (newParam as EngineName) : null
   const setAdding = (v: EngineName | null) => {
     const next = new URLSearchParams(params)
@@ -47,14 +41,19 @@ export default function AdminAccounts() {
   const [customCreds, setCustomCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
   const [openProvider, setOpenProvider] = useState<{ engine: string; provider?: string } | null>(null)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('web2api.accounts.collapsed') || '[]')
+      return new Set(Array.isArray(saved) ? saved.filter((v): v is string => typeof v === 'string') : [])
+    } catch { return new Set() }
+  })
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin'] })
 
   const check = async (a: Account) => {
     setChecking(a.id)
     try {
       await api(`/admin/api/accounts/${a.id}/check`, { method: 'POST' })
-      toast.success(`${a.label} 检查通过`)
+      toast.success(`${a.label} 已触发检查，请等待状态更新`)
     } catch (e) {
       toast.error(`${a.label}：${(e as Error).message}`)
     } finally {
@@ -64,7 +63,7 @@ export default function AdminAccounts() {
   }
   const actions = (a: Account): RowAction[] => [
     { label: '立即检查', icon: <RefreshCw />, onSelect: () => check(a), disabled: checking === a.id },
-    ...(a.engine === 'a'
+    ...(canonicalEngine(a.engine) === 'geminiweb'
       ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }]
       : a.engine === 'custom'
         ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setCustomCreds(a) }]
@@ -127,8 +126,8 @@ export default function AdminAccounts() {
     .map(([k, n]) => `${engineLabel(k)} ${n}`)
     .join(' · ')
   const addMenuItems: { key: EngineName; title: string; hint: string }[] = [
-    { key: 'a', title: 'Gemini Web 网页号', hint: '粘贴 __Secure-1PSID / 1PSIDTS Cookie' },
-    { key: 'b', title: 'AI Studio 号', hint: '粘贴 Playwright storage_state JSON' },
+    { key: 'geminiweb', title: 'Gemini Web 网页号', hint: '粘贴 __Secure-1PSID / 1PSIDTS Cookie' },
+    { key: 'aistudio', title: 'AI Studio 号', hint: '粘贴 Playwright storage_state JSON' },
     { key: 'codex', title: 'GPT（ChatGPT 订阅）', hint: 'OAuth 授权或粘贴 refresh_token' },
     { key: 'antigravity', title: 'Antigravity（Google 订阅）', hint: 'Google OAuth 授权或粘贴 refresh_token' },
     { key: 'kiro', title: 'Kiro（AWS CodeWhisperer）', hint: '粘贴 Kiro IDE 的 refresh_token' },
@@ -155,7 +154,7 @@ export default function AdminAccounts() {
 
   return (
     <>
-      <PageHeader title="供应商" description="按供应商分组，一个供应商下可以添加多个账号，请求在就绪账号之间轮询。点开供应商即可获取它的模型、勾选要开放的、并直接测试哪些可用。" actions={addMenu} />
+      <PageHeader title="供应商" description="先看服务额度，再展开管理账号。WorkBuddy 国服与国际服分别展示；模型测试限定当前引擎或第三方供应商，生产请求按模型权益与可用状态调度。" actions={addMenu} />
       <div className="space-y-4">
         <StatStrip
           className="lg:grid-cols-3"
@@ -166,7 +165,7 @@ export default function AdminAccounts() {
             { label: '异常', value: broken, tone: broken ? 'danger' : 'default', hint: broken ? '检查凭据是否过期' : '没有异常账号' },
           ]}
         />
-        <Section>
+        <div>
           {q.isLoading ? (
             <TableSkeleton rows={4} cols={6} />
           ) : q.isError ? (
@@ -183,6 +182,7 @@ export default function AdminAccounts() {
                   const next = new Set(prev)
                   if (next.has(key)) next.delete(key)
                   else next.add(key)
+                  try { localStorage.setItem('web2api.accounts.collapsed', JSON.stringify([...next])) } catch { /* Storage may be disabled. */ }
                   return next
                 })
               }
@@ -191,11 +191,11 @@ export default function AdminAccounts() {
               actions={actions}
             />
           )}
-        </Section>
-        {accounts.length > 0 && <p className="text-xs text-muted-foreground">点开供应商管理它的模型；点某个账号立即检查该账号。</p>}
+        </div>
+        {accounts.length > 0 && <p className="text-xs text-muted-foreground">点服务标题折叠账号，点账号名称查看重置时间与检查操作；额度未知不会算作零。</p>}
       </div>
-      <AddGeminiDialog open={adding === 'a'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
-      <AddStudioDialog open={adding === 'b'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
+      <AddGeminiDialog open={adding === 'geminiweb'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
+      <AddStudioDialog open={adding === 'aistudio'} onOpenChange={(o) => !o && setAdding(null)} onDone={invalidate} />
       <AddCodexDialog open={adding === 'codex'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
@@ -207,142 +207,9 @@ export default function AdminAccounts() {
       <ProviderModelsDialog
         target={openProvider}
         onOpenChange={(o) => !o && setOpenProvider(null)}
-        onAddAccount={(engine) => setAdding(engine as EngineName)}
+        onAddAccount={(engine) => setAdding(canonicalEngine(engine) as EngineName)}
       />
     </>
-  )
-}
-
-// 第三方 Key 不是一个供应商：每个上游地址是一个供应商，其下挂多个 Key。
-// 分组键用归一化后的 base_url；地址缺失时单独成组，避免和真供应商混在一起。
-const UNKNOWN_PROVIDER = 'custom|unknown'
-
-function providerOf(a: Account): string {
-  return a.engine === 'custom' ? a.provider || UNKNOWN_PROVIDER : a.engine
-}
-
-function providerLabel(key: string, engine: string): string {
-  if (engine !== 'custom') return engineLabel(engine)
-  return key === UNKNOWN_PROVIDER ? '第三方 Key（未识别地址）' : key.replace(/^custom\|/, '')
-}
-
-function ProviderGroups({
-  accounts,
-  checking,
-  collapsed,
-  onToggle,
-  onOpen,
-  onCheck,
-  actions,
-}: {
-  accounts: Account[]
-  checking: number | null
-  collapsed: Set<string>
-  onToggle: (key: string) => void
-  onOpen: (target: { engine: string; provider?: string }) => void
-  onCheck: (a: Account) => void
-  actions: (a: Account) => RowAction[]
-}) {
-  const groups = new Map<string, Account[]>()
-  for (const a of accounts) {
-    const key = providerOf(a)
-    const list = groups.get(key) || []
-    list.push(a)
-    groups.set(key, list)
-  }
-  const keys = [...groups.keys()].sort((x, y) => {
-    const xe = groups.get(x)?.[0]?.engine || ''
-    const ye = groups.get(y)?.[0]?.engine || ''
-    const byEngine = (PROVIDER_ORDER.indexOf(xe as EngineName) + 1 || 99) - (PROVIDER_ORDER.indexOf(ye as EngineName) + 1 || 99)
-    return byEngine || providerLabel(x, xe).localeCompare(providerLabel(y, ye))
-  })
-  return (
-    <div className="divide-y">
-      {keys.map((key) => {
-        const list = groups.get(key) || []
-        const engine = list[0]?.engine || key
-        const up = list.filter((a) => accountHealth(a) === 'up').length
-        const isCollapsed = collapsed.has(key)
-        return (
-          <div key={key}>
-            <div className="flex items-center gap-2 bg-muted/30 px-4 py-2">
-              <button type="button" className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 hover:bg-accent" onClick={() => onToggle(key)} aria-expanded={!isCollapsed}>
-                {isCollapsed ? <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" /> : <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />}
-                <span className="truncate text-[13px] font-medium" title={providerLabel(key, engine)}>
-                  {providerLabel(key, engine)}
-                </span>
-              </button>
-              {engine === 'custom' && key !== UNKNOWN_PROVIDER && (
-                <span className="shrink-0 text-[11px] text-muted-foreground">第三方 Key</span>
-              )}
-              <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                {list.length} 个账号 · 可用 {up}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                className="ml-auto h-6 shrink-0 px-2 text-xs"
-                disabled={key === UNKNOWN_PROVIDER}
-                title={key === UNKNOWN_PROVIDER ? '这些账号没有可识别的上游地址，先更新凭据再获取模型' : undefined}
-                onClick={() => onOpen({ engine, provider: engine === 'custom' ? key : undefined })}
-              >
-                模型
-              </Button>
-            </div>
-            {!isCollapsed && (
-              <Table>
-                <TableBody>
-                  {list.map((a) => {
-                    const detail = a.live?.detail || a.detail
-                    return (
-                      <TableRow key={a.id} className="cursor-pointer" onClick={() => onCheck(a)}>
-                        <TableCell>
-                          <div className="font-medium">{a.label}</div>
-                          <div className="text-[11px] text-muted-foreground">#{a.id}</div>
-                        </TableCell>
-                        <TableCell className="max-w-[320px]">
-                          {checking === a.id ? (
-                            <StatusDot tone="warning">检查中…</StatusDot>
-                          ) : detail && accountHealth(a) !== 'up' ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span>
-                                  <AccountStatus account={a} />
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-sm">{detail}</TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <AccountStatus account={a} />
-                          )}
-                          {detail && accountHealth(a) === 'down' && <div className="truncate text-[11px] text-muted-foreground">{detail}</div>}
-                          <CooldownLines cooldowns={a.live?.cooldowns} />
-                        </TableCell>
-                        <TableCell className="max-w-[240px] whitespace-normal">
-                          <div className="flex min-w-0 flex-col items-start gap-1">
-                            <TierPill tier={a.live?.tier} />
-                            {a.live?.quota && (
-                              <span className="line-clamp-2 break-all text-[11px] text-muted-foreground tabular-nums" title={a.live.quota}>
-                                {a.live.quota}
-                              </span>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">{a.live?.models ?? 0}</TableCell>
-                        <TableCell className="text-muted-foreground">{relative(a.updated_at)}</TableCell>
-                        <TableCell onClick={(e) => e.stopPropagation()}>
-                          <RowMenu actions={actions(a)} />
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </div>
-        )
-      })}
-    </div>
   )
 }
 
@@ -369,7 +236,7 @@ function AddGeminiDialog({ open, onOpenChange, onDone }: { open: boolean; onOpen
           { name: '__Secure-1PSIDTS', value: f.psidts.trim(), domain: '.google.com', path: '/', secure: true },
         ],
       })
-      await api('/admin/api/accounts', { method: 'POST', json: { engine: 'a', label: f.label.trim(), storage_state } })
+      await api('/admin/api/accounts', { method: 'POST', json: { engine: 'geminiweb', label: f.label.trim(), storage_state } })
       toast.success('账号已添加，正在初始化')
       onOpenChange(false)
       onDone()
@@ -423,7 +290,7 @@ function AddStudioDialog({ open, onOpenChange, onDone }: { open: boolean; onOpen
     }
     setBusy(true)
     try {
-      await api('/admin/api/accounts', { method: 'POST', json: { engine: 'b', ...f } })
+      await api('/admin/api/accounts', { method: 'POST', json: { engine: 'aistudio', ...f } })
       toast.success('账号已添加，正在初始化')
       onOpenChange(false)
       onDone()

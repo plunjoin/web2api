@@ -867,10 +867,11 @@ func (m *Manager) addWorkBuddyAccount(label string, creds workbuddy.Credentials)
 	if eng == nil {
 		return store.Account{}, errors.New("workbuddy 引擎未启用")
 	}
-	if label == "" {
-		return store.Account{}, errors.New("label 或 email 至少填写一个")
+	if strings.TrimSpace(label) == "" {
+		// 手填 opaque token 可能没有邮箱；自动名只含发行版与时间，绝不泄露 token。
+		label = fmt.Sprintf("%s-%d", workbuddy.SiteFor(creds.Site).Name, time.Now().UnixNano())
 	}
-	acc, err := m.st.CreateAccount("workbuddy", label, engine.MarshalCompact(creds), true)
+	acc, err := m.st.CreateAccountWithUniqueLabel("workbuddy", label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -1160,20 +1161,30 @@ func (m *Manager) AccountOverview() []AccountOverview {
 	out := make([]AccountOverview, 0, len(accounts))
 	for _, acc := range accounts {
 		ov := AccountOverview{Account: acc}
+		// 供应商身份来自持久化凭据，不依赖账号是否已加载到引擎。
+		if acc.Engine == "custom" {
+			ov.Provider = customProvider(acc.Credentials)
+		}
 		engineID := fmt.Sprintf("%d", acc.ID)
 		if states, ok := live[acc.Engine]; ok {
 			if st, ok := states[engineID]; ok {
 				ov.Live = st
-				// 第三方 Key 的供应商身份是它的 base_url：同一地址的多个 Key 归为一个供应商。
-				if acc.Engine == "custom" {
-					ov.Provider = customProvider(acc.Credentials)
-				}
 			} else {
 				ov.Live = engine.AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded"}
 			}
 		} else {
 			// 引擎未启用（无池）
 			ov.Live = engine.AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded", Detail: "引擎未启用"}
+		}
+		if acc.Engine == "workbuddy" && ov.Live.Status == "unloaded" {
+			var creds workbuddy.Credentials
+			if json.Unmarshal([]byte(acc.Credentials), &creds) == nil {
+				site := workbuddy.SiteFor(creds.Site)
+				if strings.TrimSpace(creds.BaseURL) != "" {
+					site = workbuddy.SiteForBaseURL(creds.BaseURL)
+				}
+				ov.Live.Service = site.ID
+			}
 		}
 		out = append(out, ov)
 	}
