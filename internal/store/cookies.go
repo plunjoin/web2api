@@ -12,10 +12,17 @@ import (
 
 // Cookie sessions are tied to credentials so replacing an account cannot revive
 // a stale session, including an old refresh completing after replacement.
+//
+// accounts.engine 同时存在历史值 "a" 与现行值 "geminiweb"（新账号由管理台
+// 以 "geminiweb" 写入）。这里必须两者都匹配：只认 "a" 时 SaveCookieSession 的
+// INSERT ... SELECT 会选中 0 行且不报错，轮换后的 __Secure-1PSIDTS 永远落不了库，
+// 进程重启就退回旧 Cookie，表现为 geminiweb 账号每天掉登录态。
+const geminiAccountEngine = `engine IN ('a','geminiweb')`
+
 func (s *Store) LoadCookieSession(id int64, psid, psidts string) ([]byte, error) {
 	var data []byte
 	err := s.db.QueryRow(`SELECT c.data FROM cookie_sessions c JOIN accounts a ON a.id=c.account_id
-		WHERE a.id=? AND a.engine='a' AND json_extract(a.credentials,'$.psid')=?
+		WHERE a.id=? AND `+geminiAccountEngine+` AND json_extract(a.credentials,'$.psid')=?
 		AND coalesce(json_extract(a.credentials,'$.psidts'),'')=?`, id, psid, psidts).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -83,7 +90,7 @@ func (s *Store) ImportLegacyCookies(directory string) (int, error) {
 
 func (s *Store) SaveCookieSession(id int64, psid, psidts string, data []byte) error {
 	_, err := s.db.Exec(`INSERT INTO cookie_sessions(account_id,data,updated_at)
-		SELECT id,?,? FROM accounts WHERE id=? AND engine='a' AND json_extract(credentials,'$.psid')=?
+		SELECT id,?,? FROM accounts WHERE id=? AND `+geminiAccountEngine+` AND json_extract(credentials,'$.psid')=?
 		AND coalesce(json_extract(credentials,'$.psidts'),'')=?
 		ON CONFLICT(account_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`,
 		data, now(), id, psid, psidts)
@@ -92,7 +99,7 @@ func (s *Store) SaveCookieSession(id int64, psid, psidts string, data []byte) er
 
 func (s *Store) DeleteCookieSession(id int64, psid, psidts string) error {
 	_, err := s.db.Exec(`DELETE FROM cookie_sessions WHERE account_id IN
-		(SELECT id FROM accounts WHERE id=? AND engine='a' AND json_extract(credentials,'$.psid')=?
+		(SELECT id FROM accounts WHERE id=? AND `+geminiAccountEngine+` AND json_extract(credentials,'$.psid')=?
 		AND coalesce(json_extract(credentials,'$.psidts'),'')=?)`, id, psid, psidts)
 	return err
 }

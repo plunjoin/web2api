@@ -261,7 +261,7 @@ func (c *Client) fetchInitParams(ctx context.Context) (*initParams, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.jar.UpdateFromResponse(resp)
+	c.absorbCookies(resp)
 	params, err := parseInitParams(string(body))
 	if err != nil {
 		return nil, err
@@ -357,6 +357,7 @@ func (c *Client) batchExecute(ctx context.Context, payloads []rpcPayload) ([]any
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("batchexecute 失败: HTTP %d", resp.StatusCode)
 	}
+	c.absorbCookies(resp)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err
@@ -483,6 +484,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string, modelName st
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("对话请求失败: HTTP %d (%s)", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	c.absorbCookies(resp)
 
 	// 流式解析与候选提取
 	parser := NewStreamingFrameParser()
@@ -614,13 +616,35 @@ func (c *Client) Rotate(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("轮换 Cookie 失败: HTTP %d", resp.StatusCode)
 	}
-	c.mu.Lock()
-	jar.UpdateFromResponse(resp)
-	c.mu.Unlock()
-	return saveCookies(c.cookieStore, jar)
+	c.absorbCookies(resp)
+	return nil
 }
 
-// StartAutoRefresh 后台协程按间隔自动轮换 Cookie。
+// absorbCookies 合并响应里的 Set-Cookie。Google 会在 /app、轮换接口甚至普通
+// 对话响应里顺带下发新的 __Secure-1PSIDTS；认证 Cookie 只要有变化就立即落库，
+// 否则进程重启后会回退到账号表里的旧值，下一次初始化就直接 1016。
+func (c *Client) absorbCookies(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	rotated := false
+	for _, cookie := range resp.Cookies() {
+		switch cookie.Name {
+		case "__Secure-1PSID", "__Secure-1PSIDTS":
+			rotated = true
+		}
+	}
+	c.mu.Lock()
+	jar := c.jar
+	jar.UpdateFromResponse(resp)
+	c.mu.Unlock()
+	if rotated {
+		_ = saveCookies(c.cookieStore, jar)
+	}
+}
+
+// StartAutoRefresh 后台协程：会话正常时定时轮换 __Secure-1PSIDTS；
+// 未就绪或登录态失效时重试 Init，避免一次网络抖动就把账号永久卡在不可用。
 func (c *Client) StartAutoRefresh(ctx context.Context, interval time.Duration) {
 	if interval < 60*time.Second {
 		interval = 60 * time.Second
@@ -631,17 +655,22 @@ func (c *Client) StartAutoRefresh(ctx context.Context, interval time.Duration) {
 	c.mu.Unlock()
 
 	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-stop:
 				return
-			case <-time.After(interval):
-				if !c.Ready() {
-					continue
+			case <-ticker.C:
+				tickCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				if !c.Ready() || c.AccountStatus() == StatusUnauthenticated {
+					_ = c.Init(tickCtx)
+				} else {
+					_ = c.Rotate(tickCtx)
 				}
-				_ = c.Rotate(ctx)
+				cancel()
 			}
 		}
 	}()

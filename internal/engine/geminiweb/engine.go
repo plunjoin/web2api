@@ -107,12 +107,17 @@ func (e *Engine) AddAccount(id, label, psid, psidts string) error {
 
 	go func() {
 		ctx, cancel := context.WithTimeout(accountCtx, e.timeout)
-		defer cancel()
-		if err := client.Init(ctx); err != nil {
+		err := client.Init(ctx)
+		cancel()
+		if err != nil {
 			e.setErr(fmt.Errorf("账号 %s(%s) 初始化失败: %w", label, id, err))
 		} else {
-			client.StartAutoRefresh(accountCtx, e.refresh)
 			e.setErr(nil)
+		}
+		// 即使首次初始化失败也要启动续期循环：循环会在下一轮重试 Init，
+		// 而不是让一次网络抖动/临时 429 把账号一直卡在 initializing。
+		if accountCtx.Err() == nil {
+			client.StartAutoRefresh(accountCtx, e.refresh)
 		}
 	}()
 	return nil
