@@ -552,12 +552,14 @@ func (a *API) handleBatchModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCheckModel POST /admin/api/models/check：探测单个或多个模型。
-// body: { model?, models?, sync_status? }；sync_status 默认 true（检查通过则开放，
+// body: { model?, models?, engine?, provider?, sync_status? }；sync_status 默认 true（检查通过则开放，
 // 失败只记录、不改上下架——临时故障不该把模型永久关掉）。
 func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Model      string   `json:"model"`
 		Models     []string `json:"models"`
+		Engine     string   `json:"engine"`
+		Provider   string   `json:"provider"`
 		SyncStatus *bool    `json:"sync_status"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -596,7 +598,7 @@ func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {
 		if err := r.Context().Err(); err != nil {
 			break
 		}
-		item := a.probeModel(r.Context(), modelID, syncStatus)
+		item := a.probeModel(r.Context(), modelID, syncStatus, req.Engine, req.Provider)
 		results = append(results, item)
 		if item.OK {
 			passed++
@@ -631,11 +633,11 @@ type modelCheckResult struct {
 	Setting store.ModelSetting `json:"setting"`
 }
 
-func (a *API) probeModel(parent context.Context, modelID string, syncStatus bool) modelCheckResult {
+func (a *API) probeModel(parent context.Context, modelID string, syncStatus bool, engineName, provider string) modelCheckResult {
 	out := modelCheckResult{Model: modelID, Enabled: true}
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
-	detail, err := a.mgr.ProbeModel(ctx, modelID)
+	detail, err := a.mgr.ProbeModelForTarget(ctx, modelID, engineName, provider)
 	ok := err == nil
 	if err != nil {
 		detail = err.Error()

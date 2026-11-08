@@ -560,11 +560,47 @@ func (e *Engine) ListModels() []model.ModelInfo {
 	return out
 }
 
+type providerScopeKey struct{}
+
+// WithProviderScope 仅约束当前调用的供应商候选，不改变引擎默认路由。
+func WithProviderScope(ctx context.Context, provider string) context.Context {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return ctx
+	}
+	provider = strings.TrimPrefix(provider, "custom|")
+	return context.WithValue(ctx, providerScopeKey{}, upstream.NormalizeBaseURL(provider))
+}
+
+func providerScope(ctx context.Context) (string, bool) {
+	provider, scoped := ctx.Value(providerScopeKey{}).(string)
+	return provider, scoped
+}
+
+// ProbeModels 返回探测范围内的目录；显式供应商不存在时必须报错。
+func (e *Engine) ProbeModels(ctx context.Context) ([]model.ModelInfo, error) {
+	provider, scoped := providerScope(ctx)
+	if !scoped {
+		return e.ListModels(), nil
+	}
+	for _, base := range e.ProviderBaseURLs() {
+		if base == provider {
+			return e.providerModels(provider), nil
+		}
+	}
+	return nil, fmt.Errorf("没有地址为 %s 的供应商账号", provider)
+}
+
 // candidates 按模型精确挑选候选账号。
 // 返回值：usable 为「声明了该模型且当前可用」的账号（按轮转起点排序）；
 // declared 为声明了该模型的账号总数（不看可用态）；total 为号池账号总数。
 // 关键约束：没有声明该模型的账号一律不入选，目录为空的账号也不再兜底。
 func (e *Engine) candidates(modelName string) (usable []*customAccount, declared int, total int) {
+	return e.candidatesCtx(context.Background(), modelName)
+}
+
+func (e *Engine) candidatesCtx(ctx context.Context, modelName string) (usable []*customAccount, declared int, total int) {
+	provider, scoped := providerScope(ctx)
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -577,6 +613,11 @@ func (e *Engine) candidates(modelName string) (usable []*customAccount, declared
 	for i := 0; i < n; i++ {
 		acc := e.accounts[(start+i)%n]
 		acc.mu.Lock()
+		if scoped && upstream.NormalizeBaseURL(acc.creds.BaseURL) != provider {
+			acc.mu.Unlock()
+			continue
+		}
+		total++
 		has := acc.declaresLocked(want)
 		ok := has && acc.usableLocked()
 		acc.mu.Unlock()
@@ -587,7 +628,7 @@ func (e *Engine) candidates(modelName string) (usable []*customAccount, declared
 			usable = append(usable, acc)
 		}
 	}
-	return usable, declared, n
+	return usable, declared, total
 }
 
 // HasAvailableModel 实现 engine.ModelAvailability：当前是否有可用账号声明该模型。
@@ -626,13 +667,18 @@ func (e *Engine) pickCtx(ctx context.Context, modelName string) (*customAccount,
 	if !engine.IsProbeContext(ctx) && e.modelDisabled(modelName) {
 		return nil, engine.NewModelDisabled(modelName)
 	}
-	usable, declared, total := e.candidates(modelName)
+	usable, declared, total := e.candidatesCtx(ctx, modelName)
 	if len(usable) > 0 {
 		return usable[0], nil
 	}
+	provider, scoped := providerScope(ctx)
 	switch {
+	case total == 0 && scoped:
+		return nil, fmt.Errorf("没有地址为 %s 的供应商账号", provider)
 	case total == 0:
 		return nil, errors.New("custom: 号池没有账号")
+	case declared == 0 && scoped:
+		return nil, engine.NewModelNotFound(modelName, fmt.Sprintf("供应商 %s 未声明该模型", provider))
 	case declared == 0:
 		return nil, e.missError(modelName)
 	default:
@@ -814,7 +860,7 @@ func isHTTPStatus(err error, code int) bool {
 func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	// 严格按模型选号：只有目录里声明了该模型的账号才有资格接单。
 	// 没有任何账号声明 → 直接 model_not_found，绝不换号改投别的供应商。
-	usable, _, _ := e.candidates(req.Model)
+	usable, _, _ := e.candidatesCtx(ctx, req.Model)
 	if len(usable) == 0 {
 		// 复用 pick 的分支错误：区分「号池为空」「无人声明该模型」「声明了但都不可用」。
 		// 带上 ctx：探测请求要跳过下架闸门，才能拿到真正的原因（账号不可用）。

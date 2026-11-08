@@ -122,7 +122,7 @@ export function ProviderModelsDialog({
     try {
       const res = await api<{ detail?: string; model?: { enabled?: boolean } }>('/admin/api/models/check', {
         method: 'POST',
-        json: { model: id, sync_status: false },
+        json: { model: id, engine, ...(provider ? { provider } : {}), sync_status: false },
       })
       if (active()) setResults((prev) => ({ ...prev, [id]: { model: id, ok: true, detail: res.detail, enabled: res.model?.enabled !== false } }))
       return true
@@ -165,7 +165,7 @@ export function ProviderModelsDialog({
             {catalogKey && catalogKey !== engine ? catalogKey.replace(/^custom\|/, '') : engine ? engineLabel(engine) : ''} 的模型
           </DialogTitle>
           <DialogDescription className="text-[13px]">
-            只向这个供应商拉取。新出现的模型默认未开放，打开开关或勾选后批量开放才对下游可见；测试只探测、不改变开放状态。
+            {engine === 'workbuddy' ? '此处管理 WorkBuddy 双发行版共享的引擎模型，测试可使用任一发行版的可用账号。' : '拉取与测试仅使用这个供应商，不转投其他来源。'}新模型默认未开放；开放开关对所有供应商的同名模型全局生效，测试不改变开放状态。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-2">

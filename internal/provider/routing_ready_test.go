@@ -3,13 +3,173 @@ package provider
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
+	"web2api/internal/config"
 	"web2api/internal/engine"
+	"web2api/internal/engine/custom"
 	"web2api/internal/model"
 	"web2api/internal/store"
 )
+
+type probeRecordingEngine struct {
+	*fakeEngine
+	kind  string
+	calls int
+}
+
+func (e *probeRecordingEngine) Chat(context.Context, model.ChatRequest) (*model.ChatResult, error) {
+	e.calls++
+	return &model.ChatResult{Text: e.name}, e.chatErr
+}
+
+func (e *probeRecordingEngine) ListModels() []model.ModelInfo {
+	models := e.fakeEngine.ListModels()
+	if e.kind != "" {
+		for i := range models {
+			models[i].Kind = e.kind
+		}
+	}
+	return models
+}
+
+func TestProbeModelForTargetEngineIsolation(t *testing.T) {
+	first := &probeRecordingEngine{fakeEngine: &fakeEngine{name: "codex", ready: true, models: []string{"shared"}}}
+	target := &probeRecordingEngine{fakeEngine: &fakeEngine{name: "custom", ready: true, models: []string{"shared"}}}
+	m := newTestManager(first, target)
+	ctx := context.Background()
+	for _, probe := range []func() (string, error){
+		func() (string, error) { return m.ProbeModel(ctx, "shared") },
+		func() (string, error) { return m.ProbeModelForTarget(ctx, "shared", "", "") },
+	} {
+		if detail, err := probe(); err != nil || detail != "codex" {
+			t.Fatalf("legacy probe: detail=%q err=%v", detail, err)
+		}
+	}
+	// 全局同名条目的用途不能污染显式目标的用途。
+	first.kind = model.KindVideo
+	if detail, err := m.ProbeModelForTarget(ctx, "shared", "custom", ""); err != nil || detail != "custom" {
+		t.Fatalf("target probe: detail=%q err=%v", detail, err)
+	}
+	if first.calls != 2 || target.calls != 1 {
+		t.Fatalf("wrong engines called: first=%d target=%d", first.calls, target.calls)
+	}
+	target.ready = false
+	for _, name := range []string{"custom", "missing"} {
+		if _, err := m.ProbeModelForTarget(ctx, "shared", name, ""); err == nil {
+			t.Fatalf("unavailable target %s must fail", name)
+		}
+	}
+	if first.calls != 2 || target.calls != 1 {
+		t.Fatal("unavailable target fell back or was called")
+	}
+	if _, err := m.ProbeModelForTarget(ctx, "shared", "codex", "https://example.com"); err == nil {
+		t.Fatal("non-custom provider must be rejected")
+	}
+}
+
+func TestProbeModelForTargetProviderAndMedia(t *testing.T) {
+	var wrong, selected, chat, image, embedding atomic.Int32
+	serve := func(calls *atomic.Int32, fail bool) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodPost {
+				// 保留静态目录，避免异步刷新改变测试用的用途。
+				http.NotFound(w, r)
+				return
+			}
+			calls.Add(1)
+			if fail {
+				http.Error(w, "limited", http.StatusTooManyRequests)
+				return
+			}
+			switch r.URL.Path {
+			case "/v1/chat/completions":
+				chat.Add(1)
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"selected"}}]}`)
+			case "/v1/images/generations":
+				image.Add(1)
+				_, _ = io.WriteString(w, `{"data":[]}`)
+			case "/v1/embeddings":
+				embedding.Add(1)
+				_, _ = io.WriteString(w, `{"data":[]}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	}
+	a, b := serve(&wrong, true), serve(&selected, false)
+	defer a.Close()
+	defer b.Close()
+	e := custom.New(config.CustomConfig{}, nil)
+	models := []string{"shared", "gpt-image-1", "text-embedding-3-small", "veo-3", "lyria-002", "tts-1"}
+	for _, acc := range []struct{ id, url string }{{"a", a.URL}, {"b", b.URL}} {
+		if err := e.AddAccount(acc.id, acc.id, custom.Credentials{BaseURL: acc.url + "/v1/", APIKey: "test", Models: models}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := &probeRecordingEngine{fakeEngine: &fakeEngine{name: "codex", ready: true, models: models}}
+	m := newTestManager(other, e)
+	ctx := context.Background()
+	for _, id := range models {
+		if _, err := m.ProbeModelForTarget(ctx, id, "custom", "custom|"+b.URL+"/v1/"); err != nil {
+			t.Fatalf("probe %s: %v", id, err)
+		}
+	}
+	if selected.Load() != 3 || wrong.Load() != 0 || other.calls != 0 || chat.Load() != 1 || image.Load() != 1 || embedding.Load() != 1 {
+		t.Fatalf("wrong endpoints: selected=%d wrong=%d other=%d chat=%d image=%d embedding=%d", selected.Load(), wrong.Load(), other.calls, chat.Load(), image.Load(), embedding.Load())
+	}
+	if err := e.SetEnabled("b", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range models {
+		if _, err := m.ProbeModelForTarget(ctx, id, "custom", b.URL); err == nil {
+			t.Fatalf("disabled provider accepted %s", id)
+		}
+	}
+	for _, provider := range []string{"https://missing.invalid", "custom|"} {
+		if _, err := m.ProbeModelForTarget(ctx, "shared", "custom", provider); err == nil {
+			t.Fatalf("missing provider %q accepted", provider)
+		}
+	}
+	if selected.Load() != 3 || wrong.Load() != 0 || other.calls != 0 {
+		t.Fatal("unavailable target fell back")
+	}
+	if err := e.SetEnabled("b", true); err != nil {
+		t.Fatal(err)
+	}
+	// 目标上游限流也不能换供应商。
+	if _, err := m.ProbeModelForTarget(ctx, "shared", "custom", a.URL); err == nil {
+		t.Fatal("limited provider must fail")
+	}
+	if selected.Load() != 3 || wrong.Load() != 1 || other.calls != 0 {
+		t.Fatal("limited provider fell back")
+	}
+}
+
+func TestAccountOverviewUnloadedCustomProvider(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "overview.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.CreateAccount("custom", "unloaded", `{"base_url":" https://example.com/v1/ "}`, false); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager()
+	m.st = st
+	for _, pool := range []map[string]accountPool{nil, {"custom": custom.New(config.CustomConfig{}, st)}} {
+		m.pools = pool
+		got := m.AccountOverview()
+		if len(got) != 1 || got[0].Provider != "https://example.com" || got[0].Live.Status != "unloaded" {
+			t.Fatalf("overview=%+v", got)
+		}
+	}
+}
 
 type fakeEngine struct {
 	name        string

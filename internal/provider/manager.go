@@ -1489,14 +1489,56 @@ func isMultimodalModel(name string) bool {
 // 生图 → /v1/images/generations；向量 → /v1/embeddings；其余对话模型 → chat；
 // 视频/音乐/语音只做目录可达性检查（避免昂贵的真实生成）。
 func (m *Manager) ProbeModel(ctx context.Context, modelID string) (string, error) {
+	return m.probeModel(ctx, modelID, nil)
+}
+
+// ProbeModelForTarget 显式目标只在指定引擎/供应商内探测，绝不回退到全局路由。
+// 未指定目标时保留 ProbeModel 的历史行为。
+func (m *Manager) ProbeModelForTarget(ctx context.Context, modelID, engineName, provider string) (string, error) {
+	engineName = strings.TrimSpace(engineName)
+	provider = strings.TrimSpace(provider)
+	if provider != "" && engineName != "custom" {
+		return "", errors.New("provider 仅支持 custom 引擎")
+	}
+	if engineName == "" {
+		return m.ProbeModel(ctx, modelID)
+	}
+	eng := m.engines[engineName]
+	if eng == nil {
+		return "", fmt.Errorf("引擎 %s 未启用", engineName)
+	}
+	if provider != "" {
+		ctx = custom.WithProviderScope(ctx, provider)
+	}
+	return m.probeModel(ctx, modelID, eng)
+}
+
+func (m *Manager) probeModel(ctx context.Context, modelID string, target engine.Engine) (string, error) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
 		return "", errors.New("model 不能为空")
 	}
 	// 管理台探测不受上下架开关限制：已下架的模型也要真的打到上游。
 	ctx = withProbeRequest(ctx)
+	var models []model.ModelInfo
+	if target == nil {
+		models = m.ListAllModels()
+	} else {
+		if e, ok := target.(*custom.Engine); ok {
+			var err error
+			models, err = e.ProbeModels(ctx)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			models = target.ListModels()
+		}
+		if !target.Ready() {
+			return "", engine.UnavailableError(target)
+		}
+	}
 	kind := model.ClassifyKind(modelID, "", nil)
-	for _, mi := range m.ListAllModels() {
+	for _, mi := range models {
 		if strings.EqualFold(mi.ID, modelID) {
 			if mi.Kind != "" {
 				kind = mi.Kind
@@ -1506,20 +1548,24 @@ func (m *Manager) ProbeModel(ctx context.Context, modelID string) (string, error
 	}
 	switch kind {
 	case model.KindImage:
-		return m.probeImageModel(ctx, modelID)
+		return m.probeImageModel(ctx, modelID, target)
 	case model.KindEmbedding:
-		return m.probeEmbeddingModel(ctx, modelID)
+		return m.probeEmbeddingModel(ctx, modelID, target)
 	case model.KindVideo, model.KindMusic, model.KindSpeech:
-		return m.probeCatalogModel(modelID, kind)
+		return m.probeCatalogModelForTarget(modelID, kind, target, models)
 	default:
-		return m.probeChatModel(ctx, modelID)
+		return m.probeChatModel(ctx, modelID, target)
 	}
 }
 
-func (m *Manager) probeChatModel(ctx context.Context, modelID string) (string, error) {
+func (m *Manager) probeChatModel(ctx context.Context, modelID string, target engine.Engine) (string, error) {
 	maxTokens := 16
 	temp := 0.0
-	res, err := m.Chat(ctx, model.ChatRequest{
+	chat := m.Chat
+	if target != nil {
+		chat = target.Chat
+	}
+	res, err := chat(ctx, model.ChatRequest{
 		Model:       modelID,
 		Messages:    []model.ChatMessage{{Role: "user", Content: "ping"}},
 		MaxTokens:   &maxTokens,
@@ -1541,8 +1587,11 @@ func (m *Manager) probeChatModel(ctx context.Context, modelID string) (string, e
 	return detail, nil
 }
 
-func (m *Manager) probeImageModel(ctx context.Context, modelID string) (string, error) {
-	eng, _ := m.pickEngineForProbe(modelID)
+func (m *Manager) probeImageModel(ctx context.Context, modelID string, eng engine.Engine) (string, error) {
+	target := eng
+	if eng == nil {
+		eng, _ = m.pickEngineForProbe(modelID)
+	}
 	switch e := eng.(type) {
 	case *custom.Engine:
 		return e.ProbeImage(ctx, modelID)
@@ -1550,11 +1599,13 @@ func (m *Manager) probeImageModel(ctx context.Context, modelID string) (string, 
 		return e.ProbeImage(ctx, modelID)
 	}
 	// 原生 AI Studio 等：图片走 chat/completions。
-	return m.probeChatModel(ctx, modelID)
+	return m.probeChatModel(ctx, modelID, target)
 }
 
-func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (string, error) {
-	eng, _ := m.pickEngineForProbe(modelID)
+func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string, eng engine.Engine) (string, error) {
+	if eng == nil {
+		eng, _ = m.pickEngineForProbe(modelID)
+	}
 	switch e := eng.(type) {
 	case *custom.Engine:
 		return e.ProbeEmbedding(ctx, modelID)
@@ -1568,26 +1619,33 @@ func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (stri
 // 不做真实生成（昂贵且会产生计费），但也不做「在目录里就算过」的假探测：
 // 至少要满足「有账号声明该模型」+「归属引擎能接单」两条。
 func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
-	eng, _ := m.pickEngineForProbe(modelID)
+	return m.probeCatalogModelForTarget(modelID, kind, nil, nil)
+}
+
+func (m *Manager) probeCatalogModelForTarget(modelID, kind string, eng engine.Engine, models []model.ModelInfo) (string, error) {
 	if eng == nil {
-		return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
-	}
-	if !engineHasModel(eng, modelID) {
-		return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
+		eng, _ = m.pickEngineForProbe(modelID)
+		if eng == nil || !engineHasModel(eng, modelID) {
+			return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
+		}
+		models = eng.ListModels()
 	}
 	// 目录里有、但没有任何可用账号声明它（引擎自报 available=false）同样不算可用。
 	// 必须查被选中引擎自己的目录：全局 ListAllModels 会把别的引擎/别的写法合并进来，
 	// 可能拿 aistudio 的条目判断 custom 是否可用（两个方向都会误判）。
 	want := model.CanonicalModelID(modelID)
 	found, available := false, false
-	for _, mi := range eng.ListModels() {
+	for _, mi := range models {
 		if model.CanonicalModelID(mi.ID) != want {
 			continue
 		}
 		found = true
 		available = available || mi.Available
 	}
-	if found && !available {
+	if !found {
+		return "", engine.NewModelNotFound(modelID, "目标引擎/供应商未声明该模型")
+	}
+	if !available {
 		return "", fmt.Errorf("模型 %s 在 %s 引擎目录中，但没有可用账号声明它（账号停用 / 未拉到目录 / 冷却中）", modelID, eng.Name())
 	}
 	if !eng.Ready() {
