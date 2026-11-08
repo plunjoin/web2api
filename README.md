@@ -128,6 +128,12 @@ go build -o web2api.exe .
 全局 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> 打开命令面板（跳转页面、新建用户/Key/兑换码），表格行可点击查看详情，行尾菜单收纳所有操作，危险操作有确认弹窗。
 用户、余额、兑换码的完整说明见 [docs/guide/platform.md](docs/guide/platform.md)。
 
+供应商账号页采用服务卡片与账号展开详情：WorkBuddy 国服/国际服分组展示套餐、额外和总积分，
+只汇总就绪账号的有效额度快照，并明确标注未知部分。模型测试限定所选引擎/第三方地址，
+不再借其他供应商的同名模型返回成功；开放/下架仍是同名模型全局设置。
+WorkBuddy 授权支持临时网络错误重试、过期重建和重复完成幂等；单进程重启后需重新授权，
+多副本部署需将授权流程固定到同一实例。设计边界见 [账号池设计](docs/guide/account-pool-design.md)，参考实现的依据与差异见 [Magpie 源码对照](docs/guide/magpie-architecture-comparison.md)。
+
 **账号状态实时回报**：Gemini Web Cookie 校验/失效/配额；AI Studio 登录态、冷却、模型资格、
 额度 Tier 均由上游协议实时同步到管理台。
 
