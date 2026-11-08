@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Field } from '@/components/fields'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 
 type OAuthStartResp = { engine: string; session_id: string; auth_url: string; expires_in: number; site?: string }
 
@@ -305,66 +305,119 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
   const [site, setSite] = useState('workbuddy')
   const [busy, setBusy] = useState(false)
   const [polling, setPolling] = useState(false)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [expired, setExpired] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const generation = useRef(0)
+  const request = useRef<AbortController | null>(null)
+  const labelRef = useRef(label)
+  labelRef.current = label
+
+  const cancelPoll = () => {
+    generation.current += 1
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+    request.current?.abort()
+    request.current = null
+  }
 
   useEffect(() => {
     if (!open) {
-      if (timer.current) clearInterval(timer.current)
-      timer.current = null
       setSession(null)
       setPasteToken('')
       setLabel('')
       setSite('workbuddy')
       setPolling(false)
+      setBusy(false)
+      setExpired(false)
     }
+    return cancelPoll
   }, [open])
 
-  // 切换发行版后旧授权链接作废，必须重新生成。
+  // 切换发行版后取消在途请求，旧响应不能关闭新弹窗或停止新会话。
   const changeSite = (v: string) => {
     if (v === site) return
-    if (timer.current) clearInterval(timer.current)
-    timer.current = null
+    cancelPoll()
     setPolling(false)
+    setBusy(false)
+    setExpired(false)
     setSession(null)
     setSite(v)
   }
 
-  const poll = (sessionID: string) => {
-    if (timer.current) clearInterval(timer.current)
+  const poll = (sessionID: string, current: number, deadline: number) => {
+    let failures = 0
     setPolling(true)
-    timer.current = setInterval(async () => {
-      try {
-        const resp = await api<{ pending?: boolean; error?: string }>(`/admin/api/oauth/workbuddy/poll`, {
-          method: 'POST',
-          json: { session_id: sessionID },
-        })
-        if (resp && resp.pending) return // 等待登录，继续轮询
-        if (timer.current) clearInterval(timer.current)
-        timer.current = null
+    const tick = async () => {
+      if (generation.current !== current) return
+      timer.current = null
+      if (Date.now() >= deadline) {
         setPolling(false)
-        toast.success('账号已添加')
-        onOpenChange(false)
-        onDone()
-      } catch (e) {
-        if (timer.current) clearInterval(timer.current)
-        timer.current = null
-        setPolling(false)
-        toast.error((e as Error).message)
+        setExpired(true)
+        return
       }
-    }, 3000)
+      const controller = new AbortController()
+      request.current = controller
+      // Bound each request and the overall session, even if the network hangs.
+      const timeout = setTimeout(() => controller.abort(), Math.min(60000, deadline - Date.now()))
+      let delay = 3000
+      try {
+        const resp = await api<{ pending?: boolean; account?: unknown }>('/admin/api/oauth/workbuddy/poll', {
+          method: 'POST', signal: controller.signal,
+          json: { session_id: sessionID, label: labelRef.current.trim() },
+        })
+        if (generation.current !== current) return
+        failures = 0
+        if (!resp?.pending) {
+          if (!resp?.account) throw new ApiError(502, '授权响应缺少账号，正在重试')
+          cancelPoll()
+          setPolling(false)
+          toast.success('账号已添加')
+          onOpenChange(false)
+          onDone()
+          return
+        }
+      } catch (e) {
+        if (generation.current !== current) return
+        if (e instanceof ApiError && e.status === 410) {
+          setPolling(false)
+          setExpired(true)
+          return
+        }
+        if (!(e instanceof ApiError) || (e.status !== 0 && e.status !== 408 && e.status !== 429 && e.status < 500)) {
+          setPolling(false)
+          toast.error((e as Error).message)
+          return
+        }
+        failures += 1
+        delay = Math.min(30000, 3000 * 2 ** Math.min(failures, 4))
+      } finally {
+        clearTimeout(timeout)
+        if (request.current === controller) request.current = null
+      }
+      if (generation.current === current) timer.current = setTimeout(tick, Math.min(delay, Math.max(0, deadline - Date.now())))
+    }
+    timer.current = setTimeout(tick, Math.min(3000, Math.max(0, deadline - Date.now())))
   }
 
   const startAuth = async () => {
+    cancelPoll()
+    const current = generation.current
+    const controller = new AbortController()
+    request.current = controller
+    setPolling(false)
+    setExpired(false)
     setBusy(true)
     try {
-      const resp = await api<OAuthStartResp>('/admin/api/oauth/workbuddy/authorize', { method: 'POST', json: { site } })
+      const resp = await api<OAuthStartResp>('/admin/api/oauth/workbuddy/authorize', { method: 'POST', signal: controller.signal, json: { site } })
+      if (generation.current !== current) return
       setSession(resp)
       window.open(resp.auth_url, '_blank')
-      poll(resp.session_id)
+      poll(resp.session_id, current, Date.now() + resp.expires_in * 1000)
     } catch (e) {
-      toast.error((e as Error).message)
+      if (generation.current === current) toast.error((e as Error).message)
     } finally {
-      setBusy(false)
+      if (request.current === controller) request.current = null
+      if (generation.current === current) setBusy(false)
     }
   }
 
@@ -412,9 +465,9 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
             </Button>
           ) : (
             <>
-              <OAuthLinkBlock engine="workbuddy" url={session.auth_url} />
+              <OAuthLinkBlock engine="workbuddy" url={session.auth_url} onExpired={busy ? undefined : startAuth} />
               <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
-                {polling && <Loader2 className="h-3.5 w-3.5 animate-spin" />} {polling ? '等待授权完成…' : '已停止轮询'}
+                {polling && <Loader2 className="h-3.5 w-3.5 animate-spin" />} {polling ? '等待授权完成（网络异常时会自动重试）…' : expired ? '授权已过期，请重新生成链接' : '已停止轮询，可重新生成链接'}
               </div>
             </>
           )}

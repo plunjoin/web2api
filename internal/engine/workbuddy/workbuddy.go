@@ -189,8 +189,10 @@ func StartAuth(ctx context.Context, proxy, baseURL string) (*AuthStart, error) {
 		return nil, fmt.Errorf("发起授权 HTTP %d: %s", resp.StatusCode, snippet(body))
 	}
 	var out struct {
-		Code int `json:"code"`
-		Data struct {
+		Code    int    `json:"code"`
+		Msg     string `json:"msg"`
+		Message string `json:"message"`
+		Data    struct {
 			State   string `json:"state"`
 			AuthURL string `json:"authUrl"`
 		} `json:"data"`
@@ -198,10 +200,17 @@ func StartAuth(ctx context.Context, proxy, baseURL string) (*AuthStart, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("授权响应解析失败: %w", err)
 	}
-	if out.Data.State == "" {
-		return nil, fmt.Errorf("授权响应缺少 state: %s", snippet(body))
+	if out.Code != 0 {
+		return nil, &AuthError{Message: fmt.Sprintf("发起授权失败（code=%d）: %s", out.Code, authMessage(out.Msg, out.Message))}
 	}
-	authURL := out.Data.AuthURL
+	if strings.TrimSpace(out.Data.State) == "" {
+		return nil, errors.New("授权响应缺少 state")
+	}
+	authURL := strings.TrimSpace(out.Data.AuthURL)
+	u, parseErr := url.Parse(authURL)
+	if parseErr != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return nil, errors.New("授权响应缺少有效 authUrl")
+	}
 	// 桌面端版本参数：旧版登录页对低于 5.8.0 的版本隐藏企业微信登录。
 	if u, err := url.Parse(authURL); err == nil && u.Scheme == "https" {
 		q := u.Query()
@@ -228,6 +237,18 @@ type Token struct {
 // ErrPendingLogin 轮询时用户尚未完成登录。
 var ErrPendingLogin = errors.New("等待用户在浏览器完成登录")
 
+// AuthError is a terminal authorization rejection, unlike retryable transport errors.
+type AuthError struct{ Message string }
+
+func (e *AuthError) Error() string { return e.Message }
+
+func authMessage(msg, message string) string {
+	if strings.TrimSpace(msg) != "" {
+		return strings.TrimSpace(msg)
+	}
+	return strings.TrimSpace(message)
+}
+
 // PollToken 轮询授权结果（用户完成登录前返回 ErrPendingLogin）。
 func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error) {
 	endpoint, _, ua, _ := authTarget(baseURL)
@@ -249,7 +270,11 @@ func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("轮询授权 HTTP %d: %s", resp.StatusCode, snippet(body))
+		err := fmt.Errorf("轮询授权 HTTP %d: %s", resp.StatusCode, snippet(body))
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusRequestTimeout {
+			return nil, &AuthError{Message: err.Error()}
+		}
+		return nil, err
 	}
 	var out struct {
 		Code int `json:"code"`
@@ -260,6 +285,7 @@ func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error
 			Domain       string `json:"domain"`
 		} `json:"data"`
 		Message string `json:"message"`
+		Msg     string `json:"msg"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("轮询响应解析失败: %w", err)
@@ -268,7 +294,7 @@ func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error
 		return nil, ErrPendingLogin
 	}
 	if out.Code != 0 || out.Data.AccessToken == "" {
-		return nil, fmt.Errorf("授权未完成（code=%d）: %s", out.Code, strings.TrimSpace(out.Message))
+		return nil, &AuthError{Message: fmt.Sprintf("授权未完成（code=%d）: %s", out.Code, authMessage(out.Msg, out.Message))}
 	}
 	tok := &Token{
 		AccessToken:  out.Data.AccessToken,

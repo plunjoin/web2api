@@ -752,6 +752,9 @@ func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, e
 		if creds.Email == "" {
 			creds.Email = strings.TrimSpace(req.Email)
 		}
+		if creds.Email == "" {
+			creds.Email = workbuddy.JWTEmail(creds.Token)
+		}
 		if creds.Proxy == "" {
 			creds.Proxy = strings.TrimSpace(req.Proxy)
 		}

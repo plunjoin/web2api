@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"web2api/internal/engine/antigravity"
@@ -30,6 +31,33 @@ type API struct {
 	st      *store.Store
 	logger  *log.Logger
 	updater *upgrade.Manager
+
+	workBuddyMu       sync.Mutex
+	workBuddySessions map[string]*workBuddyOAuthSession
+}
+
+// Each device session pins its endpoint and proxy, including an empty proxy.
+// The per-session lock makes completion atomic across overlapping poll requests.
+type workBuddyOAuthSession struct {
+	mu        sync.Mutex
+	base      string
+	proxy     string
+	createdAt time.Time
+	result    map[string]any
+}
+
+func (a *API) saveWorkBuddySession(id, base, proxy string) {
+	a.workBuddyMu.Lock()
+	defer a.workBuddyMu.Unlock()
+	if a.workBuddySessions == nil {
+		a.workBuddySessions = make(map[string]*workBuddyOAuthSession)
+	}
+	for key, sess := range a.workBuddySessions {
+		if time.Since(sess.createdAt) >= 30*time.Minute {
+			delete(a.workBuddySessions, key)
+		}
+	}
+	a.workBuddySessions[id] = &workBuddyOAuthSession{base: base, proxy: proxy, createdAt: time.Now()}
 }
 
 // New 创建管理 API。
@@ -628,6 +656,7 @@ func (a *API) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 			Engine: engineName, SessionID: start.State, State: start.State,
 			AuthURL: start.AuthURL, Proxy: proxy, Site: siteID, CreatedAt: time.Now(),
 		}
+		a.saveWorkBuddySession(start.State, base, proxy)
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持 OAuth 授权"})
 		return
@@ -733,53 +762,71 @@ func (a *API) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id 不能为空"})
 		return
 	}
-	proxy := a.mgr.EngineProxy("workbuddy")
-	base := a.mgr.WorkBuddyBaseURL()
-	// 会话里记着扫码时选的发行版，轮询必须打到同一个 build。
-	siteID := ""
-	if sess, ok := provider.PeekOAuthSession("workbuddy", req.SessionID); ok {
-		if sess.Proxy != "" {
-			proxy = sess.Proxy
-		}
-		if sess.Site != "" {
-			siteID = sess.Site
-			base = workbuddy.SiteFor(sess.Site).Endpoint
-		}
+	result, status := a.pollWorkBuddy(r.Context(), strings.TrimSpace(req.SessionID), req.Label, req.Email, func(input provider.AccountInput) (store.Account, error) {
+		return a.mgr.AddAccountFromStorageState(input)
+	})
+	writeJSON(w, status, result)
+}
+
+func (a *API) pollWorkBuddy(ctx context.Context, id, label, email string, add func(provider.AccountInput) (store.Account, error)) (map[string]any, int) {
+	a.workBuddyMu.Lock()
+	sess := a.workBuddySessions[id]
+	a.workBuddyMu.Unlock()
+	if sess == nil {
+		return map[string]any{"error": "授权会话不存在或已过期，请重新授权"}, http.StatusGone
 	}
-	tok, err := workbuddy.PollToken(r.Context(), proxy, base, req.SessionID)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if time.Since(sess.createdAt) >= 30*time.Minute {
+		return map[string]any{"error": "授权会话已过期，请重新授权"}, http.StatusGone
+	}
+	if sess.result != nil {
+		return sess.result, http.StatusOK
+	}
+	tok, err := workbuddy.PollToken(ctx, sess.proxy, sess.base, id)
 	if err != nil {
 		if errors.Is(err, workbuddy.ErrPendingLogin) {
-			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "message": "等待用户在浏览器完成登录"})
-			return
+			return map[string]any{"pending": true, "message": "等待用户在浏览器完成登录"}, http.StatusAccepted
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
+		status := http.StatusBadGateway
+		var authErr *workbuddy.AuthError
+		if errors.As(err, &authErr) {
+			status = http.StatusBadRequest
+		}
+		return map[string]any{"error": err.Error()}, status
 	}
-	email := req.Email
+	email = strings.TrimSpace(email)
 	if email == "" {
-		email = workbuddy.JWTEmail(tok.AccessToken)
+		email = tok.Email
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = email
+	}
+	if label == "" {
+		label = "WorkBuddy " + time.Now().Format("20060102-150405")
 	}
 	var expiresAt int64
 	if !tok.ExpiresAt.IsZero() {
 		expiresAt = tok.ExpiresAt.Unix()
 	}
-	// 记录发行版：旧 CodeBuddy 地址留空（走 base_url），WorkBuddy 两个 build 明确标注。
-	site := siteID
-	if site == "" && !workbuddy.IsLegacyCodeBuddy(base) {
-		site = workbuddy.SiteForBaseURL(base).ID
+	site := ""
+	if !workbuddy.IsLegacyCodeBuddy(sess.base) {
+		site = workbuddy.SiteForBaseURL(sess.base).ID
 	}
-	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
-		Engine: "workbuddy", Label: req.Label, Email: email,
+	acc, err := add(provider.AccountInput{
+		Engine: "workbuddy", Label: label, Email: email,
 		Credentials: json.RawMessage(mustJSON(workbuddy.Credentials{
 			Token: tok.AccessToken, RefreshToken: tok.RefreshToken, Email: email, ExpiresAt: expiresAt,
-			Site: site, UID: tok.UID, Domain: tok.Domain, EnterpriseID: tok.EnterpriseID,
+			Site: site, BaseURL: sess.base, Proxy: sess.proxy,
+			UID: tok.UID, Domain: tok.Domain, EnterpriseID: tok.EnterpriseID,
 		})),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
+		return map[string]any{"error": err.Error()}, http.StatusBadRequest
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"account": acc, "email": email})
+	sess.result = map[string]any{"account": acc, "email": email}
+	return sess.result, http.StatusOK
 }
 
 func mustJSON(v any) []byte {
