@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CheckCircle2, Download, Plus, RefreshCw, Search, X } from 'lucide-react'
@@ -32,8 +32,11 @@ export function ProviderModelsDialog({
   onAddAccount?: (engine: string) => void
 }) {
   const engine = target?.engine ?? null
-  // 第三方 Key 的快照按上游地址分开存，键是 "custom|<base_url>"。
-  const catalogKey = target?.provider && target.provider !== 'custom|unknown' ? target.provider : engine
+  // target.provider 是归一化后的 base_url（Account.provider，不带引擎前缀），
+  // 而模型快照按上游地址分开存、键是 "custom|<base_url>"。两者不能混用：
+  // 请求参数要传 base_url，过滤快照要用带前缀的键，否则拉取成功也筛不出任何一行。
+  const provider = target?.provider && target.provider !== 'custom|unknown' ? target.provider.replace(/^custom\|/, '') : null
+  const catalogKey = provider ? `custom|${provider}` : engine
   const qc = useQueryClient()
   const models = useQuery({
     queryKey: ['admin', 'models'],
@@ -48,6 +51,21 @@ export function ProviderModelsDialog({
   const [testingAll, setTestingAll] = useState(false)
   const [progress, setProgress] = useState('')
   const [results, setResults] = useState<Record<string, CheckResult>>({})
+  // 每次切换供应商递增，取消上一个供应商还在跑的测试循环/单次测试回写。
+  const runRef = useRef(0)
+
+  // 弹窗常驻挂载：切换供应商时清掉上一个供应商的搜索、勾选和测试结果，
+  // 否则「开放/下架」会把已经看不见的旧模型一起改掉；进行中的「测试全部」
+  // 也必须停掉，不能继续把旧供应商的结果写回来。
+  useEffect(() => {
+    runRef.current++
+    setSearch('')
+    setSelected(new Set())
+    setResults({})
+    setTesting(null)
+    setTestingAll(false)
+    setProgress('')
+  }, [catalogKey])
 
   const rows = useMemo(() => {
     const seen = new Set<string>()
@@ -70,7 +88,7 @@ export function ProviderModelsDialog({
       const res = await api<{ models: number; new: number }>(`/admin/api/engines/${encodeURIComponent(engine)}/models/refresh`, {
         method: 'POST',
         // 第三方 Key 只向这一个上游地址拉取，不影响其他供应商。
-        json: catalogKey !== engine ? { provider: catalogKey } : {},
+        json: provider ? { provider } : {},
       })
       toast.success(res.new ? `已获取 ${res.models} 个模型，其中 ${res.new} 个是新的，默认未开放` : `已获取 ${res.models} 个模型，没有新增`)
       setResults({})
@@ -97,37 +115,43 @@ export function ProviderModelsDialog({
     }
   }
 
-  const testOne = async (id: string): Promise<boolean> => {
-    setTesting(id)
+  const testOne = async (id: string, run?: number): Promise<boolean> => {
+    const current = run ?? runRef.current
+    const active = () => runRef.current === current
+    if (active()) setTesting(id)
     try {
       const res = await api<{ detail?: string; model?: { enabled?: boolean } }>('/admin/api/models/check', {
         method: 'POST',
         json: { model: id, sync_status: false },
       })
-      setResults((prev) => ({ ...prev, [id]: { model: id, ok: true, detail: res.detail, enabled: res.model?.enabled !== false } }))
+      if (active()) setResults((prev) => ({ ...prev, [id]: { model: id, ok: true, detail: res.detail, enabled: res.model?.enabled !== false } }))
       return true
     } catch (e) {
       const err = e as Error & { data?: { error?: string; detail?: string } }
-      setResults((prev) => ({ ...prev, [id]: { model: id, ok: false, detail: err.data?.error || err.data?.detail || err.message, enabled: false } }))
+      if (active()) setResults((prev) => ({ ...prev, [id]: { model: id, ok: false, detail: err.data?.error || err.data?.detail || err.message, enabled: false } }))
       return false
     } finally {
-      setTesting(null)
+      if (active()) setTesting(null)
     }
   }
 
   const testMany = async (ids: string[]) => {
     if (!ids.length) return
+    const run = ++runRef.current
     setTestingAll(true)
     let passed = 0
     try {
       for (let i = 0; i < ids.length; i++) {
+        if (runRef.current !== run) return
         setProgress(`${i + 1}/${ids.length}`)
-        if (await testOne(ids[i])) passed++
+        if (await testOne(ids[i], run)) passed++
       }
-      toast.message(`测试完成：通过 ${passed}，失败 ${ids.length - passed}`)
+      if (runRef.current === run) toast.message(`测试完成：通过 ${passed}，失败 ${ids.length - passed}`)
     } finally {
-      setTestingAll(false)
-      setProgress('')
+      if (runRef.current === run) {
+        setTestingAll(false)
+        setProgress('')
+      }
     }
   }
 

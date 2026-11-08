@@ -53,6 +53,10 @@ type Group = { key: string; label: string; rows: Row[]; enabledCount: number }
 // 分组展示顺序：Gemini Web / AI Studio → 订阅供应商 → 第三方 Key → 其他 → 不在已保存快照
 const ENGINE_ORDER = ['a', 'b', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
 
+// 上游目录可能用 models/x、大写等不同写法列出同一个模型，而上下架设置按裸名存。
+// 行键必须归一化，否则同一模型会出现两行、两个开关，切换其中一行另一行不动。
+const canonicalModelID = (id: string) => id.trim().toLowerCase().replace(/^models\//, '')
+
 export default function AdminModels() {
   const qc = useQueryClient()
   const models = useQuery({ queryKey: ['admin', 'models'], queryFn: () => api<{ models: ModelInfo[]; fetched_at: number }>('/admin/api/models') })
@@ -99,11 +103,16 @@ export default function AdminModels() {
       setFetching(false)
     }
   }
-  const explicit = useMemo(() => new Map((mults.data?.multipliers || []).map((m) => [m.model, m])), [mults.data])
+  const explicit = useMemo(
+    () => new Map((mults.data?.multipliers || []).map((m) => [canonicalModelID(m.model), m])),
+    [mults.data],
+  )
   const rows = useMemo(() => {
     const map = new Map<string, Row>()
     for (const m of models.data?.models || []) {
-      const row = map.get(m.id) || {
+      // 行键用归一化裸名：同一模型的不同写法合并成一行，展示首个原始 ID。
+      const key = canonicalModelID(m.id)
+      const row = map.get(key) || {
         id: m.id,
         display: m.display_name,
         engines: new Set<string>(),
@@ -124,10 +133,11 @@ export default function AdminModels() {
       }
       if (m.kind && m.kind !== 'chat') row.kind = m.kind
       else if (!row.kind) row.kind = m.kind
-      map.set(m.id, row)
+      map.set(key, row)
     }
     for (const m of mults.data?.multipliers || []) {
-      if (m.model !== '*' && !map.has(m.model)) map.set(m.model, { id: m.model, engines: new Set(), available: false, enabled: true })
+      const key = canonicalModelID(m.model)
+      if (m.model !== '*' && !map.has(key)) map.set(key, { id: m.model, engines: new Set(), available: false, enabled: true })
     }
     const s = search.trim().toLowerCase()
     return [...map.values()]
@@ -162,13 +172,16 @@ export default function AdminModels() {
     qc.setQueryData<{ models: ModelInfo[] }>(['admin', 'models'], (prev) => {
       if (!prev) return prev
       const setting = result.setting
+      const target = canonicalModelID(result.model)
       return {
         models: prev.models.map((m) =>
-          m.id !== result.model
+          canonicalModelID(m.id) !== target
             ? m
             : {
                 ...m,
-                enabled: setting?.enabled ?? result.enabled,
+                // 检查失败时后端只记录检查结果、不改开关；响应不带 model 时
+                // 必须保留缓存里原来的开放状态，不能把模型显示成「已下架」。
+                enabled: setting?.enabled ?? (result.ok ? result.enabled : m.enabled),
                 last_check_at: setting?.last_check_at ?? Math.floor(Date.now() / 1000),
                 last_check_ok: setting?.last_check_ok ?? result.ok,
                 last_check_detail: setting?.last_check_detail ?? result.detail,
@@ -203,10 +216,12 @@ export default function AdminModels() {
     }
   }
   const setEnabled = async (id: string, enabled: boolean) => {
-    // 先乐观更新，避免开关“点了没反应”
+    // 先乐观更新，避免开关“点了没反应”。同一模型的其它写法要一起改，
+    // 否则合并后的一行会取到另一写法留下的旧开关状态。
+    const target = canonicalModelID(id)
     qc.setQueryData<{ models: ModelInfo[] }>(['admin', 'models'], (prev) => {
       if (!prev) return prev
-      return { models: prev.models.map((m) => (m.id === id ? { ...m, enabled } : m)) }
+      return { models: prev.models.map((m) => (canonicalModelID(m.id) === target ? { ...m, enabled } : m)) }
     })
     try {
       await api(`/admin/api/models/${encodeURIComponent(id)}`, { method: 'PATCH', json: { enabled } })
@@ -221,8 +236,9 @@ export default function AdminModels() {
     setToggling(true)
     try {
       await api('/admin/api/models/batch', { method: 'POST', json: { models: ids, enabled } })
+      const keys = new Set(ids.map(canonicalModelID))
       qc.setQueryData<{ models: ModelInfo[] }>(['admin', 'models'], (prev) =>
-        prev ? { models: prev.models.map((m) => (ids.includes(m.id) ? { ...m, enabled } : m)) } : prev,
+        prev ? { models: prev.models.map((m) => (keys.has(canonicalModelID(m.id)) ? { ...m, enabled } : m)) } : prev,
       )
       toast.success(enabled ? `已开放 ${ids.length} 个模型` : `已下架 ${ids.length} 个模型，下游不可见`)
       setSelected(new Set())
@@ -307,7 +323,7 @@ export default function AdminModels() {
         enabled: setting?.enabled === true ? true : false,
         setting,
       })
-      if (!opts?.quiet) toast.error(`${id} 不可用，已下架：${detail}`)
+      if (!opts?.quiet) toast.error(`${id} 不可用（未改变开放状态）：${detail}`)
       return { model: id, ok: false, detail, enabled: false, setting } satisfies CheckResult
     } finally {
       setChecking(null)
@@ -332,7 +348,7 @@ export default function AdminModels() {
         else failed++
       }
       if (failed === 0) toast.success(`批量检查完成：${passed} 个全部通过并已开放`)
-      else toast.warning(`批量检查完成：通过 ${passed}，失败并下架 ${failed}`)
+      else toast.warning(`批量检查完成：通过 ${passed} 并已开放，失败 ${failed}（开关保持不变）`)
     } finally {
       setBatching(false)
       setBatchProgress('')
@@ -370,10 +386,10 @@ export default function AdminModels() {
     else if (r.available) label = <StatusDot tone="success">上游可用</StatusDot>
     else label = <StatusDot tone="muted">上游暂不可用</StatusDot>
 
-    const detailLine =
-      r.enabled && r.lastCheckAt
-        ? `${relative(r.lastCheckAt)}${r.lastCheckDetail ? ` · ${r.lastCheckDetail}` : ''}`
-        : ''
+    // 已下架的模型同样要显示最近检查详情：误关之后最需要看到探测失败原因。
+    const detailLine = r.lastCheckAt
+      ? `${relative(r.lastCheckAt)}${r.lastCheckDetail ? ` · ${r.lastCheckDetail}` : ''}`
+      : ''
 
     return (
       <div className="flex w-[16rem] items-center gap-3">
@@ -524,10 +540,10 @@ export default function AdminModels() {
                               <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || !g.rows.length} onClick={() => toggleGroupSelection(g)}>
                                 全选{groupSelected ? ` (${groupSelected})` : ''}
                               </Button>
-                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || !g.enabledCount} onClick={() => groupAction(g, true)}>
+                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || g.enabledCount === g.rows.length} onClick={() => groupAction(g, true)}>
                                 全部开放
                               </Button>
-                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || g.enabledCount === g.rows.length} onClick={() => groupAction(g, false)}>
+                              <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={busy || g.enabledCount === 0} onClick={() => groupAction(g, false)}>
                                 全部下架
                               </Button>
                             </div>
@@ -536,7 +552,7 @@ export default function AdminModels() {
                       </TableRow>
                       {!isCollapsed &&
                         g.rows.map((r) => {
-                          const m = explicit.get(r.id)
+                          const m = explicit.get(canonicalModelID(r.id))
                           const rowBusy = checking === r.id
                           return (
                             <TableRow key={r.id} className={!r.enabled ? 'opacity-70' : undefined}>
@@ -601,7 +617,7 @@ export default function AdminModels() {
                                     disabled={busy}
                                     onClick={() => checkOne(r.id)}
                                     aria-label="检查模型"
-                                    title="检查并同步上下架"
+                                    title="检查（通过后自动开放，失败只记录）"
                                   >
                                     <RefreshCw className={rowBusy ? 'animate-spin' : undefined} />
                                   </Button>

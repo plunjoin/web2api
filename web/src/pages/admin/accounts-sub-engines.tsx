@@ -5,10 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Field } from '@/components/fields'
 import { api } from '@/lib/api'
 
-type OAuthStartResp = { engine: string; session_id: string; auth_url: string; expires_in: number }
+type OAuthStartResp = { engine: string; session_id: string; auth_url: string; expires_in: number; site?: string }
 
 /** OAuth 授权链接展示块（codex / antigravity / workbuddy 共用）。 */
 function OAuthLinkBlock({ engine, url, onExpired }: { engine: string; url: string; onExpired?: () => void }) {
@@ -300,6 +301,8 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
   const [session, setSession] = useState<OAuthStartResp | null>(null)
   const [pasteToken, setPasteToken] = useState('')
   const [label, setLabel] = useState('')
+  // 发行版：两个 build 的登录入口、模型目录、计费都不同，入池前必须选对。
+  const [site, setSite] = useState('workbuddy')
   const [busy, setBusy] = useState(false)
   const [polling, setPolling] = useState(false)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -311,9 +314,20 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
       setSession(null)
       setPasteToken('')
       setLabel('')
+      setSite('workbuddy')
       setPolling(false)
     }
   }, [open])
+
+  // 切换发行版后旧授权链接作废，必须重新生成。
+  const changeSite = (v: string) => {
+    if (v === site) return
+    if (timer.current) clearInterval(timer.current)
+    timer.current = null
+    setPolling(false)
+    setSession(null)
+    setSite(v)
+  }
 
   const poll = (sessionID: string) => {
     if (timer.current) clearInterval(timer.current)
@@ -343,7 +357,7 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
   const startAuth = async () => {
     setBusy(true)
     try {
-      const resp = await api<OAuthStartResp>('/admin/api/oauth/workbuddy/authorize', { method: 'POST', json: {} })
+      const resp = await api<OAuthStartResp>('/admin/api/oauth/workbuddy/authorize', { method: 'POST', json: { site } })
       setSession(resp)
       window.open(resp.auth_url, '_blank')
       poll(resp.session_id)
@@ -361,7 +375,7 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
     try {
       await api('/admin/api/accounts', {
         method: 'POST',
-        json: { engine: 'workbuddy', label: label.trim(), credentials: { token: pasteToken.trim() } },
+        json: { engine: 'workbuddy', label: label.trim(), credentials: { token: pasteToken.trim(), site } },
       })
       toast.success('账号已添加')
       onOpenChange(false)
@@ -378,9 +392,20 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
       <DialogContent className="sm:max-w-[520px]">
         <form onSubmit={pasteSubmit} className="space-y-4">
           <DialogHeader>
-            <DialogTitle className="text-[15px]">添加 WorkBuddy / CodeBuddy 账号</DialogTitle>
-            <DialogDescription className="text-[13px]">推荐扫码授权：在打开的页面登录 CodeBuddy 账号，本弹窗自动完成入池；也可以直接粘贴 accessToken。</DialogDescription>
+            <DialogTitle className="text-[15px]">添加 WorkBuddy 账号</DialogTitle>
+            <DialogDescription className="text-[13px]">先选发行版，再扫码授权或粘贴 accessToken。国服与国际服的账号不能混用同一个登录入口。</DialogDescription>
           </DialogHeader>
+          <Field label="发行版" htmlFor="wb-site">
+            <Select value={site} onValueChange={changeSite}>
+              <SelectTrigger id="wb-site" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="workbuddy">国服 · copilot.tencent.com</SelectItem>
+                <SelectItem value="workbuddy-ai">国际服 · www.workbuddy.ai</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
           {!session ? (
             <Button type="button" onClick={startAuth} disabled={busy} className="w-full">
               {busy ? <Loader2 className="animate-spin" /> : null} 开始扫码授权
@@ -394,7 +419,7 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
             </>
           )}
           <div className="space-y-2 border-t pt-3">
-            <Field label="或直接粘贴 accessToken" htmlFor="wb-token">
+            <Field label="或直接粘贴 accessToken（按上方发行版入池）" htmlFor="wb-token">
               <Textarea id="wb-token" rows={2} spellCheck={false} value={pasteToken} onChange={(e) => setPasteToken(e.target.value)} className="font-mono text-[11px]" placeholder="Authorization: Bearer 后面的 JWT" />
             </Field>
             <Field label="名称（可选）" htmlFor="wb-label">

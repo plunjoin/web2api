@@ -318,10 +318,14 @@ function ProviderGroups({
                           {detail && accountHealth(a) === 'down' && <div className="truncate text-[11px] text-muted-foreground">{detail}</div>}
                           <CooldownLines cooldowns={a.live?.cooldowns} />
                         </TableCell>
-                        <TableCell>
-                          <div className="flex flex-col items-start gap-1">
+                        <TableCell className="max-w-[240px] whitespace-normal">
+                          <div className="flex min-w-0 flex-col items-start gap-1">
                             <TierPill tier={a.live?.tier} />
-                            {a.live?.quota && <span className="text-[11px] text-muted-foreground tabular-nums">{a.live.quota}</span>}
+                            {a.live?.quota && (
+                              <span className="line-clamp-2 break-all text-[11px] text-muted-foreground tabular-nums" title={a.live.quota}>
+                                {a.live.quota}
+                              </span>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="text-right tabular-nums">{a.live?.models ?? 0}</TableCell>
