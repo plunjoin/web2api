@@ -230,6 +230,10 @@ func (m *Manager) Init(ctx context.Context) error {
 
 // bootstrapAccounts 启动装配：存储 → 号池（含 config 静态账号迁移、auth 目录反向导入）。
 func (m *Manager) bootstrapAccounts(ctx context.Context) error {
+	// 先把历史引擎名（a/b）写回规范名并合并重复行，否则同一个账号会在管理台
+	// 出现两行，其中一行因为号池里没有对应 ID 而永远显示「未加载」。
+	_, _ = m.st.NormalizeLegacyEngines()
+
 	accounts, err := m.st.ListAccounts()
 	if err != nil {
 		return fmt.Errorf("读取账号存储失败: %w", err)

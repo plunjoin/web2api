@@ -120,6 +120,84 @@ func (s *Store) DeleteAccount(id int64) error {
 	return nil
 }
 
+// NormalizeLegacyEngines 把库里的历史引擎名写回为规范标识（a→geminiweb、b→aistudio）。
+//
+// 旧版本用 a/b，新版本用 geminiweb/aistudio；同一个账号因此在库里可能留下两行
+// （老行带真实凭据，新行是反向导入的空壳），管理台就出现两条一模一样的账号、
+// 其中一条永远「未加载」。与已有规范行冲突时，把更完整的一侧凭据并入规范行、
+// 启停取「或」，再删掉历史行。返回处理的记录数。
+func (s *Store) NormalizeLegacyEngines() (int, error) {
+	rows, err := s.db.Query(`SELECT id, engine, label, credentials, enabled FROM accounts WHERE engine IN ('a', 'b')`)
+	if err != nil {
+		return 0, err
+	}
+	type legacyRow struct {
+		id      int64
+		engine  string
+		label   string
+		creds   string
+		enabled bool
+	}
+	var list []legacyRow
+	for rows.Next() {
+		var r legacyRow
+		var enabled int
+		if err := rows.Scan(&r.id, &r.engine, &r.label, &r.creds, &enabled); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		r.enabled = enabled != 0
+		list = append(list, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	done := 0
+	for _, r := range list {
+		canonical := legacyEngineName(r.engine)
+		var existing Account
+		err := s.db.QueryRow(`SELECT id, engine, label, credentials, enabled, status, detail, created_at, updated_at
+			FROM accounts WHERE engine = ? AND label = ?`, canonical, r.label).
+			Scan(&existing.ID, &existing.Engine, &existing.Label, &existing.Credentials, &existing.Enabled,
+				&existing.Status, &existing.Detail, &existing.CreatedAt, &existing.UpdatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := s.db.Exec(`UPDATE accounts SET engine = ?, updated_at = ? WHERE id = ?`,
+				canonical, now(), r.id); err != nil {
+				return done, err
+			}
+			done++
+			continue
+		}
+		if err != nil {
+			return done, err
+		}
+		// 冲突：规范行已存在。空壳凭据（{} / 空串）让位给带真实内容的一侧。
+		creds := existing.Credentials
+		if emptyCreds(creds) && !emptyCreds(r.creds) {
+			creds = r.creds
+		}
+		enabled := existing.Enabled || r.enabled
+		if _, err := s.db.Exec(`UPDATE accounts SET credentials = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+			creds, boolToInt(enabled), now(), existing.ID); err != nil {
+			return done, err
+		}
+		if _, err := s.db.Exec(`DELETE FROM accounts WHERE id = ?`, r.id); err != nil {
+			return done, err
+		}
+		done++
+	}
+	return done, nil
+}
+
+// emptyCreds 判断凭据是否只是空壳（反向导入时写入的 "{}"）。
+func emptyCreds(creds string) bool {
+	c := strings.TrimSpace(creds)
+	return c == "" || c == "{}" || c == "null"
+}
+
 func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var acc Account
 	var enabled int
