@@ -1,14 +1,15 @@
-v0.3.9 架构重构与能力升级：Responses / Chat 协议解耦、引擎目录规范化、模型快照管理与音乐模型双向互通。
+v0.3.10 WorkBuddy 双发行版与积分智能路由：模型探测与上下架语义修正、Gemini Web Cookie 持久化、历史账号行自动合并。
 
-- **音乐模型双向互通**：音乐模型（Lyria 等）支持 `/v1/chat/completions` 与 `/v1/music/generations` 双向调用。对话请求自动适配各底层引擎并以 Markdown Data URI 形式返回音频；专用音乐端点支持生成标准 JSON 或直接返回二进制 MP3/WAV。
-- **模型下架严格拦截与 ID 归一化**：统一模型 ID 归一化（去空白、去 `models/` 前缀、小写），修复管理台下架带前缀模型后裸名请求绕过拦截穿透到同名第三方 Key 的问题，备选路由与透传端点全链路阻断已下架模型并返回 `model_unavailable`。
-- **Responses 与 Chat 协议解耦（Wire 分层）**：抽出 `internal/wire/chat` 与 `internal/wire/responses` 独立负责出入站协议编解码与流式装配，结合内部 IR 与工具清洗（非 function 工具在入口丢弃并记日志），彻底解决 Codex 与 CC Switch 工具兼容痛点。
-- **引擎目录统一与规范化**：七大引擎实现统一迁入 `internal/engine/<name>`，引擎标识 a/b 规范命名为 `geminiweb` / `aistudio`，旧配置键与存量数据库记录无缝平滑向下兼容。
-- **模型快照与管理端按供应商刷新**：数据库新增 `model_catalog` 快照表，管理台支持按单个供应商或全量主动刷新上游模型，新增供应商模型专页，支持可视化查看快照与一键全选上下架。
-- **工具调用与备选路由强化**：请求携带 tools 时增加严格的通道校验，不支持工具的引擎明确报错 `tools_not_supported`；workbuddy 接入 ToolEngine；备选路由支持 custom 透明兜底。
+- **WorkBuddy 国服/国际服双发行版**：国服（copilot.tencent.com）与国际服（www.workbuddy.ai）账号可同池混跑。管理台添加账号时先选发行版再扫码或粘贴 accessToken，OAuth 授权与轮询全程固定同一 build；每个账号保留自己的站点、域、企业身份与代理，旧 CodeBuddy 账号继续走原端点。
+- **积分智能路由与自动续期**：从上游实时读取套餐/赠送/总计三窗口额度，只有总计用尽才停号；路由优先花掉积分最快作废的账号，遇额度用尽、风控、限流、5xx 或 token 失效自动换号。refresh_token 一次性消费做并发去重并回写数据库，额度定时刷新让重置后的账号自动回池。
+- **模型探测与上下架语义修正**：模型检查改为「通过即开放、失败只记录」，临时超时或限流不再把模型永久下架，避免一次批量检查锁死全部模型；管理台探测请求绕过下架闸门，误关的模型可以真正打到上游并通过检查恢复。
+- **模型 ID 归一化与目录刷新**：管理台设置、下架名单与目录快照统一按归一化裸名匹配，同一模型的 `models/x` 与 `x` 两种写法合并为一行；目录刷新把已有上下架记录也算作已知模型，不再把已开放模型静默下架。第三方供应商刷新支持直接识别 `custom|<base_url>` 快照键，单供应商刷新会清理旧的整包快照。
+- **路由按可用模型认领**：目录里保留但当前没有可用账号的模型不再仅凭引擎级就绪状态抢走路由，同名模型可落到真正能接单的引擎；全部账号不可用时仍保留归属并返回真实原因，而不是被自动兜底送去不认识的引擎。
+- **Gemini Web Cookie 持久化**：对话、轮换与初始化响应中的 `__Secure-1PSIDTS` 变化即时落库，Cookie 会话同时匹配历史 `a` 与现行 `geminiweb` 引擎名，修复重启后退回旧 Cookie 导致掉登录态的问题；首次初始化失败后仍会按周期重试。
+- **历史账号与 Web 管理台**：启动时自动把历史 `a`/`b` 引擎账号行合并为规范行，消除重复账号与「未加载」条目；管理台同步适配发行版选择、模型行键归一化、检查详情展示与供应商测试取消，并重建内嵌前端资源。
 
-升级说明：拉取 `v0.3.9` 镜像或二进制后重启即可。存量配置与数据库无需手动迁移。
+升级说明：拉取 `v0.3.10` 镜像或二进制后重启即可。存量数据库启动时自动合并历史引擎账号行，旧 CodeBuddy 账号无需手动迁移；新增 WorkBuddy 账号请先选择发行版再授权。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.3.9、ghcr.io/plunjoin/web2api:0.3.9、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.3.10、ghcr.io/plunjoin/web2api:0.3.10、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
