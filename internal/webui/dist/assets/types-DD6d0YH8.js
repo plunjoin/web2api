@@ -1,0 +1,1 @@
+function e(e){return e===`a`?`geminiweb`:e===`b`?`aistudio`:e}var t={a:`Gemini Web`,b:`AI Studio`,geminiweb:`Gemini Web`,aistudio:`AI Studio`,"workbuddy-ai":`WorkBuddy AI`,codex:`GPT`,antigravity:`Antigravity`,kiro:`Kiro`,workbuddy:`WorkBuddy`,custom:`第三方 Key`};function n(e){return e.startsWith(`custom|`)?e.slice(7)||t.custom:t[e]||e}export{n,e as t};
