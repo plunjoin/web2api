@@ -1199,7 +1199,26 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	if m.modelDisabled(name) {
 		return nil, false
 	}
+	return m.matchEngine(name)
+}
 
+// 探测标记定义在 engine 包：引擎内部（如 custom 的图片/向量探测选号）
+// 也要能识别它，否则已下架模型永远只能在入口层绕过开关、到了引擎再被拦一次。
+func withProbeRequest(ctx context.Context) context.Context {
+	return engine.WithProbeContext(ctx)
+}
+
+func isProbeRequest(ctx context.Context) bool {
+	return engine.IsProbeContext(ctx)
+}
+
+// pickEngineForProbe 管理台探测专用：只看哪个引擎能接单，不看上下架开关。
+func (m *Manager) pickEngineForProbe(modelName string) (engine.Engine, bool) {
+	return m.matchEngine(model.CanonicalModelID(modelName))
+}
+
+// matchEngine 按模型名挑选承接引擎（不含上下架判断）。
+func (m *Manager) matchEngine(name string) (engine.Engine, bool) {
 	// 1) 显式模型路由：engine_a/b_models + routing.engine_models.<engine>
 	//    配置命中即为「专属」：写了就是点名要这个引擎，它挂了就报它的真实错误，
 	//    不再被 alternate 带去别的引擎（换过去只会拿到假 404 或错模型）。
@@ -1226,6 +1245,13 @@ func (m *Manager) pickEngine(modelName string) (engine.Engine, bool) {
 	//    目录中的正式 ID）归属到拥有它的引擎，不再落入 auto 兜底后被静默换模。
 	//    订阅引擎优先于 A/B，既有路由（models/* 镜像目录等）保持不变。
 	if eng, ok := m.matchCoreCatalog(name); ok {
+		return eng, true
+	}
+
+	// 3.5) 目录里有、但当前没有可用账号的模型（custom / 订阅引擎）：仍判给它（专属）。
+	//      否则会落入 auto 兜底被送去根本不认识该模型的引擎，真实原因
+	//      「声明了模型的账号均不可用」反而看不到。
+	if eng, ok := m.matchDeclaredUnavailable(name); ok {
 		return eng, true
 	}
 
@@ -1298,7 +1324,10 @@ func (m *Manager) matchSubscriptionCatalog(modelName string) (engine.Engine, boo
 		if !eng.Ready() {
 			continue
 		}
-		if engineHasModel(eng, modelName) {
+		// 要按「有可用账号声明该模型」认领：custom 目录会保留停用/冷却账号
+		// 的模型（Available=false），只判引擎级 Ready 会把这类模型抢走后报
+		// 「声明了模型的账号均不可用」，而同样声明它的 aistudio 不会被尝试。
+		if engineCanServeModel(eng, modelName) {
 			return eng, true
 		}
 	}
@@ -1341,6 +1370,53 @@ func engineHasModel(eng engine.Engine, modelName string) bool {
 		}
 	}
 	return false
+}
+
+// matchDeclaredUnavailable 找出「目录里声明了该模型、但当前没有可用账号」的引擎，
+// 用于给它保留归属、返回准确的错误。订阅引擎（workbuddy 等）的目录是静态的，
+// 没有模型级可用性概念，Ready() 为 false 就是全部账号不可用；custom 还要求
+// 声明该模型的账号本身可用（HasAvailableModel）。
+//
+// 不做这一步的后果：WorkBuddy 唯一的账号掉了 401，它的模型会落入 auto 兜底被
+// 送去 AI Studio，模型页于是显示「没有符合条件的 AI Studio 账户」，与真实原因
+// （WorkBuddy 没有可用账号）毫不相干。
+func (m *Manager) matchDeclaredUnavailable(modelName string) (engine.Engine, bool) {
+	for _, engName := range m.engineOrder {
+		// 引擎A/B 的目录大而杂，交给后面的 auto 兜底，不在这里抢占。
+		if engName == "geminiweb" || engName == "aistudio" {
+			continue
+		}
+		eng, ok := m.engines[engName]
+		if !ok {
+			continue
+		}
+		if engineHasModel(eng, modelName) && !engineCanActuallyServe(eng, modelName) {
+			return eng, true
+		}
+	}
+	return nil, false
+}
+
+// engineCanActuallyServe 引擎当前是否真有账号能接这个模型：
+// 引擎级 Ready（至少一个账号可用）+ 模型级可用性（实现了该接口的引擎）。
+func engineCanActuallyServe(eng engine.Engine, modelName string) bool {
+	if eng == nil || !eng.Ready() {
+		return false
+	}
+	return engineCanServeModel(eng, modelName)
+}
+
+// engineCanServeModel 引擎当前是否有可用账号能接这个模型。
+// 实现了 ModelAvailability 的引擎（custom）按模型级可用性判断；其余引擎的
+// 目录本身就是账号可用性的体现，按目录是否声明该模型判断即可。
+func engineCanServeModel(eng engine.Engine, modelName string) bool {
+	if eng == nil {
+		return false
+	}
+	if checker, ok := eng.(engine.ModelAvailability); ok {
+		return checker.HasAvailableModel(modelName)
+	}
+	return engineHasModel(eng, modelName)
 }
 
 // modelDisabled 报告模型是否被管理台下架。读失败时不拦截：下架名单拿不到
@@ -1403,6 +1479,8 @@ func (m *Manager) ProbeModel(ctx context.Context, modelID string) (string, error
 	if modelID == "" {
 		return "", errors.New("model 不能为空")
 	}
+	// 管理台探测不受上下架开关限制：已下架的模型也要真的打到上游。
+	ctx = withProbeRequest(ctx)
 	kind := model.ClassifyKind(modelID, "", nil)
 	for _, mi := range m.ListAllModels() {
 		if strings.EqualFold(mi.ID, modelID) {
@@ -1450,7 +1528,7 @@ func (m *Manager) probeChatModel(ctx context.Context, modelID string) (string, e
 }
 
 func (m *Manager) probeImageModel(ctx context.Context, modelID string) (string, error) {
-	eng, _ := m.pickEngine(modelID)
+	eng, _ := m.pickEngineForProbe(modelID)
 	switch e := eng.(type) {
 	case *custom.Engine:
 		return e.ProbeImage(ctx, modelID)
@@ -1462,7 +1540,7 @@ func (m *Manager) probeImageModel(ctx context.Context, modelID string) (string, 
 }
 
 func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (string, error) {
-	eng, _ := m.pickEngine(modelID)
+	eng, _ := m.pickEngineForProbe(modelID)
 	switch e := eng.(type) {
 	case *custom.Engine:
 		return e.ProbeEmbedding(ctx, modelID)
@@ -1476,7 +1554,7 @@ func (m *Manager) probeEmbeddingModel(ctx context.Context, modelID string) (stri
 // 不做真实生成（昂贵且会产生计费），但也不做「在目录里就算过」的假探测：
 // 至少要满足「有账号声明该模型」+「归属引擎能接单」两条。
 func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
-	eng, _ := m.pickEngine(modelID)
+	eng, _ := m.pickEngineForProbe(modelID)
 	if eng == nil {
 		return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
 	}
@@ -1484,16 +1562,19 @@ func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
 		return "", engine.NewModelNotFound(modelID, m.ownershipHint(modelID))
 	}
 	// 目录里有、但没有任何可用账号声明它（引擎自报 available=false）同样不算可用。
-	want := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
-	for _, mi := range m.ListAllModels() {
-		id := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(mi.ID), "models/"))
-		if id != want {
+	// 必须查被选中引擎自己的目录：全局 ListAllModels 会把别的引擎/别的写法合并进来，
+	// 可能拿 aistudio 的条目判断 custom 是否可用（两个方向都会误判）。
+	want := model.CanonicalModelID(modelID)
+	found, available := false, false
+	for _, mi := range eng.ListModels() {
+		if model.CanonicalModelID(mi.ID) != want {
 			continue
 		}
-		if !mi.Available {
-			return "", fmt.Errorf("模型 %s 在 %s 引擎目录中，但没有可用账号声明它（账号停用 / 未拉到目录 / 冷却中）", modelID, eng.Name())
-		}
-		break
+		found = true
+		available = available || mi.Available
+	}
+	if found && !available {
+		return "", fmt.Errorf("模型 %s 在 %s 引擎目录中，但没有可用账号声明它（账号停用 / 未拉到目录 / 冷却中）", modelID, eng.Name())
 	}
 	if !eng.Ready() {
 		return "", engine.UnavailableError(eng)
@@ -1503,7 +1584,7 @@ func (m *Manager) probeCatalogModel(modelID, kind string) (string, error) {
 
 // Chat 非流式对话。
 func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
-	eng, req, err := m.resolveChatEngine(req)
+	eng, req, err := m.resolveChatEngineCtx(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1524,7 +1605,7 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 	if sink == nil {
 		sink = model.TextSink(nil)
 	}
-	eng, req, err := m.resolveChatEngine(req)
+	eng, req, err := m.resolveChatEngineCtx(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1549,6 +1630,13 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 // 该引擎的具体错误；引擎B 收到目录外模型时不再静默换模，由引擎B 返回明确的
 // 目录错误，避免「换用不可用模型后报无可用账户」这类误导性错误。
 func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model.ChatRequest, error) {
+	return m.resolveChatEngineCtx(context.Background(), req)
+}
+
+// resolveChatEngineCtx 与 resolveChatEngine 相同，但会识别管理台探测标记：
+// 探测请求跳过上下架闸门，并允许从已下架模型原有的承接引擎/备胎里选路，
+// 这样「测试」才能反映上游真实状态，也能把误关的模型测回来后重新开放。
+func (m *Manager) resolveChatEngineCtx(ctx context.Context, req model.ChatRequest) (engine.Engine, model.ChatRequest, error) {
 	// 用途闸门：音乐/视频/向量模型走 /v1/chat/completions 一定拿不到结果。
 	// 第三方 OpenAI 兼容端点只会把请求原样发出去，然后被上游以
 	// “Unhandled generated data mime type: audio/mpeg” 之类的 400 拒掉。
@@ -1564,11 +1652,20 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 		return nil, req, engine.NewUnsupportedEndpoint(req.Model, kind)
 	}
 
-	if m.modelDisabled(req.Model) {
+	// 管理台探测要能验证已下架的模型：跳过上下架闸门，否则永远只能得到
+	// 「已下架」，误关后无法通过检查恢复。
+	probe := isProbeRequest(ctx)
+	if !probe && m.modelDisabled(req.Model) {
 		return nil, req, engine.NewModelDisabled(req.Model)
 	}
 
-	eng, owned := m.pickEngine(req.Model)
+	var eng engine.Engine
+	var owned bool
+	if probe {
+		eng, owned = m.pickEngineForProbe(req.Model)
+	} else {
+		eng, owned = m.pickEngine(req.Model)
+	}
 	if eng == nil {
 		return nil, req, engine.NewModelNotFound(req.Model, m.ownershipHint(req.Model))
 	}
@@ -1579,7 +1676,12 @@ func (m *Manager) resolveChatEngine(req model.ChatRequest) (engine.Engine, model
 		if owned || isMultimodalModel(strings.ToLower(strings.TrimSpace(req.Model))) {
 			return nil, req, engine.UnavailableError(eng)
 		}
-		alt := m.alternate(eng, req.Model)
+		var alt engine.Engine
+		if probe {
+			alt = m.alternateForProbe(eng, req.Model)
+		} else {
+			alt = m.alternate(eng, req.Model)
+		}
 		if alt != nil {
 			eng = alt
 		} else {
@@ -1709,6 +1811,12 @@ func (m *Manager) alternate(cur engine.Engine, modelName string) engine.Engine {
 	if m.modelDisabled(modelName) {
 		return nil
 	}
+	return m.alternateForProbe(cur, modelName)
+}
+
+// alternateForProbe 管理台探测专用：不做上下架判断，已下架的模型也允许
+// 换到声明它的就绪引擎上验证。
+func (m *Manager) alternateForProbe(cur engine.Engine, modelName string) engine.Engine {
 	var fallback engine.Engine
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]

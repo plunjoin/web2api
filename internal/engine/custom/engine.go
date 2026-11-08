@@ -394,7 +394,10 @@ func (e *Engine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) 
 // 返回的模型带上该供应商地址（ModelInfo.Engine = "custom|<base_url>"），
 // 供管理台按供应商分开保存。
 func (e *Engine) RefreshProviderCatalog(ctx context.Context, provider string) ([]model.ModelInfo, error) {
-	provider = strings.TrimRight(strings.TrimSpace(provider), "/")
+	provider = strings.TrimSpace(provider)
+	// 调用方可能直接传快照键（custom|<base_url>）：统一还原成 base_url 再和账号比对，
+	// 否则带前缀的值永远匹配不到任何账号。
+	provider = strings.TrimPrefix(provider, "custom|")
 	if provider != "" {
 		provider = upstream.NormalizeBaseURL(provider)
 	}
@@ -587,13 +590,40 @@ func (e *Engine) candidates(modelName string) (usable []*customAccount, declared
 	return usable, declared, n
 }
 
+// HasAvailableModel 实现 engine.ModelAvailability：当前是否有可用账号声明该模型。
+// ListModels 会保留停用/冷却账号的条目，路由层不能用它判断「现在能不能接单」。
+func (e *Engine) HasAvailableModel(modelName string) bool {
+	want := normalizeModelID(modelName)
+	if want == "" {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		ok := acc.declaresLocked(want) && acc.usableLocked()
+		acc.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // pick 按模型精确选号：只返回目录里明确声明了该模型的可用账号。
 // 这里刻意不再保留「找不到就随便抓一个就绪号」的兜底——那会把 lyria / veo
 // 这类模型打到完全不相干的第三方供应商上，最后以误导性的上游 404 收场。
 // 下架的模型在这里也直接拒绝：路由层已经拦过一次，但这是请求真正发出去之前
 // 的最后一道门，避免任何绕过 pickEngine 的路径打到第三方 Key。
 func (e *Engine) pick(modelName string) (*customAccount, error) {
-	if e.modelDisabled(modelName) {
+	return e.pickCtx(context.Background(), modelName)
+}
+
+// pickCtx 与 pick 相同；管理台探测（engine.WithProbeContext）绕过上下架闸门。
+// 否则已下架的第三方生图/向量模型在「测试」时只能测出 model_disabled，
+// 永远打不到上游，管理员也就无法通过检查把它重新开放。
+func (e *Engine) pickCtx(ctx context.Context, modelName string) (*customAccount, error) {
+	if !engine.IsProbeContext(ctx) && e.modelDisabled(modelName) {
 		return nil, engine.NewModelDisabled(modelName)
 	}
 	usable, declared, total := e.candidates(modelName)
@@ -703,7 +733,7 @@ func (e *Engine) ServeModelPassthrough(ctx context.Context, modelID, method, pat
 
 // ProbeImage 用账号上游探测图片模型（/v1/images/generations）。
 func (e *Engine) ProbeImage(ctx context.Context, modelID string) (string, error) {
-	up, err := e.upstreamFor(modelID)
+	up, err := e.upstreamForCtx(ctx, modelID)
 	if err != nil {
 		return "", err
 	}
@@ -712,7 +742,7 @@ func (e *Engine) ProbeImage(ctx context.Context, modelID string) (string, error)
 
 // ProbeEmbedding 用账号上游探测向量模型（/v1/embeddings）。
 func (e *Engine) ProbeEmbedding(ctx context.Context, modelID string) (string, error) {
-	up, err := e.upstreamFor(modelID)
+	up, err := e.upstreamForCtx(ctx, modelID)
 	if err != nil {
 		return "", err
 	}
@@ -720,7 +750,11 @@ func (e *Engine) ProbeEmbedding(ctx context.Context, modelID string) (string, er
 }
 
 func (e *Engine) upstreamFor(modelID string) (*upstream.OpenAI, error) {
-	acc, err := e.pick(modelID)
+	return e.upstreamForCtx(context.Background(), modelID)
+}
+
+func (e *Engine) upstreamForCtx(ctx context.Context, modelID string) (*upstream.OpenAI, error) {
+	acc, err := e.pickCtx(ctx, modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -783,7 +817,8 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 	usable, _, _ := e.candidates(req.Model)
 	if len(usable) == 0 {
 		// 复用 pick 的分支错误：区分「号池为空」「无人声明该模型」「声明了但都不可用」。
-		if _, err := e.pick(req.Model); err != nil {
+		// 带上 ctx：探测请求要跳过下架闸门，才能拿到真正的原因（账号不可用）。
+		if _, err := e.pickCtx(ctx, req.Model); err != nil {
 			return nil, err
 		}
 		return nil, errors.New("custom: 没有可用账号")

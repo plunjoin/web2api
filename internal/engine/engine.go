@@ -59,6 +59,14 @@ type CatalogRefresher interface {
 	RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error)
 }
 
+// ModelAvailability 由「目录条目带逐模型可用性」的引擎实现。多数引擎的
+// ListModels 是静态目录或只反映账号整体状态；custom 会把停用/冷却账号声明的
+// 模型也列出来（Available=false）。路由认领模型时必须问引擎「现在是否真的有
+// 可用账号能接这个模型」，否则引擎级 Ready 会把别的引擎能接的同名模型抢走。
+type ModelAvailability interface {
+	HasAvailableModel(modelName string) bool
+}
+
 // PassthroughWriter 抽象透传响应的写出目标（网关的 http.ResponseWriter）。
 type PassthroughWriter interface {
 	Header() http.Header

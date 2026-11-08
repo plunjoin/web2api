@@ -12,11 +12,12 @@ import (
 )
 
 type fakeEngine struct {
-	name      string
-	ready     bool
-	models    []string
-	chatErr   error
-	streamErr error
+	name        string
+	ready       bool
+	models      []string
+	unavailable map[string]bool // 目录里存在但当前没有可用账号声明的模型
+	chatErr     error
+	streamErr   error
 }
 
 func (f *fakeEngine) Name() string     { return f.name }
@@ -25,10 +26,27 @@ func (f *fakeEngine) Ready() bool      { return f.ready }
 func (f *fakeEngine) ListModels() []model.ModelInfo {
 	out := make([]model.ModelInfo, 0, len(f.models))
 	for _, id := range f.models {
-		out = append(out, model.ModelInfo{ID: id, Engine: f.name, Available: f.ready, Kind: "chat"})
+		out = append(out, model.ModelInfo{
+			ID:        id,
+			Engine:    f.name,
+			Available: f.ready && !f.unavailable[id],
+			Kind:      "chat",
+		})
 	}
 	return out
 }
+
+// HasAvailableModel 让 fakeEngine 实现 engine.ModelAvailability，用于验证
+// 「目录里有、但没有可用账号声明」的模型不会抢走路由。
+func (f *fakeEngine) HasAvailableModel(modelName string) bool {
+	for _, id := range f.models {
+		if model.CanonicalModelID(id) == model.CanonicalModelID(modelName) {
+			return f.ready && !f.unavailable[id]
+		}
+	}
+	return false
+}
+
 func (f *fakeEngine) Chat(context.Context, model.ChatRequest) (*model.ChatResult, error) {
 	if f.chatErr != nil {
 		return nil, f.chatErr
@@ -46,6 +64,58 @@ func (f *fakeEngine) ServePassthrough(context.Context, string, string, io.Reader
 	return nil
 }
 func (f *fakeEngine) Status() map[string]any { return nil }
+
+// staticEngine 是不实现 engine.ModelAvailability 的引擎（workbuddy 就是这种）：
+// 它只有一个静态目录，Ready() 为 false 表示账号全部不可用。
+type staticEngine struct {
+	name   string
+	ready  bool
+	models []string
+}
+
+func (s *staticEngine) Name() string     { return s.name }
+func (s *staticEngine) Describe() string { return s.name }
+func (s *staticEngine) Ready() bool      { return s.ready }
+func (s *staticEngine) ListModels() []model.ModelInfo {
+	out := make([]model.ModelInfo, 0, len(s.models))
+	for _, id := range s.models {
+		out = append(out, model.ModelInfo{ID: id, Engine: s.name, Available: s.ready, Kind: "chat"})
+	}
+	return out
+}
+func (s *staticEngine) Chat(context.Context, model.ChatRequest) (*model.ChatResult, error) {
+	return nil, engine.UnavailableError(s)
+}
+func (s *staticEngine) ChatStream(context.Context, model.ChatRequest, model.ChatStreamFunc) (*model.ChatResult, error) {
+	return nil, engine.UnavailableError(s)
+}
+func (s *staticEngine) Passthrough() bool { return false }
+func (s *staticEngine) ServePassthrough(context.Context, string, string, io.Reader, string, engine.PassthroughWriter) error {
+	return nil
+}
+func (s *staticEngine) Status() map[string]any { return nil }
+
+// 号池全挂的静态目录订阅引擎（如 WorkBuddy）仍要认领自己的模型：否则请求会落入
+// auto 兜底被送去 AI Studio，管理台显示「没有符合条件的 AI Studio 账户」，
+// 与真实原因（没有可用的 WorkBuddy 账号）无关。
+func TestNotReadyStaticSubscriptionClaimsItsOwnModel(t *testing.T) {
+	m := newTestManager(
+		&staticEngine{name: "aistudio", ready: true, models: []string{"gemini-flash"}},
+		&staticEngine{name: "workbuddy", ready: false, models: []string{"hy3", "glm-5.3"}},
+	)
+	eng, owned := m.pickEngine("hy3")
+	if eng == nil || eng.Name() != "workbuddy" || !owned {
+		t.Fatalf("hy3 应归属 workbuddy（专属），got eng=%v owned=%v", eng, owned)
+	}
+	// 同名模型有可用的第三方时，优先给能接单的那一方。
+	m2 := newTestManager(
+		&staticEngine{name: "workbuddy", ready: false, models: []string{"glm-5.3"}},
+		&staticEngine{name: "custom", ready: true, models: []string{"glm-5.3"}},
+	)
+	if eng, _ := m2.pickEngine("glm-5.3"); eng == nil || eng.Name() != "custom" {
+		t.Fatalf("可用第三方应接单，got %v", eng)
+	}
+}
 
 func newTestManager(engines ...engine.Engine) *Manager {
 	m := &Manager{engines: map[string]engine.Engine{}, defaultEngine: "auto"}
@@ -173,6 +243,30 @@ func TestAlternateNoLongerSkipsCustomOnCatalogMiss(t *testing.T) {
 	}
 }
 
+// 声明目标模型的 custom 账号全部停用/冷却时，不能让「引擎级 Ready」继续把模型
+// 抢走：那样请求只会得到「声明了模型的账号均不可用」，同样声明该模型的 aistudio
+// 永远轮不到。应按「有可用账号声明该模型」认领。
+func TestSubscriptionCatalogRequiresAvailableModel(t *testing.T) {
+	m := newTestManager(
+		&fakeEngine{name: "custom", ready: true, models: []string{"models/gpt-4o"}, unavailable: map[string]bool{"models/gpt-4o": true}},
+		&fakeEngine{name: "aistudio", ready: true, models: []string{"gpt-4o"}},
+	)
+	eng, owned := m.pickEngine("gpt-4o")
+	if eng == nil || eng.Name() != "aistudio" || !owned {
+		t.Fatalf("模型级不可用时应让给 aistudio: eng=%v owned=%v", eng, owned)
+	}
+
+	// 没有别的引擎声明它时，仍保留给 custom（专属），让调用方看到
+	// 「账号均不可用」的真实错误，而不是被 auto 兜底送去不认识的引擎。
+	only := newTestManager(
+		&fakeEngine{name: "custom", ready: true, models: []string{"models/gpt-4o"}, unavailable: map[string]bool{"models/gpt-4o": true}},
+	)
+	eng, owned = only.pickEngine("gpt-4o")
+	if eng == nil || eng.Name() != "custom" || !owned {
+		t.Fatalf("无备选时仍应归属 custom: eng=%v owned=%v", eng, owned)
+	}
+}
+
 // 下架按裸名生效：带 models/ 前缀下架后，裸名请求不能再被同名的 custom 目录认领。
 func TestDisabledModelNotClaimedByCustom(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
@@ -200,6 +294,34 @@ func TestDisabledModelNotClaimedByCustom(t *testing.T) {
 		if model.CanonicalModelID(mi.ID) == "gpt-4o" {
 			t.Fatalf("下架模型不应出现在公开目录: %+v", mi)
 		}
+	}
+}
+
+// 管理台探测不受上下架开关限制：已下架的模型也要能选到承接引擎并真的打到上游，
+// 否则「测试」永远返回已下架，误关之后无法恢复。
+func TestProbeBypassesDisabledGate(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.SetModelEnabled("gpt-4o", false); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(&fakeEngine{name: "custom", ready: true, models: []string{"models/gpt-4o"}})
+	m.st = st
+	if eng, _ := m.pickEngine("gpt-4o"); eng != nil {
+		t.Fatalf("下架模型不应被正常路由认领, got %s", eng.Name())
+	}
+	if eng, _ := m.pickEngineForProbe("gpt-4o"); eng == nil || eng.Name() != "custom" {
+		t.Fatalf("探测应绕过下架闸门, got %v", eng)
+	}
+	eng, _, err := m.resolveChatEngineCtx(withProbeRequest(context.Background()), model.ChatRequest{Model: "gpt-4o"})
+	if err != nil || eng == nil || eng.Name() != "custom" {
+		t.Fatalf("探测请求应路由到 custom: eng=%v err=%v", eng, err)
+	}
+	if _, _, err := m.resolveChatEngine(model.ChatRequest{Model: "gpt-4o"}); !engine.IsModelDisabled(err) {
+		t.Fatalf("普通请求仍应被下架闸门拦截, got %v", err)
 	}
 }
 
