@@ -273,10 +273,14 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 			_, _ = m.st.CreateAccount("kiro", seedLabel("kiro", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.WorkBuddy.Accounts {
-			if strings.TrimSpace(acc.Token) == "" {
+			if strings.TrimSpace(acc.Token) == "" && strings.TrimSpace(acc.RefreshToken) == "" {
 				continue
 			}
-			creds := engine.MarshalCompact(workbuddy.Credentials{Token: acc.Token, Email: acc.Email})
+			creds := engine.MarshalCompact(workbuddy.Credentials{
+				Token: acc.Token, RefreshToken: acc.RefreshToken, Email: acc.Email,
+				Site: acc.Site, UID: acc.UID, Domain: acc.Domain, EnterpriseID: acc.EnterpriseID,
+				BaseURL: acc.BaseURL, Proxy: acc.Proxy,
+			})
 			_, _ = m.st.CreateAccount("workbuddy", seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.Custom.Accounts {
@@ -551,17 +555,50 @@ func (m *Manager) WorkBuddyBaseURL() string {
 	return workbuddy.DefaultBaseURL
 }
 
+// mergeWorkBuddyCreds 用新凭据的非空字段覆盖旧凭据，其余保留。
+// ExpiresAt 以新提交为准：手填 token 的到期时间未知（0），交给上游 401 兜底，
+// 而不是沿用旧 token 的时间导致刚换上就判定过期。
+func mergeWorkBuddyCreds(old, next workbuddy.Credentials) workbuddy.Credentials {
+	if next.Site == "" {
+		next.Site = old.Site
+	}
+	if next.UID == "" {
+		next.UID = old.UID
+	}
+	if next.Domain == "" {
+		next.Domain = old.Domain
+	}
+	if next.EnterpriseID == "" {
+		next.EnterpriseID = old.EnterpriseID
+	}
+	if next.BaseURL == "" {
+		next.BaseURL = old.BaseURL
+	}
+	if next.Proxy == "" {
+		next.Proxy = old.Proxy
+	}
+	if next.Email == "" {
+		next.Email = old.Email
+	}
+	if next.RefreshToken == "" {
+		next.RefreshToken = old.RefreshToken
+	}
+	return next
+}
+
 // ==================== OAuth 授权会话 ====================
 
 // OAuthPendingSession 管理台发起的 OAuth 授权会话（authorize → exchange）。
 type OAuthPendingSession struct {
-	Engine       string    `json:"engine"`
-	SessionID    string    `json:"session_id"`
-	State        string    `json:"-"`
-	CodeVerifier string    `json:"-"`
-	AuthURL      string    `json:"auth_url"`
-	Proxy        string    `json:"-"`
-	CreatedAt    time.Time `json:"-"`
+	Engine       string `json:"engine"`
+	SessionID    string `json:"session_id"`
+	State        string `json:"-"`
+	CodeVerifier string `json:"-"`
+	AuthURL      string `json:"auth_url"`
+	Proxy        string `json:"-"`
+	// Site 是 workbuddy 的发行版（workbuddy / workbuddy-ai）；其它引擎为空。
+	Site      string    `json:"-"`
+	CreatedAt time.Time `json:"-"`
 }
 
 // oauthSessions OAuth 会话注册表（内存，30 分钟过期）。
@@ -581,6 +618,18 @@ func SaveOAuthSession(sess *OAuthPendingSession) {
 		}
 	}
 	oauthSessions[sess.SessionID] = sess
+}
+
+// PeekOAuthSession 读取授权会话但不删除。设备授权轮询会反复查同一个会话，
+// 又要在 poll 时知道用户选的是国服还是国际服，所以需要只读入口。
+func PeekOAuthSession(engine, sessionID string) (*OAuthPendingSession, bool) {
+	oauthSessionsMu.Lock()
+	defer oauthSessionsMu.Unlock()
+	sess, ok := oauthSessions[sessionID]
+	if !ok || (engine != "" && sess.Engine != engine) || time.Since(sess.CreatedAt) > 30*time.Minute {
+		return nil, false
+	}
+	return sess, true
 }
 
 // TakeOAuthSession 取出并删除授权会话（一次性）。
@@ -888,7 +937,13 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 		if err := json.Unmarshal(credentials, &creds); err != nil || creds.Token == "" {
 			return errors.New("credentials.token 不能为空")
 		}
-		if err := m.st.UpdateAccountCredentials(id, string(credentials)); err != nil {
+		// 管理台「更新凭据」只提交 token：站点/身份/代理是入池时确定的，
+		// 不能因为一次换 token 就把国际服号打回国服。
+		var old workbuddy.Credentials
+		if json.Unmarshal([]byte(acc.Credentials), &old) == nil {
+			creds = mergeWorkBuddyCreds(old, creds)
+		}
+		if err := m.st.UpdateAccountCredentials(id, engine.MarshalCompact(creds)); err != nil {
 			return err
 		}
 		return m.mWorkBuddyEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
@@ -1762,7 +1817,7 @@ func (m *Manager) EngineMetaList() []EngineMeta {
 		{Name: "codex", Describe: "GPT（ChatGPT 订阅号）", Enabled: m.engines["codex"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（OAuth 授权或 Codex CLI auth.json 导入）"},
 		{Name: "antigravity", Describe: "Antigravity（Google Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
 		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},
-		{Name: "workbuddy", Describe: "腾讯 CodeBuddy/WorkBuddy（SaaS 订阅）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token（OAuth 扫码授权）"},
+		{Name: "workbuddy", Describe: "腾讯 WorkBuddy（国服/国际服号池，积分智能路由）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国服 copilot.tencent.com 或国际服 www.workbuddy.ai）"},
 		{Name: "custom", Describe: "第三方 OpenAI 兼容 Key（支持常见供应商余额查询）", Enabled: m.engines["custom"] != nil, AccountPool: true, Credential: "base_url + api_key；余额：MiniMax/OpenRouter/硅基流动/DeepSeek/Sub2API/NewAPI 等"},
 	}
 	return metas

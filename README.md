@@ -30,8 +30,11 @@ OpenAI 兼容 API。路由只有一条原则——**谁声明谁接**：模型�
     v1internal 协议，Claude + Gemini 双模型通道，project_id 自动 onboard）
   - **Kiro**：AWS CodeWhisperer 订阅号（`~/.aws/sso/cache/kiro-auth-token.json`
     的 refresh_token，Claude 模型，refresh_token 旋转自动回写；上游风控较严建议少量自用）
-  - **WorkBuddy**：腾讯 CodeBuddy/WorkBuddy SaaS 号（管理台扫码授权或粘贴
-    accessToken，OpenAI 协议透传）
+  - **WorkBuddy**：腾讯 WorkBuddy SaaS 号，国服（copilot.tencent.com）与国际服
+    （www.workbuddy.ai）两个发行版同池混跑（管理台选发行版后扫码授权，或粘贴
+    accessToken，OpenAI 协议透传）。额度按套餐/赠送/总计三窗口从上游实时读取，
+    只有「总计」用尽才停号；路由优先花掉积分最快作废的账号，遇额度用尽 / 风控 /
+    token 失效自动换号，全部不可用时该模型自然落到其它声明同名模型的引擎
 - **第三方 Key（custom）**：管理台填 OpenAI 兼容的 Base URL + API Key
   （可点「获取模型列表」），多 Key 轮询。**只承接目录里明确声明了该模型的请求**：
   没有账号声明就 `404 model_not_found`，没拉到模型目录的账号也不再对任意模型开放

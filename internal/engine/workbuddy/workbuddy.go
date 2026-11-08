@@ -1,13 +1,17 @@
-// Package workbuddy 实现腾讯 CodeBuddy/WorkBuddy 引擎的协议客户端：
-// www.codebuddy.ai 的 OAuth 设备授权流程 + /v2/chat/completions
-// （OpenAI Chat Completions 协议透传，SSE 流式）。
+// Package workbuddy 实现腾讯 WorkBuddy（CodeBuddy 桌面 Agent）的协议客户端：
+// 两个发行版（国服 copilot.tencent.com / 国际服 www.workbuddy.ai）的 OAuth
+// 登录、token 刷新、聊天补全（OpenAI Chat Completions 协议，SSE 流式），
+// 以及「自签」——把请求伪装成 WorkBuddy 桌面 CLI 发出（UA / X-* 头 /
+// gzip / 会话 ID 全套齐备，缺一项上游都可能拒绝）。
 package workbuddy
 
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,24 +29,18 @@ import (
 	"web2api/internal/model"
 )
 
-// DefaultBaseURL 上游默认地址。
-const DefaultBaseURL = "https://www.codebuddy.ai"
+// DefaultBaseURL 默认上游（国服 WorkBuddy）。
+var DefaultBaseURL = SiteCN.Endpoint
 
-// CLI 客户端伪装常量。
+// 旧 CodeBuddy CLI 的伪装常量：仅用于 base_url 仍是 www.codebuddy.ai 的
+// 旧账号，保持它们升级后仍能登录。
 const (
-	cliVersion   = "1.0.7"
-	cliUserAgent = "CLI/" + cliVersion + " CodeBuddy/" + cliVersion
-	authUA       = "CLI/1.0.8 CodeBuddy/1.0.8"
-
-	pendingLoginCode = 11217 // 轮询返回：等待用户在浏览器完成登录
-	channelErrorCode = 11128 // 上游渠道检测错误码（请求中含"污染"内容触发）
+	legacyCLIVer   = "1.0.7"
+	legacyCLIUA    = "CLI/" + legacyCLIVer + " CodeBuddy/" + legacyCLIVer
+	legacyAuthUA   = "CLI/1.0.8 CodeBuddy/1.0.8"
+	pendingLogin   = 11217 // 轮询返回：等待用户在浏览器完成登录
+	channelErrCode = 11128 // 上游渠道检测错误码（请求中含"污染"内容触发）
 )
-
-// DefaultModels 默认模型目录（以账号实际权益为准，model 原样透传上游）。
-var DefaultModels = []string{
-	"auto-chat", "claude-4.0", "claude-3.7", "gpt-5", "gpt-5-mini",
-	"gemini-2.5-pro", "gemini-2.5-flash",
-}
 
 // systemKeyReplacements system 消息竞品关键词替换（上游风控检测）。
 var systemKeyReplacements = []struct{ from, to string }{
@@ -52,27 +50,135 @@ var systemKeyReplacements = []struct{ from, to string }{
 	{"Claude", "CodeBuddy"},
 }
 
+// StreamAuth 是一次请求所需的账号身份（在锁外快照，避免并发读写凭据）。
+type StreamAuth struct {
+	Token        string
+	UID          string
+	Domain       string
+	EnterpriseID string
+	Site         Site
+	Endpoint     string // 已解析的上游根地址（不含末尾斜杠）
+}
+
+func (a StreamAuth) domain() string {
+	if strings.TrimSpace(a.Domain) != "" {
+		return a.Domain
+	}
+	// 优先用实际上游地址的 host：旧 CodeBuddy 账号的 Site 仍是国服，
+	// 但 X-Domain 必须与请求域名一致。
+	if h := hostOf(a.Endpoint); h != "" {
+		return h
+	}
+	return a.Site.host()
+}
+
+// identity 返回请求使用的客户端身份。旧 CodeBuddy 账号继续伪装 CLI，
+// 新 WorkBuddy 伪装桌面端；上游按 UA / X-IDE-* 识别客户端，混用会被拒。
+func (a StreamAuth) identity() (ua, ideType, ideName, ideVer string) {
+	if IsLegacyCodeBuddy(a.Endpoint) {
+		return legacyCLIUA, "CLI", "CLI", legacyCLIVer
+	}
+	return a.Site.cliAgent(), "WorkBuddy", "WorkBuddy", a.Site.App
+}
+
+// applySignedHeaders 按 WorkBuddy 桌面客户端的身份签名一个请求。
+func applySignedHeaders(req *http.Request, a StreamAuth) {
+	ua, ideType, ideName, ideVer := a.identity()
+	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("X-User-Id", a.UID)
+	req.Header.Set("X-Domain", a.domain())
+	req.Header.Set("X-Product", "SaaS")
+	req.Header.Set("X-IDE-Type", ideType)
+	req.Header.Set("X-IDE-Name", ideName)
+	req.Header.Set("X-IDE-Version", ideVer)
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("X-Agent-Intent", "craft")
+	req.Header.Set("X-Agent-Purpose", "conversation")
+	if strings.TrimSpace(a.EnterpriseID) != "" {
+		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
+	}
+}
+
+// applyChatHeaders 在签名头之上补聊天专用头（OpenAI SDK 的 X-Stainless-*、
+// Agent 类型、会话 ID）。WorkBuddy 后端按 X-Conversation-Request-ID 计一次
+// 用户发送，所以一次发送内的所有步骤要共用同一个。
+func applyChatHeaders(req *http.Request, a StreamAuth) {
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Type", "main")
+	req.Header.Set("X-Agent-Runtime", "local-agent")
+	req.Header.Set("X-Stainless-Retry-Count", "0")
+	req.Header.Set("X-Stainless-Timeout", "1200")
+	req.Header.Set("X-Stainless-Lang", "js")
+	if IsLegacyCodeBuddy(a.Endpoint) {
+		// 旧 CLI 的 SDK 版本；改成桌面端的值会让老账号看起来像换了个客户端。
+		req.Header.Set("X-Stainless-Package-Version", "5.10.1")
+		req.Header.Set("X-Stainless-Runtime-Version", "v22.13.1")
+	} else {
+		req.Header.Set("X-Stainless-Package-Version", "6.25.0")
+		req.Header.Set("X-Stainless-Runtime-Version", "v22.21.1")
+	}
+	req.Header.Set("X-Stainless-OS", "Windows")
+	req.Header.Set("X-Stainless-Arch", "x64")
+	req.Header.Set("X-Stainless-Runtime", "node")
+}
+
+// hostOf 从地址里取 host（非法地址返回空）。
+func hostOf(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+// newConversationIDs 生成一次请求的会话/消息 ID。
+func newConversationIDs() (conversation, request, message, reqID string) {
+	conversation = uuid.NewString()
+	request = hex.EncodeToString(randomBytes(16))
+	message = strings.ReplaceAll(uuid.NewString(), "-", "")
+	reqID = strings.ReplaceAll(uuid.NewString(), "-", "")
+	return
+}
+
 // ==================== OAuth（设备授权式） ====================
 
 // AuthStart 发起授权返回的会话信息。
 type AuthStart struct {
-	State  string
+	State   string
 	AuthURL string
+}
+
+// authTarget 从 base_url 推出登录入口、platform 参数与 UA。
+func authTarget(baseURL string) (endpoint, platform, ua string, site Site) {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	if IsLegacyCodeBuddy(base) {
+		return base, "CLI", legacyAuthUA, SiteCN
+	}
+	site = SiteForBaseURL(base)
+	return base, site.Platform, site.cliAgent(), site
 }
 
 // StartAuth 发起登录授权：返回 state 与用户浏览器打开的 authUrl。
 func StartAuth(ctx context.Context, proxy, baseURL string) (*AuthStart, error) {
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
+	endpoint, platform, ua, _ := authTarget(baseURL)
 	nonce := hex.EncodeToString(randomBytes(16))
 	payload, _ := json.Marshal(map[string]string{"nonce": nonce})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		baseURL+"/v2/plugin/auth/state?platform=CLI&nonce="+nonce, bytes.NewReader(payload))
+		endpoint+"/v2/plugin/auth/state?platform="+url.QueryEscape(platform)+"&nonce="+nonce, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	setAuthHeaders(req)
+	setAuthHeaders(req, ua)
 	resp, err := doRequest(ctx, proxy, req, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("发起授权失败: %w", err)
@@ -95,7 +201,17 @@ func StartAuth(ctx context.Context, proxy, baseURL string) (*AuthStart, error) {
 	if out.Data.State == "" {
 		return nil, fmt.Errorf("授权响应缺少 state: %s", snippet(body))
 	}
-	return &AuthStart{State: out.Data.State, AuthURL: out.Data.AuthURL}, nil
+	authURL := out.Data.AuthURL
+	// 桌面端版本参数：旧版登录页对低于 5.8.0 的版本隐藏企业微信登录。
+	if u, err := url.Parse(authURL); err == nil && u.Scheme == "https" {
+		q := u.Query()
+		if q.Get("version") == "" {
+			q.Set("version", siteApp)
+			u.RawQuery = q.Encode()
+			authURL = u.String()
+		}
+	}
+	return &AuthStart{State: out.Data.State, AuthURL: authURL}, nil
 }
 
 // Token 授权结果。
@@ -104,6 +220,9 @@ type Token struct {
 	RefreshToken string
 	ExpiresAt    time.Time
 	Email        string
+	UID          string
+	Domain       string
+	EnterpriseID string
 }
 
 // ErrPendingLogin 轮询时用户尚未完成登录。
@@ -111,15 +230,13 @@ var ErrPendingLogin = errors.New("等待用户在浏览器完成登录")
 
 // PollToken 轮询授权结果（用户完成登录前返回 ErrPendingLogin）。
 func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error) {
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
+	endpoint, _, ua, _ := authTarget(baseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		baseURL+"/v2/plugin/auth/token?state="+url.QueryEscape(state), nil)
+		endpoint+"/v2/plugin/auth/token?state="+url.QueryEscape(state), nil)
 	if err != nil {
 		return nil, err
 	}
-	setAuthHeaders(req)
+	setAuthHeaders(req, ua)
 	traceID := hex.EncodeToString(randomBytes(8))
 	req.Header.Set("b3", traceID+"-"+hex.EncodeToString(randomBytes(8))+"-1-")
 	req.Header.Set("X-B3-TraceId", traceID)
@@ -139,15 +256,15 @@ func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error
 		Data struct {
 			AccessToken  string `json:"accessToken"`
 			RefreshToken string `json:"refreshToken"`
-			ExpiresIn     int64  `json:"expiresIn"`
-			Domain        string `json:"domain"`
+			ExpiresIn    int64  `json:"expiresIn"`
+			Domain       string `json:"domain"`
 		} `json:"data"`
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("轮询响应解析失败: %w", err)
 	}
-	if out.Code == pendingLoginCode {
+	if out.Code == pendingLogin {
 		return nil, ErrPendingLogin
 	}
 	if out.Code != 0 || out.Data.AccessToken == "" {
@@ -156,9 +273,121 @@ func PollToken(ctx context.Context, proxy, baseURL, state string) (*Token, error
 	tok := &Token{
 		AccessToken:  out.Data.AccessToken,
 		RefreshToken: out.Data.RefreshToken,
+		Domain:       out.Data.Domain,
+		Email:        JWTEmail(out.Data.AccessToken),
 	}
 	if out.Data.ExpiresIn > 0 {
-		tok.ExpiresAt = time.Now().Add(time.Duration(out.Data.ExpiresIn-300) * time.Second)
+		// 提前 5 分钟视为过期，避免请求发出时正好到期；有效期本身不足 5 分钟时
+		// 不要减成负数（会让新 token 一落地就被当成过期）。
+		skew := int64(300)
+		if out.Data.ExpiresIn <= skew {
+			skew = out.Data.ExpiresIn / 6
+		}
+		tok.ExpiresAt = time.Now().Add(time.Duration(out.Data.ExpiresIn-skew) * time.Second)
+	}
+	// 取账号 uid / 企业 id：请求签名里的 X-User-Id 必须是 uid，不是邮箱。
+	if uid, ent := fetchIdentity(ctx, proxy, endpoint, ua, tok.AccessToken, tok.Domain, state); uid != "" {
+		tok.UID = uid
+		tok.EnterpriseID = ent
+	}
+	return tok, nil
+}
+
+// fetchIdentity 调 /v2/plugin/login/account 取 uid 与企业 id。失败不致命。
+func fetchIdentity(ctx context.Context, proxy, endpoint, ua, token, domain, state string) (uid, entID string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		endpoint+"/v2/plugin/login/account?state="+url.QueryEscape(state), nil)
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Domain", domain)
+	req.Header.Set("X-No-User-Id", "true")
+	req.Header.Set("X-No-Enterprise-Id", "true")
+	resp, err := doRequest(ctx, proxy, req, 20*time.Second)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var out struct {
+		Data struct {
+			UID          string `json:"uid"`
+			EnterpriseID string `json:"enterpriseId"`
+			Enterprise   struct {
+				EnterpriseID string `json:"enterpriseId"`
+			} `json:"enterprise"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &out) != nil {
+		return "", ""
+	}
+	ent := out.Data.EnterpriseID
+	if ent == "" {
+		ent = out.Data.Enterprise.EnterpriseID
+	}
+	return strings.TrimSpace(out.Data.UID), strings.TrimSpace(ent)
+}
+
+// Refresh 用 refresh_token 换新 token（WorkBuddy 的刷新接口）。
+func Refresh(ctx context.Context, proxy string, a StreamAuth, refreshToken string) (*Token, error) {
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, errors.New("refresh_token 为空")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		a.Endpoint+"/v2/plugin/auth/token/refresh", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	ua, _, _, _ := a.identity()
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("X-Refresh-Token", refreshToken)
+	req.Header.Set("X-Auth-Refresh-Source", "plugin")
+	req.Header.Set("X-Domain", a.domain())
+	if strings.TrimSpace(a.EnterpriseID) != "" {
+		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
+	}
+	resp, err := doRequest(ctx, proxy, req, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("刷新 token 失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, newUpstreamError(resp.StatusCode, body)
+	}
+	var out struct {
+		Code int `json:"code"`
+		Data struct {
+			AccessToken      string `json:"accessToken"`
+			RefreshToken     string `json:"refreshToken"`
+			ExpiresIn        int64  `json:"expiresIn"`
+			RefreshExpiresIn int64  `json:"refreshExpiresIn"`
+			Domain           string `json:"domain"`
+		} `json:"data"`
+		Msg string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("刷新响应解析失败: %w", err)
+	}
+	if out.Code != 0 || out.Data.AccessToken == "" {
+		return nil, fmt.Errorf("刷新失败（code=%d）: %s", out.Code, strings.TrimSpace(out.Msg))
+	}
+	tok := &Token{
+		AccessToken:  out.Data.AccessToken,
+		RefreshToken: out.Data.RefreshToken,
+		Domain:       out.Data.Domain,
+	}
+	if out.Data.ExpiresIn > 0 {
+		tok.ExpiresAt = time.Now().Add(time.Duration(out.Data.ExpiresIn-60) * time.Second)
+	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = refreshToken
 	}
 	return tok, nil
 }
@@ -199,11 +428,13 @@ type Message struct {
 // Request 推理请求。
 type Request struct {
 	Model       string
-	Messages     []Message
-	Tools        []model.Tool
-	ToolChoice   json.RawMessage
-	MaxTokens    int
-	Temperature  *float64
+	Messages    []Message
+	Tools       []model.Tool
+	ToolChoice  json.RawMessage
+	MaxTokens   int
+	Temperature *float64
+	// ConversationID 由网关按会话传入，同一会话复用（上游按它归并用量）。
+	ConversationID string
 }
 
 // Result 推理结果。
@@ -230,13 +461,13 @@ type chatMessage struct {
 }
 
 type chatBody struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []model.Tool  `json:"tools,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []chatMessage   `json:"messages"`
+	Tools       []model.Tool    `json:"tools,omitempty"`
 	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	Stream      bool          `json:"stream"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Stream      bool            `json:"stream"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
 }
 
 func buildChatBody(req *Request) (*chatBody, error) {
@@ -266,25 +497,22 @@ func buildChatBody(req *Request) (*chatBody, error) {
 			}
 		}
 		cm := chatMessage{Role: role, Content: text}
-		// 把上游不认识的 tool_calls 也转成 OpenAI 形态（带工具的 assistant 历史）
 		for _, tc := range msg.ToolCalls {
 			cm.ToolCalls = append(cm.ToolCalls, chatToolCall{
-				ID:   tc.ID,
-				Type: tc.Type,
+				ID: tc.ID, Type: tc.Type,
 				Function: struct {
 					Name      string `json:"name,omitempty"`
 					Arguments string `json:"arguments,omitempty"`
 				}{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
 			})
 		}
-		// assistant 的纯工具调用回合 content 为空，靠 ToolCalls 保留，
-		// 不能因 TrimSpace 为空而被整条丢弃（否则工具调用历史断链）。
+		// assistant 的纯工具调用回合 content 为空，靠 ToolCalls 保留。
 		if strings.TrimSpace(text) == "" && len(cm.ToolCalls) == 0 {
 			continue
 		}
 		body.Messages = append(body.Messages, cm)
 	}
-	// 上游要求至少 2 条消息：单条 user 前补 system
+	// 上游要求至少 2 条消息：单条 user 前补 system。
 	if len(body.Messages) == 1 {
 		body.Messages = append([]chatMessage{{Role: "system", Content: "You are a helpful assistant."}}, body.Messages...)
 	}
@@ -294,14 +522,10 @@ func buildChatBody(req *Request) (*chatBody, error) {
 	return body, nil
 }
 
-// Stream 发起聊天补全（上游强制流式）。tools 非空时把工具调用增量通过 sink
-// 透传给上层；否则降级为仅文本回调（兼容既有非工具调用方）。
-func Stream(ctx context.Context, proxy, baseURL, accessToken, userID string, req *Request, sink model.StreamSink) (*Result, error) {
+// Stream 发起聊天补全（上游强制流式）。body 走 gzip，头按桌面 CLI 签名。
+func Stream(ctx context.Context, proxy string, a StreamAuth, req *Request, sink model.StreamSink) (*Result, error) {
 	if sink == nil {
 		sink = model.TextSink(nil)
-	}
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
 	}
 	body, err := buildChatBody(req)
 	if err != nil {
@@ -311,28 +535,66 @@ func Stream(ctx context.Context, proxy, baseURL, accessToken, userID string, req
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		baseURL+"/v2/chat/completions", bytes.NewReader(payload))
+	payload, err = gzipBytes(payload)
 	if err != nil {
 		return nil, err
 	}
-	setChatHeaders(httpReq, accessToken, userID)
+	endpoint := strings.TrimRight(a.Endpoint, "/")
+	if endpoint == "" {
+		endpoint = a.Site.endpoint()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		endpoint+"/v2/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	applySignedHeaders(httpReq, a)
+	applyChatHeaders(httpReq, a)
+	httpReq.Header.Set("Content-Encoding", "gzip")
+	conversation, requestID, message, reqID := newConversationIDs()
+	if req.ConversationID != "" {
+		conversation = req.ConversationID
+	}
+	httpReq.Header.Set("X-Conversation-ID", conversation)
+	httpReq.Header.Set("X-Conversation-Request-ID", requestID)
+	httpReq.Header.Set("X-Conversation-Message-ID", message)
+	httpReq.Header.Set("X-Request-ID", reqID)
+
 	resp, err := doRequest(ctx, proxy, httpReq, 0)
 	if err != nil {
-		return nil, fmt.Errorf("codebuddy 请求失败: %w", err)
+		return nil, fmt.Errorf("workbuddy 请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return nil, &UpstreamError{Status: resp.StatusCode, Body: string(b)}
+		return nil, newUpstreamError(resp.StatusCode, b)
 	}
 	return parseSSE(resp.Body, sink)
 }
 
-// UpstreamError 上游非 200 响应。
+func gzipBytes(b []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(b); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// UpstreamError 上游非 200 响应（带解析出的业务码）。
 type UpstreamError struct {
 	Status int
 	Body   string
+	Code   int
+}
+
+func newUpstreamError(status int, body []byte) *UpstreamError {
+	e := &UpstreamError{Status: status, Body: string(body)}
+	e.Code = parseCode(body)
+	return e
 }
 
 func (e *UpstreamError) Error() string {
@@ -343,16 +605,88 @@ func (e *UpstreamError) Error() string {
 	if json.Unmarshal([]byte(e.Body), &m) == nil && m.Message != "" {
 		msg = m.Message
 	}
+	if e.Code != 0 {
+		return fmt.Sprintf("上游 HTTP %d (code=%d): %s", e.Status, e.Code, strings.TrimSpace(msg))
+	}
 	return fmt.Sprintf("上游 HTTP %d: %s", e.Status, strings.TrimSpace(msg))
 }
 
-// IsUnauthorized 判断 token 失效。
+// parseCode 从 WorkBuddy 的几种错误壳里取业务码：
+// {code:14018}、{data:{code}}、{error:{code}}、{error:{internal_code:"11159"}}、
+// {"error":"11158:..."}。
+func parseCode(body []byte) int {
+	var v map[string]any
+	if json.Unmarshal(body, &v) != nil {
+		return 0
+	}
+	candidates := []any{v["code"]}
+	if d, ok := v["data"].(map[string]any); ok {
+		candidates = append(candidates, d["code"])
+	}
+	if e, ok := v["error"].(map[string]any); ok {
+		candidates = append(candidates, e["code"], e["internal_code"])
+	}
+	for _, c := range candidates {
+		switch n := c.(type) {
+		case float64:
+			if n != 0 {
+				return int(n)
+			}
+		case string:
+			s := strings.TrimSpace(n)
+			if s != "" {
+				var code int
+				if _, err := fmt.Sscanf(s, "%d", &code); err == nil && code != 0 {
+					return code
+				}
+			}
+		}
+	}
+	if s, ok := v["error"].(string); ok {
+		if code := leadingCode(s); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+func leadingCode(s string) int {
+	s = strings.TrimSpace(s)
+	idx := strings.IndexByte(s, ':')
+	if idx <= 0 {
+		return 0
+	}
+	var code int
+	if _, err := fmt.Sscanf(s[:idx], "%d", &code); err == nil {
+		return code
+	}
+	return 0
+}
+
+// ==================== 错误分类（供智能路由决策） ====================
+
+// IsUnauthorized 判断 token 失效 / 无权限。403 也常被上游用来表达「风控封禁」
+// 「额度用尽」「渠道拒绝」，这些有专门的判定，这里先用业务码排除，免得把
+// 换号也没用的错误当成 token 问题反复重试。
 func IsUnauthorized(err error) bool {
 	var ue *UpstreamError
-	if errors.As(err, &ue) {
-		return ue.Status == http.StatusUnauthorized || ue.Status == http.StatusForbidden
+	if !errors.As(err, &ue) {
+		return false
 	}
-	return false
+	switch ue.Code {
+	case 14018, 11140, channelErrCode:
+		return false
+	}
+	return ue.Status == http.StatusUnauthorized || ue.Status == http.StatusForbidden
+}
+
+// UpstreamStatus 返回上游 HTTP 状态码（非上游错误为 0）。
+func UpstreamStatus(err error) int {
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		return ue.Status
+	}
+	return 0
 }
 
 // IsRateLimited 判断上游限流。
@@ -364,11 +698,50 @@ func IsRateLimited(err error) bool {
 	return false
 }
 
+// IsCreditsExhausted 判断额度用尽（14018）。
+func IsCreditsExhausted(err error) bool {
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	if ue.Code == 14018 {
+		return true
+	}
+	b := strings.ToLower(ue.Body)
+	return strings.Contains(b, "credits exhausted") || strings.Contains(b, "额度已用尽") || strings.Contains(b, "額度已用盡")
+}
+
+// IsRestricted 判断账号被风控封禁（11140）。
+func IsRestricted(err error) bool {
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	if ue.Code == 11140 {
+		return true
+	}
+	b := strings.ToLower(ue.Body)
+	return strings.Contains(b, "restricted due to unusual activity") ||
+		strings.Contains(b, "账号存在异常行为") || strings.Contains(b, "帳號存在異常行為")
+}
+
+// IsChannelRefused 判断触发渠道检测（11128，多半是 prompt 里的竞品关键词）。
+func IsChannelRefused(err error) bool {
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	if ue.Code == channelErrCode {
+		return true
+	}
+	b := strings.ToLower(ue.Body)
+	return strings.Contains(b, "unapproved channel") || strings.Contains(b, "illegal api invocation")
+}
+
 func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 	result := &Result{}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
-	// 工具调用分块按 index 归并：上游把 id/name 放首块、参数按 JSON 片段逐块下发。
 	accs := map[int]*model.ToolCall{}
 	var indices []int
 	for scanner.Scan() {
@@ -383,7 +756,7 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string                `json:"content"`
 					ToolCalls []model.ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
@@ -457,10 +830,10 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 
 // ==================== 公共 ====================
 
-func setAuthHeaders(req *http.Request) {
+func setAuthHeaders(req *http.Request, ua string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", authUA)
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("X-No-Authorization", "true")
 	req.Header.Set("X-No-User-Id", "true")
@@ -468,35 +841,6 @@ func setAuthHeaders(req *http.Request) {
 	req.Header.Set("X-No-Department-Info", "true")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("X-Request-ID", strings.ReplaceAll(uuid.NewString(), "-", ""))
-}
-
-func setChatHeaders(req *http.Request, accessToken, userID string) {
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", cliUserAgent)
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("X-Domain", "www.codebuddy.ai")
-	req.Header.Set("X-Product", "SaaS")
-	req.Header.Set("X-Agent-Intent", "craft")
-	req.Header.Set("X-IDE-Type", "CLI")
-	req.Header.Set("X-IDE-Name", "CLI")
-	req.Header.Set("X-IDE-Version", cliVersion)
-	if userID == "" {
-		userID = "b5be3a67-237e-4ee6-9b9a-0b9ecd7b454b"
-	}
-	req.Header.Set("X-User-Id", userID)
-	req.Header.Set("X-Conversation-ID", uuid.NewString())
-	req.Header.Set("X-Conversation-Request-ID", hex.EncodeToString(randomBytes(16)))
-	req.Header.Set("X-Conversation-Message-ID", strings.ReplaceAll(uuid.NewString(), "-", ""))
-	req.Header.Set("X-Request-ID", strings.ReplaceAll(uuid.NewString(), "-", ""))
-	req.Header.Set("x-stainless-arch", "x64")
-	req.Header.Set("x-stainless-lang", "js")
-	req.Header.Set("x-stainless-os", "Windows")
-	req.Header.Set("x-stainless-package-version", "5.10.1")
-	req.Header.Set("x-stainless-retry-count", "0")
-	req.Header.Set("x-stainless-runtime", "node")
-	req.Header.Set("x-stainless-runtime-version", "v22.13.1")
 }
 
 func doRequest(ctx context.Context, proxy string, req *http.Request, timeout time.Duration) (*http.Response, error) {
@@ -548,29 +892,9 @@ func randomBytes(n int) []byte {
 	return b
 }
 
+// base64Decode 解码 JWT 的 base64url（容忍缺省填充）。
 func base64Decode(s string) ([]byte, error) {
-	s = strings.TrimRight(s, "=")
-	if len(s)%4 == 2 {
-		s += "=="
-	} else if len(s)%4 == 3 {
-		s += "="
-	}
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-	var out []byte
-	var buf, bits int
-	for _, c := range s {
-		idx := strings.IndexRune(alphabet, c)
-		if idx < 0 {
-			return nil, errors.New("非法 base64 字符")
-		}
-		buf = buf<<6 | idx
-		bits += 6
-		if bits >= 8 {
-			bits -= 8
-			out = append(out, byte(buf>>bits))
-		}
-	}
-	return out, nil
+	return base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
 }
 
 func snippet(b []byte) string {

@@ -134,9 +134,18 @@ type WorkBuddyConfig struct {
 
 // WorkBuddyAccountConf WorkBuddy 种子账号。
 type WorkBuddyAccountConf struct {
-	Name  string `yaml:"name"`
-	Token string `yaml:"token"`
-	Email string `yaml:"email"`
+	Name         string `yaml:"name"`
+	Token        string `yaml:"token"`
+	RefreshToken string `yaml:"refresh_token"`
+	Email        string `yaml:"email"`
+	// Site 是发行版：workbuddy（国服 copilot.tencent.com）/
+	// workbuddy-ai（国际服 www.workbuddy.ai）。留空则按 base_url 或默认国服。
+	Site         string `yaml:"site"`
+	UID          string `yaml:"uid"`
+	Domain       string `yaml:"domain"`
+	EnterpriseID string `yaml:"enterprise_id"`
+	BaseURL      string `yaml:"base_url"`
+	Proxy        string `yaml:"proxy"`
 }
 
 // GeminiAPIConfig configures the official backend independently of web accounts.
@@ -267,7 +276,9 @@ func Default() *Config {
 			Codex:       CodexConfig{Enabled: true},
 			Antigravity: AntigravityConfig{Enabled: true},
 			Kiro:        KiroConfig{Enabled: true},
-			WorkBuddy:   WorkBuddyConfig{Enabled: true, BaseURL: "https://www.codebuddy.ai"},
+			// base_url 留空：按账号的 site 推导（默认国服 copilot.tencent.com），
+			// 旧版写死 www.codebuddy.ai 会把新号打到已废弃的端点上。
+			WorkBuddy: WorkBuddyConfig{Enabled: true},
 			Custom:      CustomConfig{Enabled: true},
 		},
 		GeminiWeb: EngineAConfig{

@@ -110,8 +110,19 @@ engines:
   # 腾讯 CodeBuddy / WorkBuddy（SaaS 订阅；管理台扫码授权或粘贴 accessToken）
   workbuddy:
     enabled: true
-    base_url: "https://www.codebuddy.ai"
+    # 留空 = 按账号的 site 推导（workbuddy=国服 copilot.tencent.com，
+    # workbuddy-ai=国际服 www.workbuddy.ai）。旧 CodeBuddy 账号才填 www.codebuddy.ai。
+    base_url: ""
     proxy: ""
+    # 种子账号示例：
+    # accounts:
+    #   - name: "国服号"
+    #     site: "workbuddy"          # 国服
+    #     token: "eyJ..."            # 扫码授权后自动写入，或粘贴 accessToken
+    #     email: "user@example.com"
+    #   - name: "国际号"
+    #     site: "workbuddy-ai"       # 国际服
+    #     token: "eyJ..."
     accounts: []
 
   # 第三方 OpenAI（Base URL + API Key）

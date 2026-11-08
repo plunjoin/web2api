@@ -588,6 +588,9 @@ func (a *API) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	engineName := strings.ToLower(strings.TrimSpace(r.PathValue("engine")))
 	var req struct {
 		Proxy string `json:"proxy"`
+		// Site 仅 workbuddy 使用：workbuddy=国服 copilot.tencent.com，
+		// workbuddy-ai=国际服 www.workbuddy.ai。留空沿用引擎 base_url。
+		Site string `json:"site"`
 	}
 	_ = readJSON(r, &req) // body 可为空
 	proxy := strings.TrimSpace(req.Proxy)
@@ -609,14 +612,21 @@ func (a *API) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 			CodeVerifier: s.CodeVerifier, AuthURL: s.AuthURL, Proxy: proxy, CreatedAt: time.Now(),
 		}
 	case "workbuddy":
-		start, err := workbuddy.StartAuth(r.Context(), proxy, a.mgr.WorkBuddyBaseURL())
+		// 两个 build 的登录入口不同，用户扫码前先确定站点。
+		base := a.mgr.WorkBuddyBaseURL()
+		siteID := ""
+		if v := strings.TrimSpace(req.Site); v != "" {
+			site := workbuddy.SiteFor(v)
+			siteID, base = site.ID, site.Endpoint
+		}
+		start, err := workbuddy.StartAuth(r.Context(), proxy, base)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
 		sess = &provider.OAuthPendingSession{
 			Engine: engineName, SessionID: start.State, State: start.State,
-			AuthURL: start.AuthURL, Proxy: proxy, CreatedAt: time.Now(),
+			AuthURL: start.AuthURL, Proxy: proxy, Site: siteID, CreatedAt: time.Now(),
 		}
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持 OAuth 授权"})
@@ -627,6 +637,7 @@ func (a *API) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		"engine":     sess.Engine,
 		"session_id": sess.SessionID,
 		"auth_url":   sess.AuthURL,
+		"site":       sess.Site,
 		"expires_in": 1800,
 	})
 }
@@ -723,7 +734,19 @@ func (a *API) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxy := a.mgr.EngineProxy("workbuddy")
-	tok, err := workbuddy.PollToken(r.Context(), proxy, a.mgr.WorkBuddyBaseURL(), req.SessionID)
+	base := a.mgr.WorkBuddyBaseURL()
+	// 会话里记着扫码时选的发行版，轮询必须打到同一个 build。
+	siteID := ""
+	if sess, ok := provider.PeekOAuthSession("workbuddy", req.SessionID); ok {
+		if sess.Proxy != "" {
+			proxy = sess.Proxy
+		}
+		if sess.Site != "" {
+			siteID = sess.Site
+			base = workbuddy.SiteFor(sess.Site).Endpoint
+		}
+	}
+	tok, err := workbuddy.PollToken(r.Context(), proxy, base, req.SessionID)
 	if err != nil {
 		if errors.Is(err, workbuddy.ErrPendingLogin) {
 			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "message": "等待用户在浏览器完成登录"})
@@ -740,10 +763,16 @@ func (a *API) handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
 	if !tok.ExpiresAt.IsZero() {
 		expiresAt = tok.ExpiresAt.Unix()
 	}
+	// 记录发行版：旧 CodeBuddy 地址留空（走 base_url），WorkBuddy 两个 build 明确标注。
+	site := siteID
+	if site == "" && !workbuddy.IsLegacyCodeBuddy(base) {
+		site = workbuddy.SiteForBaseURL(base).ID
+	}
 	acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
 		Engine: "workbuddy", Label: req.Label, Email: email,
 		Credentials: json.RawMessage(mustJSON(workbuddy.Credentials{
 			Token: tok.AccessToken, RefreshToken: tok.RefreshToken, Email: email, ExpiresAt: expiresAt,
+			Site: site, UID: tok.UID, Domain: tok.Domain, EnterpriseID: tok.EnterpriseID,
 		})),
 	})
 	if err != nil {
