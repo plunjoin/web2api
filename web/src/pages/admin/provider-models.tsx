@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
-import { StatusDot } from '@/components/status'
+import { Pill, StatusDot } from '@/components/status'
 import { ModelKindPill } from '@/components/model-kind'
 import { api } from '@/lib/api'
 import { engineLabel, type ModelInfo } from '@/lib/types'
@@ -251,6 +251,7 @@ export function ProviderModelsDialog({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-mono text-xs">{m.id}</span>
+                        {m.free && <Pill tone="success">免费</Pill>}
                         <ModelKindPill kind={m.kind} />
                       </div>
                       {result ? (

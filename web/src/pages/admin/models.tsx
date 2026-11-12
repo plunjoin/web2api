@@ -30,6 +30,7 @@ type Row = {
   available: boolean
   enabled: boolean
   kind?: string
+  free?: boolean
   lastCheckAt?: number
   lastCheckOK?: boolean
   lastCheckDetail?: string
@@ -119,6 +120,7 @@ export default function AdminModels() {
         available: false,
         enabled: m.enabled !== false,
         kind: m.kind,
+        free: m.free,
         lastCheckAt: m.last_check_at,
         lastCheckOK: m.last_check_ok,
         lastCheckDetail: m.last_check_detail,
@@ -574,6 +576,7 @@ export default function AdminModels() {
                               <TableCell>
                                 <div className="flex items-center gap-1">
                                   <span className="font-mono text-xs">{r.id}</span>
+                                  {r.free && <Pill tone="success">免费</Pill>}
                                   <CopyButton value={r.id} label="模型 ID 已复制" className="opacity-50 hover:opacity-100" />
                                 </div>
                                 {r.display && r.display !== r.id && <div className="text-[11px] text-muted-foreground">{r.display}</div>}

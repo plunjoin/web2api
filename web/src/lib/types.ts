@@ -286,6 +286,8 @@ export interface ModelInfo {
   /** 管理台上下架：false 时下游 /v1/models 不可见 */
   enabled?: boolean
   kind?: string
+  /** 上游账号权益内的免费模型（不计套餐积分） */
+  free?: boolean
   multiplier: number
   last_check_at?: number
   last_check_ok?: boolean
