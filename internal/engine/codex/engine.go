@@ -61,10 +61,14 @@ type Engine struct {
 	accounts []*codexAccount
 	ids      map[string]int
 	next     atomic.Uint64
+	order    engine.AccountOrder
 
 	errMu   sync.Mutex
 	lastErr error
 }
+
+// SetAccountOrder 实现 engine.AccountOrderer：管理台保存的账号顺序优先于轮询。
+func (e *Engine) SetAccountOrder(ids []string) { e.order.Set(ids) }
 
 // NewCodex 构建 codex 引擎（账号通过 AddAccount 动态注入）。
 func New(cfg config.CodexConfig, st *store.Store) *Engine {
@@ -323,6 +327,34 @@ func (e *Engine) ListModels() []model.ModelInfo {
 	return out
 }
 
+// candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
+// 否则保持原来的轮询起点。一次请求内按列表依次失败切换，不会重复打同一个账号。
+func (e *Engine) candidates() []*codexAccount {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	n := len(e.accounts)
+	if n == 0 {
+		return nil
+	}
+	start := 0
+	if !e.order.Active() {
+		start = int(e.next.Add(1))
+	}
+	now := time.Now()
+	list := make([]*codexAccount, 0, n)
+	for i := 0; i < n; i++ {
+		acc := e.accounts[(start+i)%n]
+		acc.mu.Lock()
+		ok := acc.enabled && acc.ready && now.After(acc.cooldownUntil)
+		acc.mu.Unlock()
+		if ok {
+			list = append(list, acc)
+		}
+	}
+	e.order.Sort(list, func(acc *codexAccount) string { return acc.id })
+	return list
+}
+
 // pick 轮询选择可用账号。
 func (e *Engine) pick() *codexAccount {
 	e.mu.RLock()
@@ -440,11 +472,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 	}
 	cReq := toCodexRequest(req)
 	var lastErr error
-	for attempt := 0; attempt < e.usableCount(); attempt++ {
-		acc := e.pick()
-		if acc == nil {
-			break
-		}
+	for _, acc := range e.candidates() {
 		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta ToolCallDelta) error {
 			return sink.ToolCall(model.ToolCallDelta{
 				Index: delta.Index,

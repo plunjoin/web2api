@@ -92,10 +92,14 @@ type Engine struct {
 	accounts []*customAccount
 	ids      map[string]int
 	next     atomic.Uint64
+	order    engine.AccountOrder
 
 	errMu   sync.Mutex
 	lastErr error
 }
+
+// SetAccountOrder 实现 engine.AccountOrderer：管理台保存的账号顺序优先于轮询。
+func (e *Engine) SetAccountOrder(ids []string) { e.order.Set(ids) }
 
 // NewCustom 构建第三方 Key 引擎。
 func New(cfg config.CustomConfig, st *store.Store) *Engine {
@@ -608,7 +612,12 @@ func (e *Engine) candidatesCtx(ctx context.Context, modelName string) (usable []
 		return nil, 0, 0
 	}
 	want := normalizeModelID(modelName)
-	start := int(e.next.Add(1))
+	// 管理台配置了顺序时严格按顺序从前往后试；没有配置才保持原来的轮询起点。
+	ordered := e.order.Active()
+	start := 0
+	if !ordered {
+		start = int(e.next.Add(1))
+	}
 	usable = make([]*customAccount, 0, n)
 	for i := 0; i < n; i++ {
 		acc := e.accounts[(start+i)%n]
@@ -627,6 +636,9 @@ func (e *Engine) candidatesCtx(ctx context.Context, modelName string) (usable []
 		if ok {
 			usable = append(usable, acc)
 		}
+	}
+	if ordered {
+		e.order.Sort(usable, func(acc *customAccount) string { return acc.id })
 	}
 	return usable, declared, total
 }
@@ -923,7 +935,12 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 			}
 			// 模型不存在、参数非法等业务错误属于「这一次请求」的问题，不是账号健康问题：
 			// 既不写进账号详情（避免错误详情挂到不相干的账号上），也不换号重试。
-			return nil, fmt.Errorf("custom: %w", err)
+			if isHTTPStatus(err, 400) || isHTTPStatus(err, 404) || isHTTPStatus(err, 422) {
+				return nil, fmt.Errorf("custom: %w", err)
+			}
+			// 网络错误 / 超时 / 上游 5xx：这个账号这一次不通，短暂冷却后换下一个账号
+			// （也就是路由顺序里的下一位供应商）。
+			e.markCooldown(acc, "上游请求失败", time.Minute)
 		}
 	}
 	if lastErr != nil {

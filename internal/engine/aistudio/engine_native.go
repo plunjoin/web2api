@@ -858,6 +858,13 @@ func (e *NativeEngine) RemoveAccount(id string) error {
 	return nil
 }
 
+// SetAccountOrder 实现 engine.AccountOrderer：把管理台保存的账号顺序下发给账号池。
+func (e *NativeEngine) SetAccountOrder(ids []string) {
+	if e.pool != nil {
+		e.pool.SetAccountOrder(ids)
+	}
+}
+
 // SetEnabled 启停账号：池原生管理通道（AcquireAccount 按 ID 取租约、不受 ready 状态限制，
 // 租约内 SaveConfig 持久化 account.json 并迁移状态；账号留在池中，调度自动跳过）。
 // 占用中最多等 3 秒，超时报"稍后重试"。

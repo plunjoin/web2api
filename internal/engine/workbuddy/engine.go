@@ -98,6 +98,7 @@ type Engine struct {
 	accounts []*workbuddyAccount
 	ids      map[string]int
 	next     atomic.Uint64
+	order    engine.AccountOrder
 
 	errMu   sync.Mutex
 	lastErr error
@@ -382,6 +383,9 @@ func (e *Engine) ListModels() []model.ModelInfo {
 	return out
 }
 
+// SetAccountOrder 实现 engine.AccountOrderer：管理台保存的账号顺序优先于轮询。
+func (e *Engine) SetAccountOrder(ids []string) { e.order.Set(ids) }
+
 // pick 智能选号：优先花掉「积分最快作废」的账号；都没读到到期时间时轮询。
 func (e *Engine) pick() *workbuddyAccount { return e.pickWhere(nil) }
 
@@ -400,6 +404,49 @@ func (e *Engine) pickFor(modelName string) *workbuddyAccount {
 		return acc
 	}
 	return e.pick()
+}
+
+// pickForExcept 在一次请求内按序选号。配置了路由顺序时严格按管理台顺序，
+// 跳过本次请求已试过的账号；未配置时保持原来的智能选号（到期优先/轮询）。
+func (e *Engine) pickForExcept(modelName string, tried map[string]struct{}) *workbuddyAccount {
+	if !e.order.Active() {
+		return e.pickFor(modelName)
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	now := time.Now()
+	available := make([]*workbuddyAccount, 0, len(e.accounts))
+	supported := make([]*workbuddyAccount, 0, len(e.accounts))
+	modelName = strings.TrimSpace(modelName)
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		ok := acc.available(now)
+		matches := false
+		if ok {
+			endpoint, site := e.resolve(acc.creds)
+			matches = siteSupports(site, IsLegacyCodeBuddy(endpoint), modelName)
+		}
+		acc.mu.Unlock()
+		if !ok {
+			continue
+		}
+		available = append(available, acc)
+		if matches {
+			supported = append(supported, acc)
+		}
+	}
+	// 目录里没有账号声明该模型时退回全部可用账号（目录只是兜底快照）。
+	if len(supported) > 0 {
+		available = supported
+	}
+	e.order.Sort(available, func(acc *workbuddyAccount) string { return acc.id })
+	for _, acc := range available {
+		if _, skip := tried[acc.id]; skip {
+			continue
+		}
+		return acc
+	}
+	return nil
 }
 
 // siteSupports 报告站点目录是否声明了该模型（旧 CodeBuddy 用旧目录）。
@@ -588,11 +635,13 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 	}
 	cReq := toWorkBuddyRequest(req)
 	var lastErr error
+	tried := map[string]struct{}{}
 	for attempt := 0; attempt < e.usableCount(); attempt++ {
-		acc := e.pickFor(req.Model)
+		acc := e.pickForExcept(req.Model, tried)
 		if acc == nil {
 			break
 		}
+		tried[acc.id] = struct{}{}
 		acc.mu.Lock()
 		proxy := acc.proxy(e.proxy)
 		acc.mu.Unlock()

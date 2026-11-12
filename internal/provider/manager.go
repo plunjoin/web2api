@@ -46,6 +46,11 @@ type Manager struct {
 	aiStudioModels  []string
 	// 新引擎（codex/antigravity/kiro/workbuddy）的模型路由配置。
 	engineModels map[string][]string
+
+	// 管理台保存的账号路由顺序（全局账号 ID 列表）与供应商优先级缓存。
+	routeMu       sync.RWMutex
+	routeIDs      []string
+	routeSupplier map[string]int
 }
 
 // accountPool 有账号池的引擎统一接口（引擎A/B 与订阅引擎都实现）。
@@ -222,6 +227,8 @@ func (m *Manager) Init(ctx context.Context) error {
 	if err := m.bootstrapAccounts(ctx); err != nil {
 		errs = append(errs, "号池装配: "+err.Error())
 	}
+	// 账号装配完成后再下发管理台保存的路由顺序，新增账号顺延到末尾。
+	m.ReloadRoutingOrder()
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
 	}
@@ -655,6 +662,15 @@ func TakeOAuthSession(engine, sessionID string) (*OAuthPendingSession, error) {
 // AddAccountFromStorageState 是统一账号添加入口。引擎A/B 提交 storage_state；
 // 订阅引擎（codex/antigravity/kiro/workbuddy）提交 credentials 凭据对象。
 func (m *Manager) AddAccountFromStorageState(req AccountInput) (store.Account, error) {
+	acc, err := m.addAccountFromStorageState(req)
+	if err == nil {
+		// 新账号不抢占既有顺序，按创建顺序追加到末尾。
+		m.ReloadRoutingOrder()
+	}
+	return acc, err
+}
+
+func (m *Manager) addAccountFromStorageState(req AccountInput) (store.Account, error) {
 	engineName := strings.ToLower(strings.TrimSpace(req.Engine))
 	if engineName == "" {
 		engineName = "aistudio"
@@ -1080,7 +1096,11 @@ func (m *Manager) RemoveAccount(id int64) error {
 			}
 		}
 	}
-	return m.st.DeleteAccount(id)
+	if err := m.st.DeleteAccount(id); err != nil {
+		return err
+	}
+	m.ReloadRoutingOrder()
+	return nil
 }
 
 // SetAccountEnabled 启停账号。
@@ -1654,21 +1674,37 @@ func (m *Manager) probeCatalogModelForTarget(modelID, kind string, eng engine.En
 	return fmt.Sprintf("引擎 %s 已声明该模型且引擎可接单（%s 模型未做生成探测）", eng.Name(), engine.KindLabel(kind)), nil
 }
 
-// Chat 非流式对话。
+// Chat 非流式对话。按供应商 / 账号顺序尝试，一个供应商不通再换下一个。
 func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
-	eng, req, err := m.resolveChatEngineCtx(ctx, req)
+	engines, req, err := m.chatEnginePlan(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.requireToolSupport(eng, req); err != nil {
-		return nil, err
-	}
-	res, err := eng.Chat(ctx, req)
-	if err != nil {
+	var (
+		lastRes *model.ChatResult
+		lastErr error
+	)
+	for i, eng := range engines {
+		if err := m.requireToolSupport(eng, req); err != nil {
+			lastErr = err
+			// 有工具支持的下家就继续试，全部不支持时把明确的错误返回给调用方。
+			if i < len(engines)-1 {
+				continue
+			}
+			break
+		}
+		res, err := eng.Chat(ctx, req)
+		if err == nil {
+			return res, nil
+		}
 		// 失败也带回引擎名，用量明细才不会显示「—」。
-		return &model.ChatResult{Engine: eng.Name(), Model: req.Model}, err
+		lastRes = &model.ChatResult{Engine: eng.Name(), Model: req.Model}
+		lastErr = err
+		if i == len(engines)-1 || !shouldFailover(ctx, err) {
+			break
+		}
 	}
-	return res, nil
+	return lastRes, lastErr
 }
 
 // ChatStream 流式对话。sink 同时承接文本与工具调用增量：引擎实现
@@ -1677,25 +1713,41 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 	if sink == nil {
 		sink = model.TextSink(nil)
 	}
-	eng, req, err := m.resolveChatEngineCtx(ctx, req)
+	engines, req, err := m.chatEnginePlan(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	var (
-		res *model.ChatResult
+		res     *model.ChatResult
+		lastErr error
+		lastRes *model.ChatResult
 	)
-	if err := m.requireToolSupport(eng, req); err != nil {
-		return nil, err
+	for i, eng := range engines {
+		if err := m.requireToolSupport(eng, req); err != nil {
+			lastErr = err
+			if i < len(engines)-1 {
+				continue
+			}
+			break
+		}
+		// 记录是否已经向客户端写过内容：写过就不能再换供应商，
+		// 否则调用方会收到两段拼接的回复。
+		gate := &streamGate{inner: sink}
+		if toolEng, ok := eng.(engine.ToolEngine); ok {
+			res, err = toolEng.ChatStreamSink(ctx, req, gate)
+		} else {
+			res, err = eng.ChatStream(ctx, req, gate.Text)
+		}
+		if err == nil {
+			return res, nil
+		}
+		lastRes = &model.ChatResult{Engine: eng.Name(), Model: req.Model}
+		lastErr = err
+		if gate.Wrote() || i == len(engines)-1 || !shouldFailover(ctx, err) {
+			break
+		}
 	}
-	if toolEng, ok := eng.(engine.ToolEngine); ok {
-		res, err = toolEng.ChatStreamSink(ctx, req, sink)
-	} else {
-		res, err = eng.ChatStream(ctx, req, sink.Text)
-	}
-	if err != nil {
-		return &model.ChatResult{Engine: eng.Name(), Model: req.Model}, err
-	}
-	return res, nil
+	return lastRes, lastErr
 }
 
 // resolveChatEngine 选定引擎。目录命中的模型归属其引擎：引擎不可用时直接返回
@@ -1941,7 +1993,9 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 			continue
 		}
 		for _, mi := range eng.ListModels() {
-			id := strings.TrimSpace(mi.ID)
+			// 对外统一裸模型 ID：Google 的 OpenAI 兼容端点会返回 models/xxx，
+			// 和其他引擎的 xxx 是同一个模型，不能并列成两条。
+			id := publicModelID(mi.ID)
 			if id == "" {
 				continue
 			}
@@ -1953,20 +2007,37 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 			if mi.Engine == "" {
 				mi.Engine = name
 			}
-			if idx, ok := indexByID[id]; ok {
+			// 按归一化 ID 合并：models/xxx、XXX、xxx 视为同一个模型，
+			// 只保留一条（先出现的引擎优先）。
+			key := model.CanonicalModelID(id)
+			if idx, ok := indexByID[key]; ok {
 				// 同名：保留先出现的条目，合并可用态与更具体的用途。
 				out[idx].Available = out[idx].Available || mi.Available
 				out[idx].Kind = model.PreferKind(out[idx].Kind, mi.Kind)
 				if out[idx].DisplayName == "" {
 					out[idx].DisplayName = mi.DisplayName
 				}
+				if out[idx].Engine == "" {
+					out[idx].Engine = mi.Engine
+				}
 				continue
 			}
-			indexByID[id] = len(out)
+			indexByID[key] = len(out)
 			out = append(out, mi)
 		}
 	}
 	return out
+}
+
+// publicModelID 返回下游模型目录使用的裸模型 ID（去掉 Google 的 models/ 前缀，
+// 大小写不敏感）。路由与下架设置本来就按裸名工作，目录也保持同一口径，
+// 客户端拿到的 ID 才能直接回填到请求里。
+func publicModelID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) >= len("models/") && strings.EqualFold(id[:len("models/")], "models/") {
+		id = id[len("models/"):]
+	}
+	return strings.TrimSpace(id)
 }
 
 func withModelKind(mi model.ModelInfo) model.ModelInfo {

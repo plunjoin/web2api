@@ -102,3 +102,27 @@ func TestNormalizeLegacyEnginesNoop(t *testing.T) {
 		t.Fatalf("account changed unexpectedly: %+v %v", got, err)
 	}
 }
+
+// 路由顺序按原始字符串保存并原样读回；未配置时是 nil（走默认顺序）。
+func TestRoutingAccountOrderRoundTrip(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ids, err := st.RoutingAccountOrder()
+	if err != nil || ids != nil {
+		t.Fatalf("unset order = %v, %v; want nil", ids, err)
+	}
+	if err := st.SetRoutingAccountOrder([]string{"3", "1", "2"}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = st.RoutingAccountOrder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 || ids[0] != "3" || ids[1] != "1" || ids[2] != "2" {
+		t.Fatalf("order = %v", ids)
+	}
+}

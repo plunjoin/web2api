@@ -50,6 +50,39 @@ func TestProviderScopeCandidatesAndPick(t *testing.T) {
 	}
 }
 
+// 管理台保存顺序后，候选账号严格按顺序排列（供应商之间与供应商内部一致）。
+func TestAccountOrderDrivesCandidates(t *testing.T) {
+	e := New(config.CustomConfig{}, nil)
+	for _, acc := range []*customAccount{
+		{id: "1", creds: Credentials{BaseURL: "https://a.example"}, enabled: true, ready: true, models: []model.ModelInfo{{ID: "shared", Available: true}}},
+		{id: "2", creds: Credentials{BaseURL: "https://a.example"}, enabled: true, ready: true, models: []model.ModelInfo{{ID: "shared", Available: true}}},
+		{id: "3", creds: Credentials{BaseURL: "https://b.example"}, enabled: true, ready: true, models: []model.ModelInfo{{ID: "shared", Available: true}}},
+	} {
+		e.accounts = append(e.accounts, acc)
+	}
+	e.SetAccountOrder([]string{"3", "1", "2"})
+	for i := 0; i < 3; i++ {
+		usable, _, _ := e.candidatesCtx(context.Background(), "shared")
+		ids := make([]string, 0, len(usable))
+		for _, acc := range usable {
+			ids = append(ids, acc.id)
+		}
+		if len(ids) != 3 || ids[0] != "3" || ids[1] != "1" || ids[2] != "2" {
+			t.Fatalf("candidates order = %v, want [3 1 2]", ids)
+		}
+	}
+	// 清空顺序后恢复轮询：连续调用不应固定从同一个账号开始。
+	e.SetAccountOrder(nil)
+	first := map[string]int{}
+	for i := 0; i < 6; i++ {
+		usable, _, _ := e.candidatesCtx(context.Background(), "shared")
+		first[usable[0].id]++
+	}
+	if len(first) < 2 {
+		t.Fatalf("round-robin did not rotate: %v", first)
+	}
+}
+
 func TestStripChatToolsFlattensHistory(t *testing.T) {
 	req := model.ChatRequest{
 		Model:      "MiniMax-M2",

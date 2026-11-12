@@ -38,10 +38,14 @@ type Engine struct {
 	accounts []*geminiAccount // 保序
 	ids      map[string]int   // id → accounts 下标
 	next     atomic.Uint64
+	order    engine.AccountOrder
 
 	errMu   sync.Mutex
 	lastErr error
 }
+
+// SetAccountOrder 实现 engine.AccountOrderer：管理台保存的账号顺序优先于轮询。
+func (e *Engine) SetAccountOrder(ids []string) { e.order.Set(ids) }
 
 // NewGeminiWeb 构建引擎A（账号通过 AddAccount 动态注入）。
 func New(cfg config.EngineAConfig) (*Engine, error) {
@@ -324,6 +328,30 @@ func (e *Engine) ListModels() []model.ModelInfo {
 	return out
 }
 
+// candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
+// 否则保持原来的轮询起点。
+func (e *Engine) candidates() []*geminiAccount {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	n := len(e.accounts)
+	if n == 0 {
+		return nil
+	}
+	start := 0
+	if !e.order.Active() {
+		start = int(e.next.Add(1))
+	}
+	list := make([]*geminiAccount, 0, n)
+	for i := 0; i < n; i++ {
+		acc := e.accounts[(start+i)%n]
+		if acc.enabled && acc.client.Ready() && acc.client.AccountStatus() == StatusAvailable {
+			list = append(list, acc)
+		}
+	}
+	e.order.Sort(list, func(acc *geminiAccount) string { return acc.id })
+	return list
+}
+
 // pick 轮询选择可用账号；返回 nil 表示无可用。
 func (e *Engine) pick() *geminiAccount {
 	e.mu.RLock()
@@ -380,16 +408,12 @@ func messagesToPrompt(messages []model.ChatMessage) string {
 // Chat 非流式对话（可用账号间故障切换）。
 func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	prompt := messagesToPrompt(req.Messages)
-	attempts := e.usableCount()
+	accounts := e.candidates()
+	if len(accounts) == 0 {
+		return nil, errors.New("引擎A 无可用账号（未添加账号、初始化中或配额耗尽）")
+	}
 	var lastErr error
-	for i := 0; i < attempts; i++ {
-		acc := e.pick()
-		if acc == nil {
-			if lastErr == nil {
-				lastErr = errors.New("引擎A 无可用账号（未添加账号、初始化中或配额耗尽）")
-			}
-			break
-		}
+	for _, acc := range accounts {
 		text, err := acc.client.Generate(ctx, prompt, req.Model)
 		if err == nil {
 			return &model.ChatResult{Text: text, Engine: "geminiweb", Model: req.Model}, nil
@@ -402,16 +426,12 @@ func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 // ChatStream 流式对话（可用账号间故障切换）。
 func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	prompt := messagesToPrompt(req.Messages)
-	attempts := e.usableCount()
+	accounts := e.candidates()
+	if len(accounts) == 0 {
+		return nil, errors.New("引擎A 无可用账号（未添加账号、初始化中或配额耗尽）")
+	}
 	var lastErr error
-	for i := 0; i < attempts; i++ {
-		acc := e.pick()
-		if acc == nil {
-			if lastErr == nil {
-				lastErr = errors.New("引擎A 无可用账号（未添加账号、初始化中或配额耗尽）")
-			}
-			break
-		}
+	for _, acc := range accounts {
 		text, err := acc.client.GenerateStream(ctx, prompt, req.Model, onDelta)
 		if err == nil {
 			return &model.ChatResult{Text: text, Engine: "geminiweb", Model: req.Model}, nil

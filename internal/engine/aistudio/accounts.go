@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"web2api/internal/engine"
 )
 
 const (
@@ -259,6 +261,7 @@ type AccountPool struct {
 	resources             map[string]string
 	perAccountConcurrency int
 	routingStrategy       string
+	order                 engine.AccountOrder
 	lastPicked            map[string]string
 	lastPickedChannel     map[string]Channel
 	channels              []Channel
@@ -2538,6 +2541,18 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 		}
 		indices = append(indices, index)
 	}
+	if p.order.Active() {
+		// 管理台配置了顺序：严格按顺序优先，不再轮换起点。
+		sort.SliceStable(indices, func(left, right int) bool {
+			li, ri := p.accounts[indices[left]], p.accounts[indices[right]]
+			lr, rr := p.order.Rank(li.ID), p.order.Rank(ri.ID)
+			if lr != rr {
+				return lr < rr
+			}
+			return li.ID < ri.ID
+		})
+		return indices, nil
+	}
 	sort.Slice(indices, func(left, right int) bool {
 		return p.accounts[indices[left]].ID < p.accounts[indices[right]].ID
 	})
@@ -2548,6 +2563,9 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 	}
 	return indices, nil
 }
+
+// SetAccountOrder 实现 engine.AccountOrderer：管理台保存的账号顺序优先于轮询。
+func (p *AccountPool) SetAccountOrder(ids []string) { p.order.Set(ids) }
 
 // SetRoutingStrategy 设置账户轮询或优先填满策略
 func (p *AccountPool) SetRoutingStrategy(strategy string) {

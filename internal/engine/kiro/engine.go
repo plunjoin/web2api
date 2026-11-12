@@ -63,10 +63,14 @@ type Engine struct {
 	accounts []*kiroAccount
 	ids      map[string]int
 	next     atomic.Uint64
+	order    engine.AccountOrder
 
 	errMu   sync.Mutex
 	lastErr error
 }
+
+// SetAccountOrder 实现 engine.AccountOrderer：管理台保存的账号顺序优先于轮询。
+func (e *Engine) SetAccountOrder(ids []string) { e.order.Set(ids) }
 
 // NewKiro 构建 kiro 引擎。
 func New(cfg config.KiroConfig, st *store.Store) *Engine {
@@ -352,6 +356,34 @@ func (e *Engine) ListModels() []model.ModelInfo {
 	return out
 }
 
+// candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
+// 否则保持原来的轮询起点。
+func (e *Engine) candidates() []*kiroAccount {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	n := len(e.accounts)
+	if n == 0 {
+		return nil
+	}
+	start := 0
+	if !e.order.Active() {
+		start = int(e.next.Add(1))
+	}
+	now := time.Now()
+	list := make([]*kiroAccount, 0, n)
+	for i := 0; i < n; i++ {
+		acc := e.accounts[(start+i)%n]
+		acc.mu.Lock()
+		ok := acc.enabled && acc.ready && now.After(acc.cooldownUntil)
+		acc.mu.Unlock()
+		if ok {
+			list = append(list, acc)
+		}
+	}
+	e.order.Sort(list, func(acc *kiroAccount) string { return acc.id })
+	return list
+}
+
 // pick 轮询选择可用账号。
 func (e *Engine) pick() *kiroAccount {
 	e.mu.RLock()
@@ -426,11 +458,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta fu
 		return nil, err
 	}
 	var lastErr error
-	for attempt := 0; attempt < e.usableCount(); attempt++ {
-		acc := e.pick()
-		if acc == nil {
-			break
-		}
+	for _, acc := range e.candidates() {
 		res, err := e.chatOnce(ctx, acc, cReq, onDelta)
 		if err == nil {
 			return &model.ChatResult{
