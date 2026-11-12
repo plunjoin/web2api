@@ -243,6 +243,26 @@ func meterData(ctx context.Context, proxy string, a StreamAuth, path string, bod
 	return env.Data, nil
 }
 
+// wbCode 组包码（与 magpie 插件的 CODE 一致）。
+func wbCode(n, s string) string { return "TCACA_code_" + n + "_" + s }
+
+// paidPackageCodes / freePackageCodes 是 WorkBuddy 客户端请求包详情时必带的
+// PackageCodes：API 缺了它会拒绝（10001 "PackageCodes required"）。取自已读到的
+// magpie 插件（PAID_CODES / FREE_CODES，WorkBuddy 5.5.6 的 COMMODITY_CODES）。
+var paidPackageCodes = []string{
+	wbCode("002", "AkiJS3ZHF5"), wbCode("005", "maRGyrHhw1"), wbCode("003", "FAnt7lcmRT"),
+	wbCode("023", "4xbGhMrE6q"), wbCode("026", "BaESVICNoi"), wbCode("027", "0FCGVA6vSa"),
+	wbCode("043", "6oIkxT7Z0S"), wbCode("009", "0XmEQc2xOf"), wbCode("038", "OhvqZtiPKr"),
+	wbCode("036", "lupO5WgNdG"),
+}
+
+var freePackageCodes = []string{
+	wbCode("001", "PqouKr6QWV"), wbCode("008", "cfWoLwvjU4"), wbCode("035", "ArVxJcGDsm"),
+	wbCode("006", "DbXS0lrypC"), wbCode("039", "KRcQj7wUat"), wbCode("040", "mi9rCYg46x"),
+	wbCode("007", "nzdH5h4Nl0"), wbCode("028", "NtpWi0jzXs"), wbCode("037", "WxOD3MpI2o"),
+	wbCode("029", "6wCGEWquYy"), wbCode("030", "BjSt89qTvr"),
+}
+
 // packageList 拉取付费 + 免费包（各最多 10 页 × 200）。
 func packageList(ctx context.Context, proxy string, a StreamAuth) ([]map[string]any, error) {
 	out := []map[string]any{}
@@ -251,8 +271,12 @@ func packageList(ctx context.Context, proxy string, a StreamAuth) ([]map[string]
 		path string
 		body map[string]any
 	}{
-		{"/billing/meter/get-user-resource-paid-packages", map[string]any{"NeedRenewInfo": true}},
+		{"/billing/meter/get-user-resource-paid-packages", map[string]any{
+			"PackageCodes":  paidPackageCodes,
+			"NeedRenewInfo": true,
+		}},
 		{"/billing/meter/get-user-resource-free-packages", map[string]any{
+			"PackageCodes":         freePackageCodes,
 			"SlicePeriodStartTime": day + " 00:00:00",
 			"SlicePeriodEndTime":   day + " 23:59:59",
 		}},
