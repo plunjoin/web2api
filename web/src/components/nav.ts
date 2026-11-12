@@ -8,6 +8,7 @@ import {
   KeyRound,
   LayoutDashboard,
   ReceiptText,
+  Route,
   Server,
   Settings,
   Ticket,
@@ -43,6 +44,7 @@ export const adminNav: NavGroup[] = [
     label: '网关',
     items: [
       { to: '/admin/accounts', label: '供应商', icon: Server, keywords: 'accounts pool provider gongyingshang gemini aistudio haochi' },
+      { to: '/admin/routing', label: '路由顺序', icon: Route, keywords: 'routing route order priority failover luyou shunxu' },
       { to: '/admin/keys', label: 'API Key', icon: KeyRound, keywords: 'keys api miyao' },
       { to: '/admin/usage', label: '用量', icon: BarChart3, keywords: 'usage yongliang records' },
       { to: '/admin/models', label: '模型与倍率', icon: Boxes, keywords: 'models multipliers pricing beilv' },

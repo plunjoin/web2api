@@ -20,6 +20,7 @@ const AdminUsers = lazy(() => import('@/pages/admin/users'))
 const AdminCodes = lazy(() => import('@/pages/admin/codes'))
 const AdminLedger = lazy(() => import('@/pages/admin/ledger'))
 const AdminAccounts = lazy(() => import('@/pages/admin/accounts'))
+const AdminRouting = lazy(() => import('@/pages/admin/routing'))
 const AdminKeys = lazy(() => import('@/pages/admin/keys'))
 const AdminUsage = lazy(() => import('@/pages/admin/usage'))
 const AdminModels = lazy(() => import('@/pages/admin/models'))
@@ -110,6 +111,7 @@ export const router = createBrowserRouter([
       { path: 'codes', element: page(<AdminCodes />) },
       { path: 'ledger', element: page(<AdminLedger />) },
       { path: 'accounts', element: page(<AdminAccounts />) },
+      { path: 'routing', element: page(<AdminRouting />) },
       { path: 'keys', element: page(<AdminKeys />) },
       { path: 'usage', element: page(<AdminUsage />) },
       { path: 'models', element: page(<AdminModels />) },

@@ -252,6 +252,32 @@ export interface Account {
   live: AccountLive
 }
 
+export interface RoutingAccount {
+  id: number
+  label: string
+  engine: string
+  provider?: string
+  enabled: boolean
+  ready: boolean
+  status: string
+  models: number
+}
+
+export interface RoutingSupplier {
+  key: string
+  engine: string
+  provider?: string
+  accounts: RoutingAccount[]
+}
+
+export interface RoutingView {
+  /** 是否保存过自定义顺序；false 时展示的是默认顺序 */
+  configured: boolean
+  /** 拍平后的账号 ID 顺序（提交时原样回传） */
+  order: number[]
+  suppliers: RoutingSupplier[]
+}
+
 export interface ModelInfo {
   id: string
   display_name?: string
