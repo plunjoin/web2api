@@ -65,6 +65,10 @@ type workbuddyAccount struct {
 	configAt      time.Time
 	configErr     string
 	refreshingCfg bool
+
+	// deepseek-v4.1-flash 专属 token 窗口：本账号的应答记录与仍在生效的拒绝重置时刻。
+	dsRows      []dsRow
+	dsRestUntil time.Time
 }
 
 func (a *workbuddyAccount) proxy(engineProxy string) string {
@@ -72,6 +76,35 @@ func (a *workbuddyAccount) proxy(engineProxy string) string {
 		return a.creds.Proxy
 	}
 	return engineProxy
+}
+
+// addDsRow 记录一条 deepseek 应答（token 数），只保留最近两天的记录以控内存。
+func (a *workbuddyAccount) addDsRow(at time.Time, tokens float64) {
+	if tokens <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dsRows = append(a.dsRows, dsRow{at: at, tokens: tokens})
+	if cut := at.Add(-2 * dsSpan); len(a.dsRows) > 0 && a.dsRows[0].at.Before(cut) {
+		i := 0
+		for i < len(a.dsRows) && a.dsRows[i].at.Before(cut) {
+			i++
+		}
+		a.dsRows = append([]dsRow(nil), a.dsRows[i:]...)
+	}
+}
+
+// recordDsRefusal 记录仍在生效的 deepseek 拒绝重置时刻（只保留最晚的）。
+func (a *workbuddyAccount) recordDsRefusal(reset time.Time) {
+	if reset.IsZero() {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if reset.After(a.dsRestUntil) {
+		a.dsRestUntil = reset
+	}
 }
 
 // tokenExpired 本地判断 token 过期（提前 5 分钟视为过期）。
@@ -455,7 +488,7 @@ func (e *Engine) pickFor(modelName string) *workbuddyAccount {
 	if modelName == "" || modelName == "auto" {
 		return e.pick()
 	}
-	if acc := e.pickWhere(func(site Site, legacy bool) bool {
+	if acc := e.pickWhere(modelName, func(site Site, legacy bool) bool {
 		return siteSupports(site, legacy, modelName)
 	}); acc != nil {
 		return acc
@@ -478,6 +511,10 @@ func (e *Engine) pickForExcept(modelName string, tried map[string]struct{}) *wor
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		ok := acc.available(now)
+		// deepseek-v4.1-flash 被限流的账号，该模型在重置前不再选它。
+		if ok && dsModelName(modelName) && now.Before(acc.dsRestUntil) {
+			ok = false
+		}
 		matches := false
 		if ok {
 			endpoint, site := e.resolve(acc.creds)
@@ -563,6 +600,10 @@ func (e *Engine) pickWhere(modelName string, filter func(site Site, legacy bool)
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		ok := acc.available(now)
+		// deepseek-v4.1-flash 被限流的账号，该模型在重置前不再选它（其他模型不受影响）。
+		if ok && dsModelName(modelName) && now.Before(acc.dsRestUntil) {
+			ok = false
+		}
 		var at time.Time
 		if ok && filter != nil {
 			endpoint, site := e.resolve(acc.creds)
@@ -693,13 +734,34 @@ func (e *Engine) refreshQuota(acc *workbuddyAccount) {
 	defer cancel()
 	auth, err := e.freshAuth(ctx, acc)
 	if err != nil {
-		e.setQuota(acc, &Quota{Err: shortErr(err), ReadAt: time.Now()})
+		e.setQuota(acc, e.withDsWindow(acc, &Quota{Err: shortErr(err), ReadAt: time.Now()}))
 		return
 	}
 	acc.mu.Lock()
 	proxy := acc.proxy(e.proxy)
 	acc.mu.Unlock()
-	e.setQuota(acc, fetchQuota(ctx, proxy, auth, ""))
+	e.setQuota(acc, e.withDsWindow(acc, fetchQuota(ctx, proxy, auth, "")))
+}
+
+// withDsWindow 把 deepseek-v4.1-flash 的专属 token 窗口并进额度快照（展示用）。
+// 积分接口读不到这个窗口，所以这里用本账号的应答记录估算；有拒绝则钉满。
+func (e *Engine) withDsWindow(acc *workbuddyAccount, q *Quota) *Quota {
+	if q == nil {
+		return q
+	}
+	now := time.Now()
+	acc.mu.Lock()
+	rows := append([]dsRow(nil), acc.dsRows...)
+	rest := acc.dsRestUntil
+	if !rest.IsZero() && !rest.After(now) {
+		rest, acc.dsRestUntil = time.Time{}, time.Time{}
+	}
+	_, site := e.resolve(acc.creds)
+	acc.mu.Unlock()
+	if w := dsWindow(rows, rest, now, dsSpec(site)); w != nil {
+		q.Windows = append(q.Windows, *w)
+	}
+	return q
 }
 
 func (e *Engine) setQuota(acc *workbuddyAccount, q *Quota) {
@@ -791,6 +853,9 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		}
 		res, err := Stream(ctx, proxy, auth, cReq, sink)
 		if err == nil {
+			if dsModelName(req.Model) {
+				acc.addDsRow(time.Now(), float64(res.PromptTokens+res.CompletionTokens))
+			}
 			if acc.quotaStale(5 * time.Minute) {
 				go e.refreshQuota(acc)
 			}
@@ -825,6 +890,16 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 			acc.lastErr = "token 失效，请重新授权"
 			acc.mu.Unlock()
 		case IsRateLimited(err):
+			// deepseek-v4.1-flash 的 429 带专属 token 窗口的重置时刻：记下来，
+			// 供额度卡片展示，并在选号时停掉该模型的这个账号直到重置。
+			if dsModelName(req.Model) {
+				if reset := windowReset(err.Error()); !reset.IsZero() && reset.After(time.Now()) {
+					acc.recordDsRefusal(reset)
+					e.markCooldown(acc, "deepseek-v4.1-flash 限流至 "+reset.Format(time.RFC3339), 3*time.Minute)
+					go e.refreshQuota(acc)
+					continue
+				}
+			}
 			e.markCooldown(acc, "上游限流", 3*time.Minute)
 		case UpstreamStatus(err) >= 500:
 			// 上游 5xx：可能是该账号所在集群的临时故障，短暂冷却后换号重试。
