@@ -413,7 +413,7 @@ func catalogFromModels(models []model.ModelInfo) []store.CatalogModel {
 	out := make([]store.CatalogModel, 0, len(models))
 	for _, m := range models {
 		out = append(out, store.CatalogModel{
-			Engine: m.Engine, Model: strings.TrimSpace(m.ID), DisplayName: m.DisplayName, Kind: m.Kind,
+			Engine: m.Engine, Model: strings.TrimSpace(m.ID), DisplayName: m.DisplayName, Kind: m.Kind, Free: m.Free,
 		})
 	}
 	return out
@@ -444,6 +444,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 		Available       bool    `json:"available"`
 		Enabled         bool    `json:"enabled"`
 		Kind            string  `json:"kind,omitempty"`
+		Free            bool    `json:"free,omitempty"`
 		Multiplier      float64 `json:"multiplier"`
 		LastCheckAt     int64   `json:"last_check_at,omitempty"`
 		LastCheckOK     bool    `json:"last_check_ok"`
@@ -467,7 +468,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			multiplier, _ := a.st.ModelMultiplierFor(m.Model)
 			view := modelView{
 				ID: m.Model, DisplayName: m.DisplayName, Engine: m.Engine,
-				Available: true, Enabled: true, Kind: m.Kind, Multiplier: multiplier,
+				Available: true, Enabled: true, Kind: m.Kind, Free: m.Free, Multiplier: multiplier,
 			}
 			if s, ok := settings[model.CanonicalModelID(m.Model)]; ok {
 				view.Enabled = s.Enabled

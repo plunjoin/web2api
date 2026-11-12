@@ -59,6 +59,12 @@ type workbuddyAccount struct {
 	quota      *Quota
 	quotaAt    time.Time
 	refreshing bool
+
+	// config 是 /v3/config 读到的真实模型目录（含免费标识与价格）。
+	config        []ConfigModel
+	configAt      time.Time
+	configErr     string
+	refreshingCfg bool
 }
 
 func (a *workbuddyAccount) proxy(engineProxy string) string {
@@ -175,6 +181,7 @@ func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	e.ids[id] = len(e.accounts) - 1
 	e.mu.Unlock()
 	go e.refreshQuota(acc)
+	go e.refreshConfig(acc)
 	return nil
 }
 
@@ -307,11 +314,20 @@ func (e *Engine) Ready() bool {
 	return false
 }
 
-// RefreshCatalog WorkBuddy 没有公开模型列表接口（模型随账号权益），
-// 有可用账号时返回按站点聚合的内置目录。
+// RefreshCatalog 触发 /v3/config 刷新，返回当前聚合目录（真实 config 优先，
+// 读不到时退回内置目录）。
 func (e *Engine) RefreshCatalog(context.Context) ([]model.ModelInfo, error) {
 	if !e.hasEnabledAccount() {
 		return nil, errors.New("workbuddy 没有可用账号，无法获取模型")
+	}
+	e.mu.RLock()
+	targets := make([]*workbuddyAccount, 0, len(e.accounts))
+	for _, acc := range e.accounts {
+		targets = append(targets, acc)
+	}
+	e.mu.RUnlock()
+	for _, acc := range targets {
+		go e.refreshConfig(acc)
 	}
 	return e.ListModels(), nil
 }
@@ -330,13 +346,18 @@ func (e *Engine) hasEnabledAccount() bool {
 	return false
 }
 
-// ListModels 聚合各账号站点的模型目录（同名去重）。没有账号时给国服目录。
+// ListModels 聚合各账号站点的模型目录（同名去重，/v3/config 优先于内置目录）。
+// 有账号读到真实 config 时用它的模型（含免费标识与积分倍率），否则退回内置
+// 兜底目录。没有账号时给国服目录。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	sites := map[string]Site{}
 	anyAvailable := false
 	legacy := false
 	now := time.Now()
+	// 按站点聚合各账号读到的 config 模型（同名去重，先到先得）。
+	configBySite := map[string][]ConfigModel{}
+	seenCfg := map[string]map[string]bool{}
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		endpoint, site := e.resolve(acc.creds)
@@ -344,6 +365,18 @@ func (e *Engine) ListModels() []model.ModelInfo {
 			legacy = true
 		} else {
 			sites[site.ID] = site
+			if len(acc.config) > 0 {
+				if seenCfg[site.ID] == nil {
+					seenCfg[site.ID] = map[string]bool{}
+				}
+				for _, m := range acc.config {
+					if seenCfg[site.ID][m.ID] {
+						continue
+					}
+					seenCfg[site.ID][m.ID] = true
+					configBySite[site.ID] = append(configBySite[site.ID], m)
+				}
+			}
 		}
 		if acc.available(now) {
 			anyAvailable = true
@@ -355,7 +388,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 		sites[SiteCN.ID] = SiteCN
 	}
 	seen := map[string]bool{}
-	out := make([]model.ModelInfo, 0, len(SiteCN.Models)+len(SiteIntl.Models))
+	out := make([]model.ModelInfo, 0, 40)
 	add := func(entries []ModelEntry) {
 		for _, m := range entries {
 			if seen[m.ID] {
@@ -368,15 +401,39 @@ func (e *Engine) ListModels() []model.ModelInfo {
 				DisplayName: m.Name,
 				Available:   anyAvailable,
 				Engine:      e.name,
+				Free:        m.Free,
+			})
+		}
+	}
+	addCfg := func(models []ConfigModel) {
+		for _, m := range models {
+			if seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			out = append(out, model.ModelInfo{
+				ID:          m.ID,
+				Object:      "model",
+				DisplayName: m.Name,
+				Available:   anyAvailable,
+				Engine:      e.name,
+				Free:        m.Free,
+				Rate:        m.Rate,
 			})
 		}
 	}
 	if legacy {
-		// 旧 CodeBuddy 账号优先展示它自己的目录。
+		// 旧 CodeBuddy 账号优先展示它自己的目录（无免费标识）。
 		add(LegacyModels())
 	}
 	for _, sid := range []string{SiteCN.ID, SiteIntl.ID} {
-		if site, ok := sites[sid]; ok {
+		site, ok := sites[sid]
+		if !ok {
+			continue
+		}
+		if cfgs := configBySite[sid]; len(cfgs) > 0 {
+			addCfg(cfgs)
+		} else {
 			add(SiteModels(site))
 		}
 	}
@@ -387,7 +444,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 func (e *Engine) SetAccountOrder(ids []string) { e.order.Set(ids) }
 
 // pick 智能选号：优先花掉「积分最快作废」的账号；都没读到到期时间时轮询。
-func (e *Engine) pick() *workbuddyAccount { return e.pickWhere(nil) }
+func (e *Engine) pick() *workbuddyAccount { return e.pickWhere("", nil) }
 
 // pickFor 在 pick 的基础上优先选「站点目录里明确支持该模型」的账号。
 // 两个 build 的模型目录不同（国际服没有 Hy/GLM 系列，国服没有 GPT/Gemini 系列），
@@ -466,8 +523,37 @@ func containsString(list []string, v string) bool {
 	return false
 }
 
+// modelDefaultEffort 返回模型在 /v3/config 里的默认推理档位（读不到返回 ""）。
+// 上游对不带 reasoning_effort 的请求默认不思考（模型仍会答，但不思考）。
+func (e *Engine) modelDefaultEffort(modelName string) string {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" || modelName == "auto" {
+		return ""
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		effort := configDefaultEffort(acc.config, modelName)
+		acc.mu.Unlock()
+		if effort != "" {
+			return effort
+		}
+	}
+	return ""
+}
+
+func configDefaultEffort(models []ConfigModel, id string) string {
+	for _, m := range models {
+		if m.ID == id {
+			return m.DefaultEffort
+		}
+	}
+	return ""
+}
+
 // pickWhere 按可选过滤条件选号（filter 在账号锁内调用，读到的 creds 是一致快照）。
-func (e *Engine) pickWhere(filter func(site Site, legacy bool) bool) *workbuddyAccount {
+func (e *Engine) pickWhere(modelName string, filter func(site Site, legacy bool) bool) *workbuddyAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	now := time.Now()
@@ -622,6 +708,50 @@ func (e *Engine) setQuota(acc *workbuddyAccount, q *Quota) {
 	acc.mu.Unlock()
 }
 
+// refreshConfig 异步读取账号的 /v3/config 模型目录（含免费标识）。并发去重。
+func (e *Engine) refreshConfig(acc *workbuddyAccount) {
+	acc.mu.Lock()
+	if acc.refreshingCfg {
+		acc.mu.Unlock()
+		return
+	}
+	acc.refreshingCfg = true
+	acc.mu.Unlock()
+	defer func() {
+		acc.mu.Lock()
+		acc.refreshingCfg = false
+		acc.configAt = time.Now()
+		acc.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	auth, err := e.freshAuth(ctx, acc)
+	if err != nil {
+		acc.mu.Lock()
+		acc.configErr = shortErr(err)
+		acc.mu.Unlock()
+		return
+	}
+	acc.mu.Lock()
+	proxy := acc.proxy(e.proxy)
+	acc.mu.Unlock()
+	models, err := fetchConfig(ctx, proxy, auth)
+	acc.mu.Lock()
+	if err != nil {
+		acc.configErr = shortErr(err)
+	} else {
+		acc.config, acc.configErr = models, ""
+	}
+	acc.mu.Unlock()
+}
+
+func (acc *workbuddyAccount) configStale(d time.Duration) bool {
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+	return len(acc.config) == 0 || time.Since(acc.configAt) > d
+}
+
 func (acc *workbuddyAccount) quotaStale(d time.Duration) bool {
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
@@ -634,6 +764,11 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		return nil, engine.UnavailableError(e)
 	}
 	cReq := toWorkBuddyRequest(req)
+	// 带默认推理档位（与 magpie 一致）：max_tokens ≤ 1024 的短答不思考
+	// （否则预算全花在推理上、正文空），其余按模型的 config 默认档位下发。
+	if cReq.ReasoningEffort == "" && (cReq.MaxTokens == 0 || cReq.MaxTokens > 1024) {
+		cReq.ReasoningEffort = e.modelDefaultEffort(req.Model)
+	}
 	var lastErr error
 	tried := map[string]struct{}{}
 	for attempt := 0; attempt < e.usableCount(); attempt++ {

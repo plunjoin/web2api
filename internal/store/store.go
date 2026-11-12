@@ -221,6 +221,7 @@ func (s *Store) migrate() error {
 				model TEXT NOT NULL,
 				display_name TEXT NOT NULL DEFAULT '',
 				kind TEXT NOT NULL DEFAULT '',
+				free INTEGER NOT NULL DEFAULT 0,
 				fetched_at INTEGER NOT NULL,
 				PRIMARY KEY (engine, model)
 			)`,
@@ -244,6 +245,7 @@ func (s *Store) migrate() error {
 		{"usage_records", "user_id", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_records", "user_multiplier", "REAL NOT NULL DEFAULT 1"},
 		{"usage_records", "refunded_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_catalog", "free", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.ddl); err != nil {
 			return fmt.Errorf("迁移失败: %w", err)

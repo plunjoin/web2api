@@ -366,12 +366,13 @@ type CatalogModel struct {
 	Model       string `json:"model"`
 	DisplayName string `json:"display_name,omitempty"`
 	Kind        string `json:"kind,omitempty"`
+	Free        bool   `json:"free,omitempty"`
 	FetchedAt   int64  `json:"fetched_at"`
 }
 
 // CatalogModels 全部已保存的模型快照（按引擎、模型名排序）。
 func (s *Store) CatalogModels() ([]CatalogModel, error) {
-	rows, err := s.db.Query(`SELECT engine, model, display_name, kind, fetched_at
+	rows, err := s.db.Query(`SELECT engine, model, display_name, kind, free, fetched_at
 		FROM model_catalog ORDER BY engine, model`)
 	if err != nil {
 		return nil, err
@@ -380,9 +381,11 @@ func (s *Store) CatalogModels() ([]CatalogModel, error) {
 	out := []CatalogModel{}
 	for rows.Next() {
 		var item CatalogModel
-		if err := rows.Scan(&item.Engine, &item.Model, &item.DisplayName, &item.Kind, &item.FetchedAt); err != nil {
+		var free int
+		if err := rows.Scan(&item.Engine, &item.Model, &item.DisplayName, &item.Kind, &free, &item.FetchedAt); err != nil {
 			return nil, err
 		}
+		item.Free = free != 0
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -436,8 +439,8 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 	if _, err := tx.Exec(`DELETE FROM model_catalog WHERE engine = ?`, engine); err != nil {
 		return 0, err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO model_catalog (engine, model, display_name, kind, fetched_at)
-		VALUES (?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO model_catalog (engine, model, display_name, kind, free, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
@@ -460,7 +463,11 @@ func (s *Store) ReplaceEngineCatalog(engine string, models []CatalogModel) (int,
 			continue
 		}
 		seen[id] = struct{}{}
-		if _, err := stmt.Exec(engine, id, strings.TrimSpace(m.DisplayName), strings.TrimSpace(m.Kind), ts); err != nil {
+		free := 0
+		if m.Free {
+			free = 1
+		}
+		if _, err := stmt.Exec(engine, id, strings.TrimSpace(m.DisplayName), strings.TrimSpace(m.Kind), free, ts); err != nil {
 			return 0, err
 		}
 		// 任何供应商都没出现过的模型才算新的，默认下架；已开放或已下架的保持原状。

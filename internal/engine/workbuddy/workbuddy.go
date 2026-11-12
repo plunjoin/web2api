@@ -459,6 +459,9 @@ type Request struct {
 	ToolChoice  json.RawMessage
 	MaxTokens   int
 	Temperature *float64
+	// ReasoningEffort 是模型的推理档位（none/low/medium/high/xhigh/max）。
+	// 为空时不显式下发；上游对不带 reasoning_effort 的请求默认不思考。
+	ReasoningEffort string
 	// ConversationID 由网关按会话传入，同一会话复用（上游按它归并用量）。
 	ConversationID string
 }
@@ -466,6 +469,7 @@ type Request struct {
 // Result 推理结果。
 type Result struct {
 	Text             string
+	Reasoning        string
 	ToolCalls        []model.ToolCall
 	PromptTokens     int64
 	CompletionTokens int64
@@ -487,13 +491,14 @@ type chatMessage struct {
 }
 
 type chatBody struct {
-	Model       string          `json:"model"`
-	Messages    []chatMessage   `json:"messages"`
-	Tools       []model.Tool    `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []chatMessage   `json:"messages"`
+	Tools           []model.Tool    `json:"tools,omitempty"`
+	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
+	Stream          bool            `json:"stream"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	MaxTokens       int             `json:"max_tokens,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 }
 
 func buildChatBody(req *Request) (*chatBody, error) {
@@ -503,6 +508,9 @@ func buildChatBody(req *Request) (*chatBody, error) {
 	body := &chatBody{Model: req.Model, Stream: true, Temperature: req.Temperature}
 	if req.MaxTokens > 0 {
 		body.MaxTokens = req.MaxTokens
+	}
+	if req.ReasoningEffort != "" {
+		body.ReasoningEffort = req.ReasoningEffort
 	}
 	if len(req.Tools) > 0 {
 		body.Tools = req.Tools
@@ -782,8 +790,10 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string                `json:"content"`
-					ToolCalls []model.ToolCallDelta `json:"tool_calls"`
+					Content          string                `json:"content"`
+					ReasoningContent string                `json:"reasoning_content"`
+					Reasoning        string                `json:"reasoning"`
+					ToolCalls        []model.ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
 			Usage *struct {
@@ -795,6 +805,11 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 			continue
 		}
 		for _, ch := range chunk.Choices {
+			if r := ch.Delta.ReasoningContent; r != "" {
+				result.Reasoning += r
+			} else if r := ch.Delta.Reasoning; r != "" {
+				result.Reasoning += r
+			}
 			if ch.Delta.Content != "" {
 				result.Text += ch.Delta.Content
 				if err := sink.Text(ch.Delta.Content); err != nil {
@@ -849,6 +864,12 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 		}
 	}
 	if result.Text == "" && len(result.ToolCalls) == 0 {
+		// 短答（如管理台探测的 max_tokens=16）可能整段都落在思考里，没吐出
+		// content：把 reasoning 当作输出，避免「上游没有返回任何内容」误报。
+		if result.Reasoning != "" {
+			result.Text = result.Reasoning
+			return result, nil
+		}
 		return nil, errors.New("上游没有返回任何内容")
 	}
 	return result, nil

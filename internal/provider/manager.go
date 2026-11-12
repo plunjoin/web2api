@@ -2014,6 +2014,7 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 				// 同名：保留先出现的条目，合并可用态与更具体的用途。
 				out[idx].Available = out[idx].Available || mi.Available
 				out[idx].Kind = model.PreferKind(out[idx].Kind, mi.Kind)
+				out[idx].Free = out[idx].Free || mi.Free
 				if out[idx].DisplayName == "" {
 					out[idx].DisplayName = mi.DisplayName
 				}

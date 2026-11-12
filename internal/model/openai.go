@@ -327,6 +327,11 @@ type ModelInfo struct {
 	Engine      string `json:"engine,omitempty"`
 	// Kind 用途分类：chat、image、video、music、speech、embedding。
 	Kind string `json:"kind,omitempty"`
+	// Free 表示该模型不计套餐积分（上游账号权益内的免费模型）。
+	// 由 WorkBuddy 的 /v3/config 每个模型的 credits 与 modelPromotions 推导。
+	Free bool `json:"free,omitempty"`
+	// Rate 是请求一次消耗的积分倍率（0 = 免费）。仅在能读到上游价格时有值。
+	Rate float64 `json:"rate,omitempty"`
 }
 
 // NewCompletion 构造标准非流式响应。

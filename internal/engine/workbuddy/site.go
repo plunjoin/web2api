@@ -167,6 +167,16 @@ var DefaultModels = SiteCN.Models
 type ModelEntry struct {
 	ID   string
 	Name string
+	// Free 是内置目录兜底的免费标识（config 读不到时用）。真实免费标识以
+	// /v3/config 的 credits / modelPromotions 为准。
+	Free bool
+}
+
+// fallbackFree 是内置目录里已知不耗积分的模型（config 读不到时的兜底）。
+// 只放明确免费、且不是「夜间限免」的模型；Hy4 preview 只在 23:00–8:00 免费，
+// 不算免费（与 magpie 的 priceOf 一致）。
+var fallbackFree = map[string]bool{
+	"deepseek-v4.1-flash": true,
 }
 
 // SiteModels 返回站点目录（id → 展示名）。
@@ -189,7 +199,7 @@ func SiteModels(s Site) []ModelEntry {
 		if name == "" {
 			name = id
 		}
-		out = append(out, ModelEntry{ID: id, Name: name})
+		out = append(out, ModelEntry{ID: id, Name: name, Free: fallbackFree[id]})
 	}
 	return out
 }
