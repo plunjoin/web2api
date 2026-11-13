@@ -39,32 +39,43 @@ func (a *API) handleRouting(w http.ResponseWriter, r *http.Request) {
 // 传空列表表示清除配置，恢复默认顺序。
 func (a *API) handlePutRouting(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Accounts []int64 `json:"accounts"`
+		Accounts *[]int64 `json:"accounts"`
+		Affinity string   `json:"affinity"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	// 只保存当前仍存在的账号：删除账号后旧 ID 不再进入顺序。
-	known := map[int64]struct{}{}
-	for _, ov := range a.mgr.AccountOverview() {
-		known[ov.ID] = struct{}{}
-	}
-	ids := make([]string, 0, len(req.Accounts))
-	seen := map[int64]struct{}{}
-	for _, id := range req.Accounts {
-		if _, ok := known[id]; !ok {
-			continue
+	// accounts 缺省表示这次只改会话粘性，不动已保存的顺序。
+	if req.Accounts != nil {
+		// 只保存当前仍存在的账号：删除账号后旧 ID 不再进入顺序。
+		known := map[int64]struct{}{}
+		for _, ov := range a.mgr.AccountOverview() {
+			known[ov.ID] = struct{}{}
 		}
-		if _, dup := seen[id]; dup {
-			continue
+		ids := make([]string, 0, len(*req.Accounts))
+		seen := map[int64]struct{}{}
+		for _, id := range *req.Accounts {
+			if _, ok := known[id]; !ok {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, strconv.FormatInt(id, 10))
 		}
-		seen[id] = struct{}{}
-		ids = append(ids, strconv.FormatInt(id, 10))
+		if err := a.mgr.ApplyRoutingOrder(ids); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
 	}
-	if err := a.mgr.ApplyRoutingOrder(ids); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
+	// affinity 为空表示这次只改顺序，保持当前粘性设置不变。
+	if strings.TrimSpace(req.Affinity) != "" {
+		if err := a.mgr.SetAffinityMode(req.Affinity); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, a.routingView())
 }
@@ -164,6 +175,7 @@ func (a *API) routingView() map[string]any {
 		"configured": configured,
 		"order":      flat,
 		"suppliers":  suppliers,
+		"affinity":   a.mgr.AffinityMode(),
 	}
 }
 
