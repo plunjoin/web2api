@@ -9,7 +9,7 @@ import { PageHeader, Section } from '@/components/page'
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { ApiError, api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
-import { dateTime, num } from '@/lib/format'
+import { cny, dateTime } from '@/lib/format'
 
 interface HistoryItem {
   code: string
@@ -37,7 +37,7 @@ export default function ConsoleRedeem() {
       const res = await api<{ amount: number; balance: number }>('/api/user/redeem', { method: 'POST', json: { code: value } })
       setLast(res)
       setCode('')
-      toast.success(`兑换成功，到账 ${num(res.amount)} Token`)
+      toast.success(`兑换成功，到账 ${cny(res.amount)}`)
       await refresh()
       qc.invalidateQueries({ queryKey: ['user'] })
     } catch (err) {
@@ -74,14 +74,14 @@ export default function ConsoleRedeem() {
               <div className="flex items-start gap-2.5 rounded-md border border-success/20 bg-success/[0.07] p-3 text-[13px]">
                 <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
                 <div>
-                  <div className="font-medium text-success">到账 +{num(last.amount)} Token</div>
-                  <div className="text-xs text-muted-foreground">当前余额 {num(last.balance)}</div>
+                  <div className="font-medium text-success">到账 +{cny(last.amount)}</div>
+                  <div className="text-xs text-muted-foreground">当前余额 {cny(last.balance)}</div>
                 </div>
               </div>
             )}
             <div className="flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
               <span>当前余额</span>
-              <span className="text-sm font-medium text-foreground tabular-nums">{num(me?.balance)}</span>
+              <span className="text-sm font-medium text-foreground tabular-nums">{cny(me?.balance)}</span>
             </div>
           </form>
         </Section>
@@ -105,7 +105,7 @@ export default function ConsoleRedeem() {
                 {history.data.history.map((h) => (
                   <TableRow key={h.code + h.redeemed_at}>
                     <TableCell className="font-mono text-xs">{h.code}</TableCell>
-                    <TableCell className="text-right font-medium text-success tabular-nums">+{num(h.amount)}</TableCell>
+                    <TableCell className="text-right font-medium text-success tabular-nums">+{cny(h.amount)}</TableCell>
                     <TableCell className="text-muted-foreground">{dateTime(h.redeemed_at)}</TableCell>
                   </TableRow>
                 ))}

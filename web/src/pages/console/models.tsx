@@ -9,7 +9,7 @@ import { StatusDot } from '@/components/status'
 import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/model-kind'
 import { CopyButton } from '@/components/copy'
 import { api } from '@/lib/api'
-import { multiplier, num } from '@/lib/format'
+import { multiplier, yuan } from '@/lib/format'
 
 interface M {
   id: string
@@ -17,6 +17,9 @@ interface M {
   available: boolean
   kind?: string
   multiplier: number
+  input: number
+  output: number
+  cache_read: number
 }
 
 export default function ConsoleModels() {
@@ -29,7 +32,7 @@ export default function ConsoleModels() {
   }, [q.data, search, kind])
   return (
     <>
-      <PageHeader title="模型与价格" description={q.data?.formula || '扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉'} />
+      <PageHeader title="模型与价格" description={q.data?.formula || '费用 =（未缓存输入 × 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价）× 倍率'} />
       <Toolbar className="mb-3">
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -54,7 +57,9 @@ export default function ConsoleModels() {
                   <TableHead>用途</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead className="text-right">你的倍率</TableHead>
-                  <TableHead className="text-right">1,000 Token 约扣</TableHead>
+                  <TableHead className="text-right">输入价（元/百万）</TableHead>
+                  <TableHead className="text-right">输出价（元/百万）</TableHead>
+                  <TableHead className="text-right">缓存价（元/百万）</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -72,7 +77,9 @@ export default function ConsoleModels() {
                     </TableCell>
                     <TableCell>{m.available ? <StatusDot tone="success">可用</StatusDot> : <StatusDot tone="muted">暂不可用</StatusDot>}</TableCell>
                     <TableCell className="text-right tabular-nums">{multiplier(m.multiplier)}</TableCell>
-                    <TableCell className="text-right text-muted-foreground tabular-nums">{num(Math.ceil(1000 * m.multiplier))}</TableCell>
+                    <TableCell className="text-right tabular-nums">{yuan(m.input * m.multiplier)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{yuan(m.output * m.multiplier)}</TableCell>
+                    <TableCell className="text-right text-muted-foreground tabular-nums">{m.cache_read < 0 ? '同输入价' : yuan(m.cache_read * m.multiplier)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

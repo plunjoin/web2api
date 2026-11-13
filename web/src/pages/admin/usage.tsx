@@ -17,7 +17,8 @@ import { Field, MiniSelect, dayOptions } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
 import { useDebounced } from '@/hooks/use-misc'
 import { api, download, qs } from '@/lib/api'
-import { compact, latency, num } from '@/lib/format'
+import { cny, compact, latency, num, usd } from '@/lib/format'
+import { useCNYPerUSD } from '@/lib/currency'
 import type { ApiKey, UsagePoint, UsageRecord } from '@/lib/types'
 
 const LIMIT = 50
@@ -30,7 +31,7 @@ interface Breakdown {
   requests: number
   success_requests: number
   total_tokens: number
-  charged_tokens: number
+  cost_micros: number
   estimated_requests: number
   avg_latency_ms: number
 }
@@ -42,7 +43,8 @@ export default function AdminUsage() {
   const [keyId, setKeyId] = useState('all')
   const [modelInput, setModelInput] = useState('')
   const model = useDebounced(modelInput.trim())
-  const [metric, setMetric] = useState<UsageMetric>('charged_tokens')
+  const [metric, setMetric] = useState<UsageMetric>('cost_micros')
+  const fx = useCNYPerUSD()
   const [offset, setOffset] = useState(0)
   const [selected, setSelected] = useState<UsageRecord | null>(null)
   const [refundNote, setRefundNote] = useState('')
@@ -51,7 +53,7 @@ export default function AdminUsage() {
   const keys = useQuery({ queryKey: ['admin', 'keys'], queryFn: () => api<{ keys: ApiKey[] }>('/admin/api/keys') })
   const summary = useQuery({
     queryKey: ['admin', 'usage-summary', filter],
-    queryFn: () => api<{ breakdown: Breakdown[]; totals: { requests: number; success_requests: number; total_tokens: number; charged_tokens: number; estimated_requests: number } }>(`/admin/api/usage${qs(filter)}`),
+    queryFn: () => api<{ breakdown: Breakdown[]; totals: { requests: number; success_requests: number; total_tokens: number; cost_micros: number; estimated_requests: number } }>(`/admin/api/usage${qs(filter)}`),
     placeholderData: keepPreviousData,
   })
   const series = useQuery({
@@ -66,11 +68,11 @@ export default function AdminUsage() {
   })
   const t = summary.data?.totals
   const rate = t && t.requests ? (t.success_requests / t.requests) * 100 : null
-  const breakdown = useMemo(() => [...(summary.data?.breakdown || [])].sort((a, b) => b.charged_tokens - a.charged_tokens), [summary.data])
+  const breakdown = useMemo(() => [...(summary.data?.breakdown || [])].sort((a, b) => b.cost_micros - a.cost_micros), [summary.data])
 
   const refund = async () => {
     if (!selected) return
-    if (!(await confirm({ title: `退还 ${num(selected.charged_tokens)} Token？`, description: `退回到 ${selected.user_email || '该用户'} 的余额，并写入一条退款流水。每条记录只能退款一次。`, confirmText: '确认退款' }))) return
+    if (!(await confirm({ title: `退还 ${cny(selected.cost_micros)}？`, description: `退回到 ${selected.user_email || '该用户'} 的余额，并写入一条退款流水。每条记录只能退款一次。`, confirmText: '确认退款' }))) return
     try {
       await api(`/admin/api/usage/records/${selected.id}/refund`, { method: 'POST', json: { note: refundNote.trim() } })
       toast.success('已退款')
@@ -85,7 +87,7 @@ export default function AdminUsage() {
     <>
       <PageHeader
         title="用量"
-        description="全部请求的 Token 与扣费。点击记录查看计算过程；用户密钥的请求可以退款。"
+        description="全部请求的 Token 与费用。点击记录查看计算过程；用户密钥的请求可以退款。"
         actions={
           <Button variant="outline" onClick={() => download(`/admin/api/usage/export.csv${qs(filter)}`, 'usage.csv').catch((e) => toast.error(e.message))}>
             <Download /> 导出 CSV
@@ -109,7 +111,7 @@ export default function AdminUsage() {
             { label: '请求数', value: num(t?.requests) },
             { label: '成功率', value: rate === null ? '—' : `${rate.toFixed(1)}%`, tone: rate !== null && rate < 90 ? 'warning' : 'default' },
             { label: '总 Token', value: compact(t?.total_tokens), hint: t?.estimated_requests ? `${num(t.estimated_requests)} 次为本地估算` : '全部为上游返回' },
-            { label: '计费 Token', value: compact(t?.charged_tokens) },
+            { label: '费用', value: cny(t?.cost_micros), hint: `≈ ${usd(t?.cost_micros, fx)}` },
           ]}
         />
         <Section
@@ -118,7 +120,7 @@ export default function AdminUsage() {
           actions={
             <Tabs value={metric} onValueChange={(v) => setMetric(v as UsageMetric)}>
               <TabsList className="h-7">
-                <TabsTrigger value="charged_tokens" className="px-2 text-xs">计费 Token</TabsTrigger>
+                <TabsTrigger value="cost_micros" className="px-2 text-xs">费用</TabsTrigger>
                 <TabsTrigger value="total_tokens" className="px-2 text-xs">总 Token</TabsTrigger>
                 <TabsTrigger value="requests" className="px-2 text-xs">请求</TabsTrigger>
               </TabsList>
@@ -144,7 +146,7 @@ export default function AdminUsage() {
                     <TableHead className="text-right">请求</TableHead>
                     <TableHead className="text-right">成功</TableHead>
                     <TableHead className="text-right">总 Token</TableHead>
-                    <TableHead className="text-right">计费</TableHead>
+                    <TableHead className="text-right">费用</TableHead>
                     <TableHead className="text-right">平均耗时</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -156,7 +158,7 @@ export default function AdminUsage() {
                       <TableCell className="text-right tabular-nums">{num(r.requests)}</TableCell>
                       <TableCell className="text-right text-muted-foreground tabular-nums">{num(r.success_requests)}</TableCell>
                       <TableCell className="text-right tabular-nums">{compact(r.total_tokens)}</TableCell>
-                      <TableCell className="text-right font-medium tabular-nums">{compact(r.charged_tokens)}</TableCell>
+                      <TableCell className="text-right font-medium tabular-nums">{cny(r.cost_micros)}<div className="text-[11px] font-normal text-muted-foreground">≈ {usd(r.cost_micros, fx)}</div></TableCell>
                       <TableCell className="text-right text-muted-foreground tabular-nums">{latency(r.avg_latency_ms)}</TableCell>
                     </TableRow>
                   ))}
@@ -185,10 +187,10 @@ export default function AdminUsage() {
         record={selected}
         onOpenChange={(o) => !o && setSelected(null)}
         footer={
-          selected && selected.user_id > 0 && selected.charged_tokens > 0 && !selected.refunded_tokens ? (
+          selected && selected.user_id > 0 && selected.cost_micros > 0 && !selected.refunded_micros ? (
             <div className="space-y-2 rounded-lg border p-3">
               <div className="text-xs font-medium">退款</div>
-              <p className="text-[11px] text-muted-foreground">把这次请求扣除的 {num(selected.charged_tokens)} Token 退回用户余额（例如上游故障导致的错误扣费）。</p>
+              <p className="text-[11px] text-muted-foreground">把这次请求扣除的 {cny(selected.cost_micros)} 退回用户余额（例如上游故障导致的错误扣费）。</p>
               <Field label="备注（可选）">
                 <Input value={refundNote} onChange={(e) => setRefundNote(e.target.value)} placeholder="例如：上游超时" />
               </Field>

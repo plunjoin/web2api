@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Field, MiniSelect } from '@/components/fields'
 import { copyText } from '@/components/copy'
 import { api } from '@/lib/api'
-import { num } from '@/lib/format'
+import { cny } from '@/lib/format'
 import type { User } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -43,7 +43,7 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: { open: bool
     setBusy(true)
     try {
       const body: Record<string, unknown> = { email: f.email.trim(), nickname: f.nickname.trim(), password: f.password, role: f.role, note: f.note.trim() }
-      if (f.balance) body.balance = Number(f.balance)
+      if (f.balance) body.balance = Math.round(Number(f.balance) * 1_000_000)
       if (f.multiplier) body.multiplier = Number(f.multiplier)
       const res = await api<{ user: User }>('/admin/api/users', { method: 'POST', json: body })
       toast.success('用户已创建', {
@@ -85,8 +85,8 @@ export function CreateUserDialog({ open, onOpenChange, onCreated }: { open: bool
                 </Button>
               </div>
             </Field>
-            <Field label="初始余额" htmlFor="u-balance" hint="会记一条“管理员调整”流水">
-              <Input id="u-balance" inputMode="numeric" value={f.balance} onChange={(e) => setF({ ...f, balance: e.target.value.replace(/[^\d]/g, '') })} placeholder="0" />
+            <Field label="初始余额（元）" htmlFor="u-balance" hint="会记一条“管理员调整”流水">
+              <Input id="u-balance" inputMode="decimal" value={f.balance} onChange={(e) => setF({ ...f, balance: e.target.value.replace(/[^\d.]/g, '') })} placeholder="0.00" />
             </Field>
             <Field label="用户倍率" htmlFor="u-mult" hint="留空使用平台默认值">
               <Input id="u-mult" inputMode="decimal" value={f.multiplier} onChange={(e) => setF({ ...f, multiplier: e.target.value })} placeholder="默认" />
@@ -180,7 +180,7 @@ export function AdjustBalanceDialog({ user, onOpenChange, onSaved }: { user: Use
     setNote('')
   })
   const n = Number(amount) || 0
-  const delta = dir === 'add' ? n : -n
+  const delta = Math.round((dir === 'add' ? n : -n) * 1_000_000)
   const after = (user?.balance ?? 0) + delta
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -188,7 +188,7 @@ export function AdjustBalanceDialog({ user, onOpenChange, onSaved }: { user: Use
     setBusy(true)
     try {
       await api(`/admin/api/users/${user.id}/balance`, { method: 'POST', json: { amount: delta, note: note.trim() } })
-      toast.success(`已${dir === 'add' ? '增加' : '扣减'} ${num(n)} Token`)
+      toast.success(`已${dir === 'add' ? '增加' : '扣减'} ${cny(Math.abs(delta))}`)
       onOpenChange(false)
       onSaved()
     } catch (err) {
@@ -204,7 +204,7 @@ export function AdjustBalanceDialog({ user, onOpenChange, onSaved }: { user: Use
           <DialogHeader>
             <DialogTitle className="text-[15px]">调整余额</DialogTitle>
             <DialogDescription className="text-[13px]">
-              {user?.email} · 当前余额 <span className="text-foreground tabular-nums">{num(user?.balance)}</span>
+              {user?.email} · 当前余额 <span className="text-foreground tabular-nums">{cny(user?.balance)}</span>
             </DialogDescription>
           </DialogHeader>
           <Tabs value={dir} onValueChange={(v) => setDir(v as 'add' | 'sub')}>
@@ -213,15 +213,15 @@ export function AdjustBalanceDialog({ user, onOpenChange, onSaved }: { user: Use
               <TabsTrigger value="sub">扣减</TabsTrigger>
             </TabsList>
           </Tabs>
-          <Field label="数量（Token）" htmlFor="adj-amount">
-            <Input id="adj-amount" autoFocus required inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ''))} placeholder="例如 100000" className="tabular-nums" />
+          <Field label="数量（元）" htmlFor="adj-amount">
+            <Input id="adj-amount" autoFocus required inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="例如 10.00" className="tabular-nums" />
           </Field>
           <Field label="备注" htmlFor="adj-note" hint="必填，会写入流水，用户可见。">
             <Input id="adj-note" required value={note} maxLength={200} onChange={(e) => setNote(e.target.value)} placeholder="例如：线下充值 / 补偿故障" />
           </Field>
           <div className="flex items-center justify-between rounded-md border bg-white/[0.02] px-3 py-2 text-[13px]">
             <span className="text-muted-foreground">调整后余额</span>
-            <span className={cn('font-medium tabular-nums', after < 0 && 'text-destructive')}>{num(after)}</span>
+            <span className={cn('font-medium tabular-nums', after < 0 && 'text-destructive')}>{cny(after)}</span>
           </div>
           {after < 0 && <p className="text-xs text-[#ff7a7e]">扣减后余额不能为负数。</p>}
           <DialogFooter>

@@ -17,7 +17,7 @@ import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { canonicalEngine, engineLabel, type Account, type EngineName } from '@/lib/types'
-import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddKiroDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
+import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddKiroDialog, AddTeleAgentDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
 import { ProviderModelsDialog } from './provider-models'
 import { ProviderGroups } from './accounts-provider-groups'
 
@@ -28,7 +28,7 @@ export default function AdminAccounts() {
   // ?new=<engine> 来自命令面板或下拉菜单：直接打开对应的添加弹窗
   const [params, setParams] = useSearchParams()
   const newParam = canonicalEngine(params.get('new') || '')
-  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
+  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'teleagent', 'custom']
   const adding = ENGINE_KEYS.includes(newParam as EngineName) ? (newParam as EngineName) : null
   const setAdding = (v: EngineName | null) => {
     const next = new URLSearchParams(params)
@@ -40,6 +40,7 @@ export default function AdminAccounts() {
   const [subCreds, setSubCreds] = useState<Account | null>(null)
   const [customCreds, setCustomCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
+  const [checkingIn, setCheckingIn] = useState<number | null>(null)
   const [openProvider, setOpenProvider] = useState<{ engine: string; provider?: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
@@ -61,13 +62,34 @@ export default function AdminAccounts() {
       invalidate()
     }
   }
+  const checkIn = async (a: Account) => {
+    setCheckingIn(a.id)
+    try {
+      const res = await api<{ result?: string }>(`/admin/api/accounts/${a.id}/checkin`, { method: 'POST' })
+      toast.success(`${a.label}：${res.result || '签到成功'}`)
+    } catch (e) {
+      toast.error(`${a.label}：${(e as Error).message}`)
+    } finally {
+      setCheckingIn(null)
+      invalidate()
+    }
+  }
+  const toggleAutoCheckIn = async (a: Account, enabled: boolean) => {
+    try {
+      await api(`/admin/api/accounts/${a.id}/auto-checkin`, { method: 'PATCH', json: { enabled } })
+      toast.success(`${a.label}：自动签到已${enabled ? '开启' : '关闭'}`)
+      invalidate()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
   const actions = (a: Account): RowAction[] => [
     { label: '立即检查', icon: <RefreshCw />, onSelect: () => check(a), disabled: checking === a.id },
     ...(canonicalEngine(a.engine) === 'geminiweb'
       ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }]
       : a.engine === 'custom'
         ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setCustomCreds(a) }]
-        : ['codex', 'antigravity', 'kiro', 'workbuddy'].includes(a.engine)
+        : ['codex', 'antigravity', 'kiro', 'workbuddy', 'teleagent'].includes(a.engine)
           ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setSubCreds(a) }]
           : []),
     a.enabled
@@ -132,6 +154,7 @@ export default function AdminAccounts() {
     { key: 'antigravity', title: 'Antigravity（Google 订阅）', hint: 'Google OAuth 授权或粘贴 refresh_token' },
     { key: 'kiro', title: 'Kiro（AWS CodeWhisperer）', hint: '粘贴 Kiro IDE 的 refresh_token' },
     { key: 'workbuddy', title: 'WorkBuddy / CodeBuddy（腾讯）', hint: '扫码授权或粘贴 accessToken' },
+    { key: 'teleagent', title: 'TeleAgent（天翼 AI）', hint: '浏览器登录授权或粘贴 token' },
     { key: 'custom', title: '第三方 Key（OpenAI 兼容）', hint: '填 Base URL + API Key' },
   ]
   const addMenu = (
@@ -189,6 +212,7 @@ export default function AdminAccounts() {
               onOpen={setOpenProvider}
               onCheck={check}
               actions={actions}
+              checkin={{ checkingIn, onCheckIn: checkIn, onToggleAutoCheckIn: toggleAutoCheckIn }}
             />
           )}
         </div>
@@ -200,6 +224,7 @@ export default function AdminAccounts() {
       <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddWorkBuddyDialog open={adding === 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddTeleAgentDialog open={adding === 'teleagent'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddCustomKeyDialog open={adding === 'custom'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />
       <SubCredsDialog account={subCreds} onOpenChange={(o) => !o && setSubCreds(null)} onDone={invalidate} />

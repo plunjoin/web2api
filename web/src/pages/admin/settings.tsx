@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowUpCircle, RefreshCw, Save } from 'lucide-react'
@@ -80,7 +80,7 @@ function PlatformForm() {
 
   if (q.isError) return <Section title="平台设置"><ErrorState error={q.error} onRetry={() => q.refetch()} /></Section>
   if (!s) return <Section title="平台设置"><div className="p-4"><BlockSkeleton className="h-72" /></div></Section>
-  const intInput = (k: 'signup_bonus' | 'max_keys_per_user' | 'video_tokens_per_second') => (
+  const intInput = (k: 'max_keys_per_user') => (
     <Input inputMode="numeric" value={String(s[k])} onChange={(e) => set(k, Number(e.target.value.replace(/[^\d]/g, '')) || 0)} className="text-right tabular-nums sm:w-full" />
   )
   return (
@@ -104,15 +104,23 @@ function PlatformForm() {
         <Row title="开放注册" description="关闭时只能由管理员创建用户；已注册用户不受影响。">
           <Switch checked={s.registration_open} onCheckedChange={(v) => set('registration_open', v)} aria-label="开放注册" />
         </Row>
-        <Row title="注册赠送（Token）" description="新用户注册时自动到账的余额，0 表示不赠送。">
-          {intInput('signup_bonus')}
+        <Row title="注册赠送（元）" description="新用户注册时自动到账的余额，0 表示不赠送。">
+          <YuanInput value={s.signup_bonus_micros} onChange={(v) => set('signup_bonus_micros', v)} />
         </Row>
         <Row title="新用户默认倍率" description="新注册用户的用户倍率；已有用户在用户详情里单独修改。">
           <Input inputMode="decimal" value={String(s.default_user_multiplier)} onChange={(e) => set('default_user_multiplier', Number(e.target.value) || 0)} className="text-right tabular-nums sm:w-full" />
         </Row>
         <Row title="每个用户最多密钥数">{intInput('max_keys_per_user')}</Row>
-        <Row title="视频每秒计费 Token" description="用户密钥调用 /v1/videos 时按秒数 × 该值扣费；0 表示不允许用户密钥生成视频。">
-          {intInput('video_tokens_per_second')}
+        <Row title="视频每秒费用（元）" description="用户密钥调用 /v1/videos 时按秒数 × 该值扣费；0 表示不允许用户密钥生成视频。">
+          <YuanInput value={s.video_price_micros_per_second} onChange={(v) => set('video_price_micros_per_second', v)} />
+        </Row>
+        <Row title="美元参考汇率" description="只影响页面上按人民币金额折算的 $ 参考价，不参与实际扣费。">
+          <Input
+            inputMode="decimal"
+            value={String(s.cny_per_usd)}
+            onChange={(e) => set('cny_per_usd', Number(e.target.value) || 0)}
+            className="text-right tabular-nums sm:w-full"
+          />
         </Row>
         <Row title="允许用户密钥使用不计量接口" description="Gemini 原生接口等无法按 Token 计费的路由。默认关闭以防止绕过余额。">
           <Switch checked={s.user_unmetered_routes} onCheckedChange={(v) => set('user_unmetered_routes', v)} aria-label="允许不计量接口" />
@@ -127,6 +135,25 @@ function PlatformForm() {
         </div>
       </div>
     </Section>
+  )
+}
+
+/** 金额输入：表单里按「元」编辑，保存到接口的是微元。 */
+function YuanInput({ value, onChange }: { value: number; onChange: (micros: number) => void }) {
+  const [text, setText] = useState(String(value / 1_000_000))
+  useEffect(() => setText(String(value / 1_000_000)), [value])
+  return (
+    <Input
+      inputMode="decimal"
+      value={text}
+      onChange={(e) => {
+        const next = e.target.value.replace(/[^\d.]/g, '')
+        setText(next)
+        onChange(Math.round((Number(next) || 0) * 1_000_000))
+      }}
+      placeholder="0.00"
+      className="text-right tabular-nums sm:w-full"
+    />
   )
 }
 

@@ -19,7 +19,7 @@ import { useConfirm } from '@/components/confirm'
 import { QuotaBar } from '@/components/quota-bar'
 import { useNewParam } from '@/hooks/use-misc'
 import { api } from '@/lib/api'
-import { compact, dateTime, maskKey, num, relative } from '@/lib/format'
+import { cny, dateTime, maskKey, num, relative } from '@/lib/format'
 import type { ApiKey } from '@/lib/types'
 
 function keyStatus(k: ApiKey) {
@@ -138,10 +138,10 @@ export default function ConsoleKeys() {
                     </TableCell>
                     <TableCell>{keyStatus(k)}</TableCell>
                     <TableCell>
-                      <QuotaBar used={k.tokens_used} limit={k.token_limit} />
+                      <QuotaBar used={k.cost_used} limit={k.cost_limit} />
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      <div>{compact(k.charged_7d)}</div>
+                      <div>{cny(k.cost_7d)}</div>
                       <div className="text-[11px] text-muted-foreground">{num(k.requests_7d)} 次</div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">{relative(k.created_at)}</TableCell>
@@ -204,21 +204,22 @@ function KeyFormDialog({ open, onOpenChange, keyItem, onSaved }: { open: boolean
     setLastOpen(open)
     if (open) {
       setName(keyItem?.name || '')
-      setLimit(keyItem?.token_limit ? String(keyItem.token_limit) : '')
+      setLimit(keyItem?.cost_limit ? String(keyItem.cost_limit / 1_000_000) : '')
     }
   }
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const tokenLimit = limit.trim() === '' ? 0 : Number(limit)
-    if (!Number.isInteger(tokenLimit) || tokenLimit < 0) {
-      toast.error('额度必须是非负整数')
+    const yuan = limit.trim() === '' ? 0 : Number(limit)
+    if (!Number.isFinite(yuan) || yuan < 0) {
+      toast.error('额度必须是非负金额')
       return
     }
+    const costLimit = Math.round(yuan * 1_000_000)
     setBusy(true)
     try {
       const res = editing
-        ? await api<{ key: ApiKey }>(`/api/user/keys/${keyItem!.id}`, { method: 'PATCH', json: { name, token_limit: tokenLimit } })
-        : await api<{ key: ApiKey }>('/api/user/keys', { method: 'POST', json: { name, token_limit: tokenLimit } })
+        ? await api<{ key: ApiKey }>(`/api/user/keys/${keyItem!.id}`, { method: 'PATCH', json: { name, cost_limit: costLimit } })
+        : await api<{ key: ApiKey }>('/api/user/keys', { method: 'POST', json: { name, cost_limit: costLimit } })
       toast.success(editing ? '已保存' : '密钥已创建')
       onOpenChange(false)
       onSaved(res.key)
@@ -234,13 +235,13 @@ function KeyFormDialog({ open, onOpenChange, keyItem, onSaved }: { open: boolean
         <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle className="text-[15px]">{editing ? '编辑密钥' : '创建 API 密钥'}</DialogTitle>
-            <DialogDescription className="text-[13px]">名称只用于区分用途；额度是该密钥最多可扣的计费 Token。</DialogDescription>
+            <DialogDescription className="text-[13px]">名称只用于区分用途；额度是该密钥最多可扣的金额（元）。</DialogDescription>
           </DialogHeader>
           <Field label="名称" htmlFor="k-name">
             <Input id="k-name" autoFocus value={name} maxLength={60} onChange={(e) => setName(e.target.value)} placeholder="例如：笔记本 / 生产服务" />
           </Field>
-          <Field label="额度上限（可选）" htmlFor="k-limit" hint="留空或 0 表示不单独限额，只受账户余额约束。">
-            <Input id="k-limit" inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value.replace(/[^\d]/g, ''))} placeholder="不限" />
+          <Field label="额度上限（元，可选）" htmlFor="k-limit" hint="留空或 0 表示不单独限额，只受账户余额约束。">
+            <Input id="k-limit" inputMode="numeric" value={limit} onChange={(e) => setLimit(e.target.value.replace(/[^\d.]/g, ''))} placeholder="不限" />
           </Field>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
@@ -278,8 +279,8 @@ function KeyDetailSheet({ keyItem, onOpenChange, actions }: { keyItem: ApiKey | 
               <KV
                 items={[
                   ['状态', keyStatus(keyItem)],
-                  ['额度', keyItem.token_limit ? `${num(keyItem.tokens_used)} / ${num(keyItem.token_limit)}` : `不限额（已用 ${num(keyItem.tokens_used)}）`],
-                  ['近 7 天', `${num(keyItem.charged_7d)} Token · ${num(keyItem.requests_7d)} 次请求`],
+                  ['额度', keyItem.cost_limit ? `${cny(keyItem.cost_used)} / ${cny(keyItem.cost_limit)}` : `不限额（已用 ${cny(keyItem.cost_used)}）`],
+                  ['近 7 天', `${cny(keyItem.cost_7d)} · ${num(keyItem.requests_7d)} 次请求`],
                 ]}
               />
               <div>

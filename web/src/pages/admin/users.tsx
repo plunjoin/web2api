@@ -17,7 +17,7 @@ import { LedgerTable } from '@/components/ledger-table'
 import { useConfirm } from '@/components/confirm'
 import { useDebounced, useNewParam } from '@/hooks/use-misc'
 import { api, qs } from '@/lib/api'
-import { compact, dateTime, maskKey, multiplier, num, relative } from '@/lib/format'
+import { cny, dateTime, maskKey, multiplier, num, relative } from '@/lib/format'
 import type { ApiKey, LedgerEntry, User, UsageTotals } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { AdjustBalanceDialog, CreateUserDialog, EditUserDialog, ResetPasswordDialog } from './user-dialogs'
@@ -150,7 +150,7 @@ export default function AdminUsers() {
                       <TableCell className={cn('text-right font-medium tabular-nums', u.balance <= 0 && 'text-destructive')}>{num(u.balance)}</TableCell>
                       <TableCell className="hidden text-right text-muted-foreground tabular-nums md:table-cell">{multiplier(u.multiplier)}</TableCell>
                       <TableCell className="hidden text-right tabular-nums md:table-cell">{u.key_count ?? 0}</TableCell>
-                      <TableCell className="hidden text-right tabular-nums lg:table-cell">{compact(u.charged_7d)}</TableCell>
+                      <TableCell className="hidden text-right tabular-nums lg:table-cell">{cny(u.cost_7d)}</TableCell>
                       <TableCell className="hidden text-muted-foreground lg:table-cell">{u.last_login_at ? relative(u.last_login_at) : '从未'}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         <RowMenu actions={actions(u)} />
@@ -198,9 +198,9 @@ function UserDetailSheet({ id, onOpenChange, actions }: { id: number | null; onO
           ) : (
             <>
               <div className="grid grid-cols-3 divide-x rounded-lg border">
-                <Metric label="余额" value={num(d.user.balance)} danger={d.user.balance <= 0} />
-                <Metric label="7 天消耗" value={compact(d.week.charged_tokens)} hint={`${num(d.week.requests)} 次请求`} />
-                <Metric label="累计入账" value={compact(d.total_credit)} hint="充值、赠送、退款与正向调整" />
+                <Metric label="余额" value={cny(d.user.balance)} danger={d.user.balance <= 0} />
+                <Metric label="7 天消耗" value={cny(d.week.cost_micros)} hint={`${num(d.week.requests)} 次请求`} />
+                <Metric label="累计入账" value={cny(d.total_credit)} hint="充值、赠送、退款与正向调整" />
               </div>
               <div className="flex flex-wrap gap-2">
                 {actions(d.user).map((a) => (
@@ -233,8 +233,8 @@ function UserDetailSheet({ id, onOpenChange, actions }: { id: number | null; onO
                           <div className="font-mono text-[11px] text-muted-foreground">{maskKey(k.key)}</div>
                         </div>
                         <div className="text-right text-xs text-muted-foreground tabular-nums">
-                          {k.enabled ? '启用' : '停用'} · 已用 {compact(k.tokens_used)}
-                          {k.token_limit ? ` / ${compact(k.token_limit)}` : ''}
+                          {k.enabled ? '启用' : '停用'} · 已用 {cny(k.cost_used)}
+                          {k.cost_limit ? ` / ${cny(k.cost_limit)}` : ''}
                         </div>
                       </div>
                     ))}

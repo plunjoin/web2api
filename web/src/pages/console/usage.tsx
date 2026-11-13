@@ -10,7 +10,7 @@ import { UsageRecordSheet } from '@/components/usage-record-sheet'
 import { Pager } from '@/components/pager'
 import { MiniSelect, dayOptions } from '@/components/fields'
 import { api, qs } from '@/lib/api'
-import { compact, num } from '@/lib/format'
+import { cny, compact, num } from '@/lib/format'
 import type { ApiKey, UsagePoint, UsageRecord, UsageTotals } from '@/lib/types'
 
 const LIMIT = 50
@@ -37,7 +37,7 @@ export default function ConsoleUsage() {
 
   return (
     <>
-      <PageHeader title="用量明细" description="每一次请求的 Token、倍率与扣费。点击一行查看完整计算过程。" />
+      <PageHeader title="用量明细" description="每一次请求的 Token、倍率与费用。点击一行查看完整计算过程。" />
       <Toolbar className="mb-3">
         <MiniSelect value={days} onChange={(v) => { setDays(v); setOffset(0) }} options={dayOptions} />
         <MiniSelect
@@ -54,7 +54,7 @@ export default function ConsoleUsage() {
             { label: '请求数', value: num(t?.requests) },
             { label: '成功率', value: rate, tone: t && t.requests && t.success_requests / t.requests < 0.9 ? 'warning' : 'default' },
             { label: '总 Token', value: compact(t?.total_tokens) },
-            { label: '计费 Token', value: compact(t?.charged_tokens), hint: '已从余额扣除' },
+            { label: '费用', value: cny(t?.cost_micros), hint: '已从余额扣除' },
           ]}
         />
         <Section title="消耗趋势" description={series.data?.bucket === 'hour' ? '按小时' : '按天'}>

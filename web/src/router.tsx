@@ -23,7 +23,8 @@ const AdminAccounts = lazy(() => import('@/pages/admin/accounts'))
 const AdminRouting = lazy(() => import('@/pages/admin/routing'))
 const AdminKeys = lazy(() => import('@/pages/admin/keys'))
 const AdminUsage = lazy(() => import('@/pages/admin/usage'))
-const AdminModels = lazy(() => import('@/pages/admin/models'))
+const AdminRouteGroups = lazy(() => import('@/pages/admin/route-groups'))
+const AdminPricing = lazy(() => import('@/pages/admin/pricing'))
 const AdminSettings = lazy(() => import('@/pages/admin/settings'))
 const AdminDocs = lazy(() => import('@/pages/admin/docs'))
 
@@ -114,7 +115,8 @@ export const router = createBrowserRouter([
       { path: 'routing', element: page(<AdminRouting />) },
       { path: 'keys', element: page(<AdminKeys />) },
       { path: 'usage', element: page(<AdminUsage />) },
-      { path: 'models', element: page(<AdminModels />) },
+      { path: 'routes', element: page(<AdminRouteGroups />) },
+      { path: 'pricing', element: page(<AdminPricing />) },
       { path: 'settings', element: page(<AdminSettings />) },
       { path: 'docs', element: page(<AdminDocs />) },
       { path: '*', element: <Navigate to="/admin" replace /> },

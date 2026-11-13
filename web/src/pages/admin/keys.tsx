@@ -18,7 +18,7 @@ import { CcSwitchImportDialog } from '@/components/ccswitch'
 import { useNewParam } from '@/hooks/use-misc'
 import { QuotaBar } from '@/components/quota-bar'
 import { api } from '@/lib/api'
-import { compact, dateOnly, maskKey, multiplier, num } from '@/lib/format'
+import { cny, dateOnly, maskKey, multiplier, num } from '@/lib/format'
 import type { ApiKey } from '@/lib/types'
 
 function keyStatus(k: ApiKey) {
@@ -57,7 +57,7 @@ export default function AdminKeys() {
     {
       label: '清零已用额度',
       icon: <RotateCcw />,
-      disabled: !k.tokens_used,
+      disabled: !k.cost_used,
       onSelect: async () => {
         if (await confirm({ title: '清零已用额度？', description: '只重置这个密钥的“已用”计数，不影响用量记录和用户余额。', confirmText: '清零' })) patch(k, { reset_usage: true }, '已清零')
       },
@@ -164,14 +164,14 @@ export default function AdminKeys() {
                     <TableCell className="max-w-[180px] truncate">{k.owner_email ? k.owner_email : <Pill>管理员</Pill>}</TableCell>
                     <TableCell>{keyStatus(k)}</TableCell>
                     <TableCell>
-                      <QuotaBar used={k.tokens_used} limit={k.token_limit} />
+                      <QuotaBar used={k.cost_used} limit={k.cost_limit} />
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{multiplier(k.multiplier)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {[k.expires_at ? `${dateOnly(k.expires_at)} 到期` : '', k.rpm_limit ? `${k.rpm_limit} RPM` : '', k.allowed_models?.length ? `${k.allowed_models.length} 个模型` : ''].filter(Boolean).join(' · ') || '—'}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      <div>{compact(k.charged_tokens_24h)}</div>
+                      <div>{cny(k.cost_micros_24h)}</div>
                       <div className="text-[11px] text-muted-foreground">{num(k.requests_24h)} 次</div>
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
@@ -217,7 +217,7 @@ function KeyDialog({ open, onOpenChange, keyItem, onSaved }: { open: boolean; on
   const editing = !!keyItem
   const init = () => ({
     name: keyItem?.name || '',
-    limit: keyItem?.token_limit ? String(keyItem.token_limit) : '',
+    limit: keyItem?.cost_limit ? String(keyItem.cost_limit / 1_000_000) : '',
     multiplier: keyItem ? String(keyItem.multiplier) : '1',
     expires: toDateInput(keyItem?.expires_at || 0),
     rpm: keyItem?.rpm_limit ? String(keyItem.rpm_limit) : '',
@@ -240,7 +240,7 @@ function KeyDialog({ open, onOpenChange, keyItem, onSaved }: { open: boolean; on
     const expires_at = f.expires ? Math.floor(new Date(`${f.expires}T23:59:59`).getTime() / 1000) : 0
     const body = {
       name: f.name.trim(),
-      token_limit: Number(f.limit) || 0,
+      cost_limit: Math.round((Number(f.limit) || 0) * 1_000_000),
       multiplier: mult,
       expires_at,
       rpm_limit: Number(f.rpm) || 0,
@@ -275,7 +275,7 @@ function KeyDialog({ open, onOpenChange, keyItem, onSaved }: { open: boolean; on
             <Field label="名称" htmlFor="ak-name" className="sm:col-span-2">
               <Input id="ak-name" autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="例如 内部服务" />
             </Field>
-            <Field label="额度上限（计费 Token）" htmlFor="ak-limit" hint="0 或留空表示不限">
+            <Field label="额度上限（元）" htmlFor="ak-limit" hint="0 或留空表示不限">
               <Input id="ak-limit" inputMode="numeric" value={f.limit} onChange={(e) => setF({ ...f, limit: e.target.value.replace(/[^\d]/g, '') })} placeholder="不限" />
             </Field>
             <Field label="Key 倍率" htmlFor="ak-mult" hint="叠乘在模型倍率之上">

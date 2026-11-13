@@ -8,7 +8,8 @@ import { BlockSkeleton, ErrorState, EmptyState } from '@/components/states'
 import { RankBars, UsageChart } from '@/components/usage-chart'
 import { AccountStatus, accountHealth, tierLabel } from '@/components/account-status'
 import { api } from '@/lib/api'
-import { compact, duration, num } from '@/lib/format'
+import { cny, duration, num, usd } from '@/lib/format'
+import { useCNYPerUSD } from '@/lib/currency'
 import { engineLabel, type Account, type UsagePoint, type VersionInfo } from '@/lib/types'
 
 interface Overview {
@@ -34,7 +35,7 @@ interface Overview {
   keys_limited: number
   keys_exhausted: number
   tokens_24h: number
-  charged_tokens_24h: number
+  cost_micros_24h: number
   version: VersionInfo
   uptime_seconds: number
 }
@@ -44,10 +45,11 @@ interface BreakdownRow {
   key_name: string
   key_masked: string
   requests: number
-  charged_tokens: number
+  cost_micros: number
 }
 
 export default function AdminOverview() {
+  const fx = useCNYPerUSD()
   const ov = useQuery({ queryKey: ['admin', 'overview'], queryFn: () => api<Overview>('/admin/api/overview'), refetchInterval: 30_000 })
   const series = useQuery({ queryKey: ['admin', 'series', 14], queryFn: () => api<{ points: UsagePoint[] }>('/admin/api/usage/timeseries?days=14') })
   const usage = useQuery({ queryKey: ['admin', 'usage', 7], queryFn: () => api<{ breakdown: BreakdownRow[] }>('/admin/api/usage?days=7') })
@@ -61,9 +63,9 @@ export default function AdminOverview() {
   const byModel = new Map<string, number>()
   const byKey = new Map<string, number>()
   for (const r of usage.data?.breakdown || []) {
-    byModel.set(r.model || '未知', (byModel.get(r.model || '未知') || 0) + r.charged_tokens)
+    byModel.set(r.model || '未知', (byModel.get(r.model || '未知') || 0) + r.cost_micros)
     const k = r.key_name || r.key_masked || '未知'
-    byKey.set(k, (byKey.get(k) || 0) + r.charged_tokens)
+    byKey.set(k, (byKey.get(k) || 0) + r.cost_micros)
   }
   const rank = (m: Map<string, number>) =>
     [...m.entries()]
@@ -101,7 +103,7 @@ export default function AdminOverview() {
             loading={ov.isLoading}
             items={[
               { label: '上游账号', icon: <Server />, value: `${accUp} / ${d?.accounts_total ?? 0}`, tone: d && d.accounts_total > 0 && accUp === 0 ? 'danger' : accDown ? 'warning' : 'default', hint: accDown ? `${accDown} 个异常，需要检查` : '可用 / 全部' },
-              { label: '24 小时请求', icon: <Activity />, value: num(d?.metered_requests_24h ?? d?.requests_24h), hint: `计费 ${compact(d?.charged_tokens_24h)} Token` },
+              { label: '24 小时请求', icon: <Activity />, value: num(d?.metered_requests_24h ?? d?.requests_24h), hint: `费用 ${cny(d?.cost_micros_24h)}` },
               { label: 'API 密钥', icon: <KeyRound />, value: num(d?.keys_total), hint: d?.keys_exhausted ? `${d.keys_exhausted} 个额度用尽` : `${d?.keys_limited ?? 0} 个设置了额度`, tone: d?.keys_exhausted ? 'warning' : 'default' },
               { label: '用户', icon: <Users />, value: num(p?.users), hint: `7 天新增 ${p?.new_users_7d ?? 0} · 活跃 ${p?.active_users_7d ?? 0}` },
             ]}
@@ -109,14 +111,14 @@ export default function AdminOverview() {
           <StatStrip
             loading={ov.isLoading}
             items={[
-              { label: '用户余额合计', icon: <Wallet />, value: compact(p?.balance_total), hint: '尚未消耗的 Token' },
-              { label: '30 天充值', icon: <Coins />, value: compact(p?.recharged_30d), tone: 'success', hint: '兑换 + 调整 + 赠送' },
-              { label: '30 天用户消耗', icon: <Activity />, value: compact(p?.consumed_30d) },
-              { label: '未使用兑换码', icon: <Ticket />, value: num(p?.unused_codes), hint: `面值合计 ${compact(p?.unused_code_value)}` },
+              { label: '用户余额合计', icon: <Wallet />, value: cny(p?.balance_total), hint: `尚未消耗的余额 · ≈ ${usd(p?.balance_total, fx)}` },
+              { label: '30 天充值', icon: <Coins />, value: cny(p?.recharged_30d), tone: 'success', hint: '兑换 + 调整 + 赠送' },
+              { label: '30 天用户消耗', icon: <Activity />, value: cny(p?.consumed_30d) },
+              { label: '未使用兑换码', icon: <Ticket />, value: num(p?.unused_codes), hint: `面值合计 ${cny(p?.unused_code_value)}` },
             ]}
           />
           <div className="grid gap-4 lg:grid-cols-3">
-            <Section title="近 14 天计费 Token" description="全部密钥（含无归属的管理员密钥）" className="lg:col-span-2">
+            <Section title="近 14 天费用" description="全部密钥（含无归属的管理员密钥）" className="lg:col-span-2">
               <div className="px-2 pt-3 pb-2">{series.isLoading ? <BlockSkeleton className="h-[220px]" /> : <UsageChart points={series.data?.points || []} />}</div>
             </Section>
             <Section
@@ -158,11 +160,11 @@ export default function AdminOverview() {
             </Section>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            <Section title="模型消耗排行" description="近 7 天计费 Token">
-              {usage.isLoading ? <div className="p-4"><BlockSkeleton className="h-32" /></div> : <RankBars items={rank(byModel)} empty="近 7 天没有请求" format={compact} />}
+            <Section title="模型消耗排行" description="近 7 天费用">
+              {usage.isLoading ? <div className="p-4"><BlockSkeleton className="h-32" /></div> : <RankBars items={rank(byModel)} empty="近 7 天没有请求" format={cny} />}
             </Section>
-            <Section title="密钥消耗排行" description="近 7 天计费 Token">
-              {usage.isLoading ? <div className="p-4"><BlockSkeleton className="h-32" /></div> : <RankBars items={rank(byKey)} empty="近 7 天没有请求" format={compact} />}
+            <Section title="密钥消耗排行" description="近 7 天费用">
+              {usage.isLoading ? <div className="p-4"><BlockSkeleton className="h-32" /></div> : <RankBars items={rank(byKey)} empty="近 7 天没有请求" format={cny} />}
             </Section>
           </div>
         </div>

@@ -12,7 +12,7 @@ import { UsageRecordSheet } from '@/components/usage-record-sheet'
 import { QuickStart } from '@/components/quickstart'
 import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
-import { compact, multiplier, num } from '@/lib/format'
+import { cny, multiplier, num } from '@/lib/format'
 import type { UsagePoint, UsageRecord, UsageTotals } from '@/lib/types'
 
 interface Overview {
@@ -24,7 +24,7 @@ interface Overview {
   recent: UsageRecord[]
   keys_total: number
   keys_enabled: number
-  top_models: { model: string; charged_tokens: number }[]
+  top_models: { model: string; cost_micros: number }[]
   announcement: string
 }
 
@@ -46,7 +46,7 @@ export default function ConsoleOverview() {
     <>
       <PageHeader
         title={`你好，${me?.nickname || '欢迎回来'}`}
-        description="余额、近期消耗与最近的请求。余额以计费 Token 计算。"
+        description="余额、近期消耗与最近的请求。金额以人民币计。"
         actions={
           <>
             <Button variant="outline" asChild>
@@ -85,23 +85,23 @@ export default function ConsoleOverview() {
           <StatStrip
             loading={q.isLoading}
             items={[
-              { label: '账户余额', icon: <Wallet />, value: num(d?.balance), tone: low ? 'danger' : 'default', hint: `用户倍率 ${multiplier(d?.multiplier ?? 1)}` },
-              { label: '今日消耗', icon: <Activity />, value: compact(d?.today.charged_tokens), hint: `${num(d?.today.requests)} 次请求` },
-              { label: '近 7 天消耗', icon: <CalendarDays />, value: compact(d?.week.charged_tokens), hint: `${num(d?.week.requests)} 次请求 · 成功 ${num(d?.week.success_requests)}` },
+              { label: '账户余额', icon: <Wallet />, value: cny(d?.balance), tone: low ? 'danger' : 'default', hint: `用户倍率 ${multiplier(d?.multiplier ?? 1)}` },
+              { label: '今日消耗', icon: <Activity />, value: cny(d?.today.cost_micros), hint: `${num(d?.today.requests)} 次请求` },
+              { label: '近 7 天消耗', icon: <CalendarDays />, value: cny(d?.week.cost_micros), hint: `${num(d?.week.requests)} 次请求 · 成功 ${num(d?.week.success_requests)}` },
               { label: 'API 密钥', icon: <KeyRound />, value: `${d?.keys_enabled ?? 0} / ${d?.keys_total ?? 0}`, hint: '启用 / 全部' },
             ]}
           />
           <div className="grid gap-4 lg:grid-cols-3">
-            <Section title="近 14 天消耗" description="按天汇总的计费 Token" className="lg:col-span-2">
+            <Section title="近 14 天消耗" description="按天汇总的费用" className="lg:col-span-2">
               <div className="px-2 pt-3 pb-2">{q.isLoading ? <BlockSkeleton className="h-[220px]" /> : <UsageChart points={d?.series || []} />}</div>
             </Section>
-            <Section title="模型分布" description="近 7 天计费 Token">
+            <Section title="模型分布" description="近 7 天费用">
               {q.isLoading ? (
                 <div className="p-4">
                   <BlockSkeleton className="h-32" />
                 </div>
               ) : (
-                <RankBars items={(d?.top_models || []).map((m) => ({ label: m.model || '未知', value: m.charged_tokens }))} empty="近 7 天还没有消耗" format={compact} />
+                <RankBars items={(d?.top_models || []).map((m) => ({ label: m.model || '未知', value: m.cost_micros }))} empty="近 7 天还没有消耗" format={cny} />
               )}
             </Section>
           </div>

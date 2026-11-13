@@ -1,7 +1,7 @@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Pill } from '@/components/status'
-import { dateTime, ledgerKindLabel, num, relative, signed } from '@/lib/format'
+import { cny, dateTime, ledgerKindLabel, relative } from '@/lib/format'
 import type { LedgerEntry } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -61,11 +61,11 @@ export function LedgerTable({ entries, showUser, onUserClick, compact }: { entri
                 )}
               </TableCell>
               <TableCell className={cn('text-right font-medium tabular-nums', e.amount > 0 ? 'text-success' : 'text-foreground')}>
-                {signed(e.amount)}
-                <div className={cn('mt-1 text-xs font-normal text-muted-foreground', inlineAfter)}>余额 {num(e.balance_after)}</div>
+                {e.amount > 0 ? `+${cny(e.amount)}` : cny(e.amount)}
+                <div className={cn('mt-1 text-xs font-normal text-muted-foreground', inlineAfter)}>余额 {cny(e.balance_after)}</div>
               </TableCell>
-              <TableCell className={cn('text-right text-muted-foreground tabular-nums', beforeCol)}>{num(e.balance_before)}</TableCell>
-              <TableCell className={cn('text-right tabular-nums', afterCol, e.balance_after < 0 && 'text-destructive')}>{num(e.balance_after)}</TableCell>
+              <TableCell className={cn('text-right text-muted-foreground tabular-nums', beforeCol)}>{cny(e.balance_before)}</TableCell>
+              <TableCell className={cn('text-right tabular-nums', afterCol, e.balance_after < 0 && 'text-destructive')}>{cny(e.balance_after)}</TableCell>
               <TableCell className={cn('truncate text-muted-foreground', showUser ? 'max-w-[240px]' : 'max-w-[320px]', noteCol)} title={e.note}>
                 {e.note || '—'}
               </TableCell>

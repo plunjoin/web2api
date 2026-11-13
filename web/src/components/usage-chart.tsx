@@ -1,15 +1,15 @@
 import { useMemo } from 'react'
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { ChartContainer, ChartTooltip, type ChartConfig } from '@/components/ui/chart'
-import { axis, num } from '@/lib/format'
+import { axis, cny, num } from '@/lib/format'
 import type { UsagePoint } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { BarChart3 } from 'lucide-react'
 
-export type UsageMetric = 'charged_tokens' | 'total_tokens' | 'requests'
+export type UsageMetric = 'cost_micros' | 'total_tokens' | 'requests'
 
 const metricLabel: Record<UsageMetric, string> = {
-  charged_tokens: '计费 Token',
+  cost_micros: '费用',
   total_tokens: '总 Token',
   requests: '请求数',
 }
@@ -25,16 +25,16 @@ function bucketLabel(ts: number, bucket: 'day' | 'hour') {
  * - 柱宽有上限，少量数据不会被拉成一整块；
  * - 全为 0 时不画坐标轴假装有数据，而是给出明确的空状态说明。
  */
-export function UsageChart({ points, bucket = 'day', metric = 'charged_tokens', height = 220, className }: { points: UsagePoint[]; bucket?: 'day' | 'hour'; metric?: UsageMetric; height?: number; className?: string }) {
+export function UsageChart({ points, bucket = 'day', metric = 'cost_micros', height = 220, className }: { points: UsagePoint[]; bucket?: 'day' | 'hour'; metric?: UsageMetric; height?: number; className?: string }) {
   const data = useMemo(
     () =>
       points.map((p) => ({
         label: bucketLabel(p.ts, bucket),
         ts: p.ts,
-        value: p[metric],
+        value: metric === 'cost_micros' ? p.cost_micros / 1_000_000 : p[metric],
         requests: p.requests,
         success: p.success_requests,
-        charged: p.charged_tokens,
+        cost: p.cost_micros,
         total: p.total_tokens,
       })),
     [points, bucket, metric],
@@ -77,7 +77,7 @@ export function UsageChart({ points, bucket = 'day', metric = 'charged_tokens', 
                   <div className="mb-1.5 font-medium text-foreground">
                     {date.getMonth() + 1} 月 {date.getDate()} 日{bucket === 'hour' ? ` ${String(date.getHours()).padStart(2, '0')}:00` : ''}
                   </div>
-                  <Row label="计费 Token" value={num(d.charged)} strong={metric === 'charged_tokens'} />
+                  <Row label="费用" value={`${cny(d.cost)}`} strong={metric === 'cost_micros'} />
                   <Row label="总 Token" value={num(d.total)} strong={metric === 'total_tokens'} />
                   <Row label="请求" value={`${num(d.requests)}（成功 ${num(d.success)}）`} strong={metric === 'requests'} />
                 </div>

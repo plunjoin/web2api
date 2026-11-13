@@ -12,7 +12,7 @@ import { MiniSelect } from '@/components/fields'
 import { LedgerTable, ledgerKindOptions } from '@/components/ledger-table'
 import { useDebounced } from '@/hooks/use-misc'
 import { api, qs } from '@/lib/api'
-import { num } from '@/lib/format'
+import { cny, num } from '@/lib/format'
 import type { LedgerEntry, User } from '@/lib/types'
 
 const LIMIT = 50
@@ -72,8 +72,8 @@ export default function AdminLedger() {
           loading={list.isLoading}
           items={[
             { label: '流水条数', value: num(d?.total) },
-            { label: '入账', value: `+${num(d?.sums.credit)}`, tone: 'success', hint: '充值、赠送、退款、正向调整' },
-            { label: '出账', value: d?.sums.debit ? `-${num(d.sums.debit)}` : '0', hint: '使用扣费、负向调整' },
+            { label: '入账', value: `+${cny(d?.sums.credit)}`, tone: 'success', hint: '充值、赠送、退款、正向调整' },
+            { label: '出账', value: d?.sums.debit ? `-${cny(d.sums.debit)}` : '¥0.00', hint: '使用扣费、负向调整' },
           ]}
         />
         <Section>

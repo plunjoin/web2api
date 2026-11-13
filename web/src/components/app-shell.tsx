@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { CommandPalette } from '@/components/command-palette'
 import { useAuth, hasConsole, isAdmin } from '@/lib/auth'
 import { api } from '@/lib/api'
-import { compact } from '@/lib/format'
+import { cny } from '@/lib/format'
 import type { PublicConfig } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import type { NavGroup } from './nav'
@@ -80,7 +80,7 @@ function UserMenu({ area }: { area: 'admin' | 'console' }) {
           <div className="min-w-0 flex-1 leading-tight">
             <div className="truncate text-[13px]">{me.nickname || me.email}</div>
             <div className="truncate text-[11px] text-muted-foreground">
-              {me.kind === 'user' ? `余额 ${compact(me.balance)}` : '初始化管理员'}
+              {me.kind === 'user' ? `余额 ${cny(me.balance)}` : '初始化管理员'}
             </div>
           </div>
           <ChevronsUpDown className="size-3.5 text-muted-foreground" />

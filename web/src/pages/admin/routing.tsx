@@ -65,10 +65,12 @@ export default function AdminRouting() {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['admin', 'routing'], queryFn: () => api<RoutingView>('/admin/api/routing') })
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [affinity, setAffinity] = useState<RoutingView['affinity'] | null>(null)
   const [saving, setSaving] = useState(false)
   const groups = draft || q.data?.suppliers || []
   const savedOrder = useMemo(() => flatten(q.data?.suppliers || []), [q.data])
   const currentOrder = useMemo(() => flatten(groups), [groups])
+  const affinityValue = affinity ?? q.data?.affinity ?? 'session'
   const dirty = !!draft && !sameOrder(savedOrder, currentOrder)
   // 未保存过顺序时也允许直接保存当前（默认）顺序，用它启用严格优先级。
   const canSave = dirty || (!q.data?.configured && (q.data?.suppliers?.length || 0) > 0)
@@ -83,14 +85,29 @@ export default function AdminRouting() {
   const save = async (accounts: number[]) => {
     setSaving(true)
     try {
-      const res = await api<RoutingView>('/admin/api/routing', { method: 'PUT', json: { accounts } })
+      const res = await api<RoutingView>('/admin/api/routing', { method: 'PUT', json: { accounts, affinity: affinityValue } })
       qc.setQueryData(['admin', 'routing'], res)
       setDraft(null)
+      setAffinity(null)
       toast.success(accounts.length ? '路由顺序已保存，立即生效' : '已恢复默认顺序')
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  // 会话粘性单独保存，不触碰已保存的路由顺序。
+  const saveAffinity = async (value: RoutingView['affinity']) => {
+    setAffinity(value)
+    try {
+      const res = await api<RoutingView>('/admin/api/routing', { method: 'PUT', json: { affinity: value } })
+      qc.setQueryData(['admin', 'routing'], res)
+      setAffinity(null)
+      toast.success(value === 'session' ? '已开启会话粘性' : '已关闭会话粘性')
+    } catch (e) {
+      setAffinity(null)
+      toast.error((e as Error).message)
     }
   }
 
@@ -115,6 +132,34 @@ export default function AdminRouting() {
       />
 
       <div className="grid max-w-4xl gap-4">
+        <Section
+          title="会话粘性"
+          description="同一会话优先留在上次接单的账号上，保住上游 prompt cache 和多轮工具上下文；账号不可用或失败时仍按上面的顺序换下一个。"
+          actions={
+            <div className="flex items-center gap-1">
+              <Button
+                variant={affinityValue === 'session' ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => saveAffinity('session')}
+              >
+                会话内保持
+              </Button>
+              <Button
+                variant={affinityValue === 'off' ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => saveAffinity('off')}
+              >
+                关闭
+              </Button>
+            </div>
+          }
+        >
+          <div className="px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+            {affinityValue === 'session'
+              ? '已开启：会话键取 X-Session-Id / X-Conversation-Id 等请求头；没有时用首条用户消息与 system 提示的哈希。映射 30 分钟未使用自动过期。'
+              : '已关闭：每个请求都按路由顺序从头选，不再参考上次接单的账号。'}
+          </div>
+        </Section>
         {!q.data.configured && !dirty && (
           <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
             <Shuffle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />

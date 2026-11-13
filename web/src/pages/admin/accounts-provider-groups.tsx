@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { RowMenu, type RowAction } from '@/components/row-menu'
 import { AccountStatus, CooldownLines, TierPill, accountHealth } from '@/components/account-status'
 import { StatusDot } from '@/components/status'
@@ -45,8 +46,15 @@ function QuotaFigures({ windows }: { windows: QuotaWindow[] }) {
   )
 }
 
-function AccountCard({ account: a, checking, onCheck, actions }: {
+type CheckInControls = {
+  checkingIn: number | null
+  onCheckIn: (a: Account) => void
+  onToggleAutoCheckIn: (a: Account, enabled: boolean) => void
+}
+
+function AccountCard({ account: a, checking, onCheck, actions, checkin }: {
   account: Account; checking: boolean; onCheck: (a: Account) => void; actions: RowAction[]
+  checkin?: CheckInControls
 }) {
   const [expanded, setExpanded] = useState(false)
   const snapshot = a.live?.quota_snapshot
@@ -68,6 +76,18 @@ function AccountCard({ account: a, checking, onCheck, actions }: {
         <span className="text-muted-foreground">{a.live?.models ?? 0} 个模型</span>
         {snapshot && <span className="text-muted-foreground">额度{isFresh ? '已更新' : '待刷新'}</span>}
       </div>
+      {a.live?.auto_checkin !== undefined && checkin && (
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch checked={a.live?.auto_checkin ?? true} onCheckedChange={(v) => checkin.onToggleAutoCheckIn(a, v)} aria-label="自动签到" />
+            <span>自动签到</span>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => checkin.onCheckIn(a)} disabled={checkin.checkingIn === a.id}>
+            <RefreshCw aria-hidden="true" className={checkin.checkingIn === a.id ? 'animate-spin' : ''} /> 立即签到
+          </Button>
+          {a.live?.check_in && <span className="text-xs text-muted-foreground">{a.live.check_in}</span>}
+        </div>
+      )}
       <div className="mt-3">
         {windows.length > 0 ? (
           <div className={isFresh ? '' : 'opacity-60'}><QuotaFigures windows={windows} /></div>
@@ -95,11 +115,12 @@ function AccountCard({ account: a, checking, onCheck, actions }: {
   )
 }
 
-export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen, onCheck, actions }: {
+export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen, onCheck, actions, checkin }: {
   accounts: Account[]; checking: number | null; collapsed: Set<string>
   onToggle: (key: string) => void
   onOpen: (target: { engine: string; provider?: string }) => void
   onCheck: (a: Account) => void; actions: (a: Account) => RowAction[]
+  checkin?: CheckInControls
 }) {
   const groups = new Map<string, Account[]>()
   for (const a of accounts) {
@@ -141,7 +162,7 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
                 {summary.covered < summary.eligible && <p className="mt-2 text-xs text-muted-foreground">仅汇总已知部分，不代表完整余额。</p>}
               </div>
             )}
-            {!isCollapsed && list.map((a) => <AccountCard key={a.id} account={a} checking={checking === a.id} onCheck={onCheck} actions={actions(a)} />)}
+            {!isCollapsed && list.map((a) => <AccountCard key={a.id} account={a} checking={checking === a.id} onCheck={onCheck} actions={actions(a)} checkin={checkin} />)}
           </section>
         )
       })}

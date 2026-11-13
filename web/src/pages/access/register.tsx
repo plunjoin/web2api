@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { usePublicConfig } from '@/components/app-shell'
 import { EmptyState } from '@/components/states'
 import { useAuth } from '@/lib/auth'
-import { num } from '@/lib/format'
+import { cny } from '@/lib/format'
 import { AuthLayout, FormError } from './auth-layout'
 
 export default function RegisterPage() {
@@ -64,10 +64,10 @@ export default function RegisterPage() {
     )
   }
   return (
-    <AuthLayout title="创建账号" subtitle="注册后即可创建 API 密钥并按 Token 计费使用" footer={footer}>
-      {config.signup_bonus > 0 && (
+    <AuthLayout title="创建账号" subtitle="注册后即可创建 API 密钥，按实际用量计费" footer={footer}>
+      {config.signup_bonus_micros > 0 && (
         <div className="mb-4 flex items-center gap-2 rounded-md border border-primary/20 bg-primary/10 px-3 py-2 text-xs text-[#b9bef8]">
-          <Gift className="size-3.5" /> 注册即送 {num(config.signup_bonus)} Token 余额
+          <Gift className="size-3.5" /> 注册即送 {cny(config.signup_bonus_micros)} 余额
         </div>
       )}
       <form className="space-y-3.5" onSubmit={submit}>

@@ -22,7 +22,12 @@ function OAuthLinkBlock({ engine, url, onExpired }: { engine: string; url: strin
         </Button>
       </div>
       <Input readOnly value={url} className="font-mono text-[11px]" onFocus={(e) => e.currentTarget.select()} />
-      {engine !== 'workbuddy' && (
+      {engine === 'teleagent' && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          登录完成后会自动跳到 TeleAgent 主界面，token 存在 Cookie 的 <code>x-token</code> 里：按 F12 打开开发者工具 → 应用/存储 → Cookie → agent.teleai.com.cn，复制 <code>x-token</code> 的值，粘贴到下方输入框。
+        </p>
+      )}
+      {engine !== 'workbuddy' && engine !== 'teleagent' && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           登录并授权后，浏览器会跳转到一个 localhost 地址（页面可能打不开，属正常现象）。把地址栏的完整 URL 复制粘贴到下方输入框即可。
         </p>
@@ -493,6 +498,148 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
   )
 }
 
+/** TeleAgent：浏览器登录授权 + 粘贴 token。 */
+export function AddTeleAgentDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void }) {
+  const [mode, setMode] = useState<'oauth' | 'paste'>('oauth')
+  const [session, setSession] = useState<OAuthStartResp | null>(null)
+  const [callback, setCallback] = useState('')
+  const [pasteToken, setPasteToken] = useState('')
+  const [label, setLabel] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setSession(null)
+      setCallback('')
+      setPasteToken('')
+      setLabel('')
+      setMode('oauth')
+    }
+  }, [open])
+
+  const startAuthorize = async () => {
+    setBusy(true)
+    try {
+      const resp = await api<OAuthStartResp>('/admin/api/oauth/teleagent/authorize', { method: 'POST', json: {} })
+      setSession(resp)
+      window.open(resp.auth_url, '_blank')
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exchange = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!session || !callback.trim()) return
+    setBusy(true)
+    try {
+      await api('/admin/api/oauth/teleagent/exchange', { method: 'POST', json: { session_id: session.session_id, code: callback.trim(), label: label.trim() } })
+      toast.success('账号已添加，正在初始化')
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pasteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!pasteToken.trim()) return
+    setBusy(true)
+    try {
+      await api('/admin/api/accounts', { method: 'POST', json: { engine: 'teleagent', label: label.trim(), credentials: { token: pasteToken.trim() } } })
+      toast.success('账号已添加，正在初始化')
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]">
+        <div className="mb-2 flex gap-1 rounded-md bg-muted p-1 text-[12px]">
+          <button type="button" className={`flex-1 rounded px-2 py-1 ${mode === 'oauth' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground'}`} onClick={() => setMode('oauth')}>
+            浏览器登录（推荐）
+          </button>
+          <button type="button" className={`flex-1 rounded px-2 py-1 ${mode === 'paste' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground'}`} onClick={() => setMode('paste')}>
+            粘贴 token
+          </button>
+        </div>
+        {mode === 'oauth' ? (
+          <form onSubmit={exchange} className="space-y-4">
+            <DialogHeader>
+              <DialogTitle className="text-[15px]">添加 TeleAgent 账号</DialogTitle>
+              <DialogDescription className="text-[13px]">打开登录页登录天翼 AI 账号，完成后从 Cookie 复制 x-token 粘贴回来即可。</DialogDescription>
+            </DialogHeader>
+            {!session ? (
+              <Button type="button" onClick={startAuthorize} disabled={busy} className="w-full">
+                {busy ? <Loader2 className="animate-spin" /> : null} 生成登录链接
+              </Button>
+            ) : (
+              <>
+                <OAuthLinkBlock engine="teleagent" url={session.auth_url} onExpired={startAuthorize} />
+                <Field label="第 2 步：粘贴 x-token Cookie 值" htmlFor="ta-callback">
+                  <Textarea
+                    id="ta-callback"
+                    rows={3}
+                    required
+                    autoFocus
+                    spellCheck={false}
+                    value={callback}
+                    onChange={(e) => setCallback(e.target.value)}
+                    className="font-mono text-[11px]"
+                    placeholder="开发者工具 → 应用 → Cookie → agent.teleai.com.cn → x-token 的值"
+                  />
+                </Field>
+                <Field label="名称（可选）" htmlFor="ta-label">
+                  <Input id="ta-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="留空使用账号手机号" />
+                </Field>
+              </>
+            )}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={busy || !session || !callback.trim()}>
+                完成授权
+              </Button>
+            </DialogFooter>
+          </form>
+        ) : (
+          <form onSubmit={pasteSubmit} className="space-y-4">
+            <DialogHeader>
+              <DialogTitle className="text-[15px]">添加 TeleAgent 账号</DialogTitle>
+              <DialogDescription className="text-[13px]">粘贴登录后的 token（即 X-Token，形如 tenant:JWT）；也可在本机用 scripts/import-teleagent-accounts.go 导入桌面端登录态。</DialogDescription>
+            </DialogHeader>
+            <Field label="token（X-Token）" htmlFor="ta-token">
+              <Textarea id="ta-token" rows={3} required autoFocus spellCheck={false} value={pasteToken} onChange={(e) => setPasteToken(e.target.value)} className="font-mono text-[11px]" />
+            </Field>
+            <Field label="名称（可选）" htmlFor="ta-token-label">
+              <Input id="ta-token-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="留空使用账号手机号" />
+            </Field>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={busy}>
+                添加
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /** 订阅引擎更新凭据弹窗（refresh_token / token）。 */
 export function SubCredsDialog({
   account,
@@ -503,7 +650,7 @@ export function SubCredsDialog({
   onOpenChange: (o: boolean) => void
   onDone: () => void
 }) {
-  const isTokenEngine = account?.engine === 'workbuddy'
+  const isTokenEngine = account?.engine === 'workbuddy' || account?.engine === 'teleagent'
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   useEffect(() => {
@@ -533,7 +680,7 @@ export function SubCredsDialog({
             <DialogTitle className="text-[15px]">更新凭据</DialogTitle>
             <DialogDescription className="text-[13px]">{account?.label} · 旧凭据会被替换，账号将重新初始化。</DialogDescription>
           </DialogHeader>
-          <Field label={isTokenEngine ? 'accessToken' : 'refresh_token'} htmlFor="sub-cred">
+          <Field label={account?.engine === 'teleagent' ? 'token（X-Token）' : isTokenEngine ? 'accessToken' : 'refresh_token'} htmlFor="sub-cred">
             <Textarea id="sub-cred" rows={3} required autoFocus spellCheck={false} value={value} onChange={(e) => setValue(e.target.value)} className="font-mono text-[11px]" />
           </Field>
           <DialogFooter>

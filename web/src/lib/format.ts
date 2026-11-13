@@ -1,5 +1,31 @@
 const nf = new Intl.NumberFormat('zh-CN')
 
+/** 一元 = 1000000 微元；后端所有金额字段都是微元整数。 */
+export const MICROS_PER_YUAN = 1_000_000
+
+/** 金额小数位：≥¥1 两位，≥¥0.01 四位，更小六位。 */
+function moneyDigits(v: number) {
+  const abs = Math.abs(v)
+  if (abs > 0 && abs < 0.01) return 6
+  if (abs < 1) return 4
+  return 2
+}
+
+function moneyNumber(v: number) {
+  const digits = moneyDigits(v)
+  return v.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+}
+
+/** 微元 → 人民币，如 ¥12.50 / ¥0.00276。 */
+export const cny = (micros: number | null | undefined) => `¥${moneyNumber((micros ?? 0) / MICROS_PER_YUAN)}`
+
+/** 直接格式化以元为单位的数值（如单价 元/百万 Token）。 */
+export const yuan = (v: number) => `¥${moneyNumber(v)}`
+
+/** 微元 → 美元参考价（按平台汇率折算）。 */
+export const usd = (micros: number | null | undefined, rate = 7.2) =>
+  `$${moneyNumber((micros ?? 0) / MICROS_PER_YUAN / (rate > 0 ? rate : 7.2))}`
+
 /** 完整数字：1,234,567 */
 export const num = (v: number | null | undefined) => nf.format(v ?? 0)
 
@@ -33,6 +59,13 @@ export function dateTime(ts: number | null | undefined) {
   if (!ts) return '—'
   const d = new Date(ts * 1000)
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 时分秒：08:43:01（配合完整时间 tooltip） */
+export function clock(ts: number | null | undefined) {
+  if (!ts) return '—'
+  const d = new Date(ts * 1000)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 export function dateOnly(ts: number | null | undefined) {
