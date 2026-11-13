@@ -1244,8 +1244,42 @@ func (m *Manager) RemoveAccount(id int64) error {
 	if err := m.st.DeleteAccount(id); err != nil {
 		return err
 	}
+	m.dropEmptyCatalog(acc)
 	m.ReloadRoutingOrder()
 	return nil
+}
+
+// dropEmptyCatalog 某供应商的最后一个账号删除后，连带清掉它的模型快照。
+// 快照只用于管理台展示，留着会让「路由」页继续列出没有账号的供应商。
+func (m *Manager) dropEmptyCatalog(removed store.Account) {
+	if m.st == nil {
+		return
+	}
+	engine := config.NormalizeEngineName(removed.Engine)
+	key := engine
+	remaining, err := m.st.ListAccounts()
+	if err != nil {
+		return
+	}
+	if engine == "custom" {
+		provider := customProvider(removed.Credentials)
+		if provider == "" {
+			return
+		}
+		key = "custom|" + provider
+		for _, other := range remaining {
+			if config.NormalizeEngineName(other.Engine) == "custom" && customProvider(other.Credentials) == provider {
+				return
+			}
+		}
+	} else {
+		for _, other := range remaining {
+			if config.NormalizeEngineName(other.Engine) == engine {
+				return
+			}
+		}
+	}
+	_ = m.st.DeleteEngineCatalog(key)
 }
 
 // SetAccountEnabled 启停账号。

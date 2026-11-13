@@ -497,10 +497,19 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			settings[model.CanonicalModelID(s.Model)] = s
 		}
 	}
+	// 只展示当前仍有承接方的供应商：模型快照会跨账号删除保留（方便回加），
+	// 但「路由」页不该再列出已经没有任何账号、引擎也没就绪的供应商的模型。
+	// 引擎未初始化（测试或降级启动）时照常展示快照。
+	active := a.activeProviders()
 	out := []modelView{}
 	var fetchedAt int64
 	if catalog, err := a.st.CatalogModels(); err == nil {
 		for _, m := range catalog {
+			if active != nil {
+				if _, ok := active[m.Engine]; !ok {
+					continue
+				}
+			}
 			if m.FetchedAt > fetchedAt {
 				fetchedAt = m.FetchedAt
 			}
@@ -556,6 +565,11 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			eng, live := liveEngine[key]
 			if !live {
 				continue // 所有引擎都不再声明：死记录，不展示
+			}
+			if active != nil {
+				if _, ok := active[eng]; !ok {
+					continue // 引擎/供应商当前没有账号：不展示
+				}
 			}
 			s := settings[key]
 			multiplier, _ := a.st.ModelMultiplierFor(s.Model)
