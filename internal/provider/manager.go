@@ -218,7 +218,7 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		eb := workbuddy.New(cfg.Engines.WorkBuddy, st)
 		m.register(eb.Name(), eb, eb)
 	}
-	if cfg.Engines.TeleAgent.Enabled {
+	if cfg.Engines.TeleAgent.On() {
 		et := teleagent.New(cfg.Engines.TeleAgent, st)
 		m.register(et.Name(), et, et)
 	}

@@ -76,3 +76,22 @@ func TestNormalizeEngineName(t *testing.T) {
 		}
 	}
 }
+
+// TeleAgent 的 enabled 用指针区分「没写」与「明确关闭」：旧配置没有
+// teleagent 段时默认开启，显式 false 才关闭。
+func TestTeleAgentEnabledDefault(t *testing.T) {
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("server:\n  listen: ':8800'\n"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Engines.TeleAgent.On() {
+		t.Fatal("没有 teleagent 段时应默认启用")
+	}
+	var off Config
+	if err := yaml.Unmarshal([]byte("engines:\n  teleagent:\n    enabled: false\n"), &off); err != nil {
+		t.Fatal(err)
+	}
+	if off.Engines.TeleAgent.On() {
+		t.Fatal("显式 enabled: false 时应关闭")
+	}
+}

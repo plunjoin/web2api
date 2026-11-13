@@ -24,14 +24,14 @@ type Config struct {
 // engine_geminiweb/engine_aistudio（新键优先）。
 func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	var raw struct {
-		Server    ServerConfig    `yaml:"server"`
-		Routing   RoutingConfig   `yaml:"routing"`
-		GeminiWeb EngineAConfig   `yaml:"engine_geminiweb"`
-		AIStudio  EngineBConfig   `yaml:"engine_aistudio"`
-		Engines   EnginesConfig   `yaml:"engines"`
-		GeminiAPI GeminiAPIConfig `yaml:"gemini_api"`
-		EngineAOld EngineAConfig  `yaml:"engine_a"`
-		EngineBOld EngineBConfig  `yaml:"engine_b"`
+		Server     ServerConfig    `yaml:"server"`
+		Routing    RoutingConfig   `yaml:"routing"`
+		GeminiWeb  EngineAConfig   `yaml:"engine_geminiweb"`
+		AIStudio   EngineBConfig   `yaml:"engine_aistudio"`
+		Engines    EnginesConfig   `yaml:"engines"`
+		GeminiAPI  GeminiAPIConfig `yaml:"gemini_api"`
+		EngineAOld EngineAConfig   `yaml:"engine_a"`
+		EngineBOld EngineBConfig   `yaml:"engine_b"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -54,7 +54,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // isZero 判定配置段是否完全未设置（用于旧键回退）。
-func isZero(v any) bool { return v == nil || reflect.DeepEqual(v, reflect.Zero(reflect.TypeOf(v)).Interface()) }
+func isZero(v any) bool {
+	return v == nil || reflect.DeepEqual(v, reflect.Zero(reflect.TypeOf(v)).Interface())
+}
 
 // EnginesConfig 订阅引擎 + 第三方 Key 引擎配置。
 // 每个引擎独立账号池，账号在管理台运行时增删，也可用静态种子导入。
@@ -150,11 +152,18 @@ type WorkBuddyAccountConf struct {
 }
 
 // TeleAgentConfig 中国电信天翼 AI「星辰超级智能体」引擎。
+//
+// Enabled 用指针区分「没写」和「明确关闭」：旧版配置里没有 teleagent 段，
+// 升级后不该因为缺一个键就把已经导入的账号全部判成「引擎未启用」。默认开启，
+// 只有显式写 enabled: false 才关闭。
 type TeleAgentConfig struct {
-	Enabled  bool                  `yaml:"enabled"`
-	Proxy    string                `yaml:"proxy"`
+	Enabled  *bool                  `yaml:"enabled"`
+	Proxy    string                 `yaml:"proxy"`
 	Accounts []TeleAgentAccountConf `yaml:"accounts"`
 }
+
+// On 引擎是否启用：未配置时默认开启，显式 false 才关闭。
+func (c TeleAgentConfig) On() bool { return c.Enabled == nil || *c.Enabled }
 
 // TeleAgentAccountConf TeleAgent 种子账号（凭据为本机桌面端登录态，通常由
 // scripts/import-teleagent-accounts.go 导入，而不是手写配置）。
@@ -191,7 +200,7 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine   string   `yaml:"default_engine"`    // auto | geminiweb | aistudio | codex | antigravity | kiro | workbuddy | custom
+	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | kiro | workbuddy | custom
 	GeminiWebModels []string `yaml:"engine_geminiweb_models"` // 强制走 Gemini Web 的模型名（前缀匹配）
 	AIStudioModels  []string `yaml:"engine_aistudio_models"`  // 强制走 AI Studio 的模型名（前缀匹配）
 	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），
@@ -301,7 +310,7 @@ func Default() *Config {
 			// base_url 留空：按账号的 site 推导（默认国服 copilot.tencent.com），
 			// 旧版写死 www.codebuddy.ai 会把新号打到已废弃的端点上。
 			WorkBuddy: WorkBuddyConfig{Enabled: true},
-			Custom:      CustomConfig{Enabled: true},
+			Custom:    CustomConfig{Enabled: true},
 		},
 		GeminiWeb: EngineAConfig{
 			Enabled:        true,
