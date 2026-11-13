@@ -28,6 +28,10 @@ func userSafeRecord(rec store.UsageRecord) store.UsageRecord {
 		}
 	}
 	rec.UserEmail = ""
+	// 接单账号是运维内部信息，终端用户只看引擎与模型。
+	rec.AccountID = 0
+	rec.AccountLabel = ""
+	rec.Provider = ""
 	return rec
 }
 
@@ -42,9 +46,9 @@ func sumBreakdown(rows []store.UsageBreakdownRow) map[string]int64 {
 		requests += r.Requests
 		success += r.SuccessRequests
 		total += r.TotalTokens
-		charged += r.ChargedTokens
+		charged += r.CostMicros
 	}
-	return map[string]int64{"requests": requests, "success_requests": success, "total_tokens": total, "charged_tokens": charged}
+	return map[string]int64{"requests": requests, "success_requests": success, "total_tokens": total, "cost_micros": charged}
 }
 
 // handleUserOverview GET /api/user/overview
@@ -86,17 +90,17 @@ func (a *API) handleUserOverview(w http.ResponseWriter, r *http.Request, p *Prin
 	// 按模型汇总 7 天消耗（前 5）
 	byModel := map[string]int64{}
 	for _, row := range week {
-		byModel[row.Model] += row.ChargedTokens
+		byModel[row.Model] += row.CostMicros
 	}
 	type modelShare struct {
-		Model         string `json:"model"`
-		ChargedTokens int64  `json:"charged_tokens"`
+		Model      string `json:"model"`
+		CostMicros int64  `json:"cost_micros"`
 	}
 	models := []modelShare{}
 	for m, v := range byModel {
 		models = append(models, modelShare{m, v})
 	}
-	sort.Slice(models, func(i, j int) bool { return models[i].ChargedTokens > models[j].ChargedTokens })
+	sort.Slice(models, func(i, j int) bool { return models[i].CostMicros > models[j].CostMicros })
 	if len(models) > 5 {
 		models = models[:5]
 	}
@@ -141,35 +145,35 @@ func (a *API) handleUserKeys(w http.ResponseWriter, r *http.Request, p *Principa
 	requests := map[int64]int64{}
 	if rows, err := a.st.UsageBreakdown(store.UsageFilter{Since: since, UserID: p.User.ID}); err == nil {
 		for _, row := range rows {
-			charged[row.KeyID] += row.ChargedTokens
+			charged[row.KeyID] += row.CostMicros
 			requests[row.KeyID] += row.Requests
 		}
 	}
 	type keyView struct {
 		store.APIKey
-		Charged7d  int64 `json:"charged_7d"`
+		Cost7d     int64 `json:"cost_7d"`
 		Requests7d int64 `json:"requests_7d"`
 	}
 	out := make([]keyView, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, keyView{APIKey: k, Charged7d: charged[k.ID], Requests7d: requests[k.ID]})
+		out = append(out, keyView{APIKey: k, Cost7d: charged[k.ID], Requests7d: requests[k.ID]})
 	}
 	settings, _ := a.st.GetPlatformSettings()
 	writeJSON(w, 200, map[string]any{"keys": out, "max_keys": settings.MaxKeysPerUser})
 }
 
-// handleUserCreateKey POST /api/user/keys {name, token_limit}
+// handleUserCreateKey POST /api/user/keys {name, cost_limit}
 func (a *API) handleUserCreateKey(w http.ResponseWriter, r *http.Request, p *Principal) {
 	var req struct {
-		Name       string `json:"name"`
-		TokenLimit int64  `json:"token_limit"`
+		Name      string `json:"name"`
+		CostLimit int64  `json:"cost_limit"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "请求 JSON 无效"})
 		return
 	}
 	settings, _ := a.st.GetPlatformSettings()
-	k, err := a.st.CreateUserKey(p.User.ID, req.Name, req.TokenLimit, settings.MaxKeysPerUser)
+	k, err := a.st.CreateUserKey(p.User.ID, req.Name, req.CostLimit, settings.MaxKeysPerUser)
 	if err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
@@ -177,7 +181,7 @@ func (a *API) handleUserCreateKey(w http.ResponseWriter, r *http.Request, p *Pri
 	writeJSON(w, 200, map[string]any{"key": k})
 }
 
-// handleUserPatchKey PATCH /api/user/keys/{id} {name?, enabled?, token_limit?, reset_usage?}
+// handleUserPatchKey PATCH /api/user/keys/{id} {name?, enabled?, cost_limit?, reset_usage?}
 func (a *API) handleUserPatchKey(w http.ResponseWriter, r *http.Request, p *Principal) {
 	k, ok := a.ownKey(w, r, p)
 	if !ok {
@@ -186,7 +190,7 @@ func (a *API) handleUserPatchKey(w http.ResponseWriter, r *http.Request, p *Prin
 	var req struct {
 		Name       *string `json:"name"`
 		Enabled    *bool   `json:"enabled"`
-		TokenLimit *int64  `json:"token_limit"`
+		CostLimit  *int64  `json:"cost_limit"`
 		ResetUsage bool    `json:"reset_usage"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -197,7 +201,7 @@ func (a *API) handleUserPatchKey(w http.ResponseWriter, r *http.Request, p *Prin
 		writeJSON(w, 400, map[string]any{"error": "名称最长 200 字节"})
 		return
 	}
-	updated, err := a.st.UpdateKey(k.ID, store.KeyUpdate{Name: req.Name, Enabled: req.Enabled, TokenLimit: req.TokenLimit, ResetUsage: req.ResetUsage})
+	updated, err := a.st.UpdateKey(k.ID, store.KeyUpdate{Name: req.Name, Enabled: req.Enabled, CostLimit: req.CostLimit, ResetUsage: req.ResetUsage})
 	if err != nil {
 		storeError(w, err)
 		return
@@ -424,6 +428,10 @@ func (a *API) handleUserModels(w http.ResponseWriter, r *http.Request, p *Princi
 		Available   bool    `json:"available"`
 		Kind        string  `json:"kind,omitempty"`
 		Multiplier  float64 `json:"multiplier"`
+		// 单价（元 / 百万 Token）；页面按 multiplier 展示对该用户的实际价格。
+		Input     float64 `json:"input"`
+		Output    float64 `json:"output"`
+		CacheRead float64 `json:"cache_read"`
 	}
 	out := []modelView{}
 	if a.mgr != nil {
@@ -439,10 +447,12 @@ func (a *API) handleUserModels(w http.ResponseWriter, r *http.Request, p *Princi
 			}
 			seen[m.ID] = len(out)
 			mm, _ := a.st.ModelMultiplierFor(m.ID)
-			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Available: m.Available, Kind: m.Kind, Multiplier: mm * p.User.Multiplier})
+			price, _ := a.st.PriceFor(m.ID)
+			out = append(out, modelView{ID: m.ID, DisplayName: m.DisplayName, Available: m.Available, Kind: m.Kind,
+				Multiplier: mm * p.User.Multiplier, Input: price.Input, Output: price.Output, CacheRead: price.CacheRead})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, 200, map[string]any{"models": out, "user_multiplier": p.User.Multiplier,
-		"formula": "扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉"})
+		"formula": "费用 = （未缓存输入 × 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价）× 模型倍率 × Key 倍率 × 用户倍率，单价单位：元 / 百万 Token"})
 }

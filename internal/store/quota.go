@@ -9,19 +9,20 @@ import (
 	"strings"
 )
 
-// ==================== Token 额度与倍率 ====================
+// ==================== 金额额度与倍率 ====================
 //
 // 计费规则（所有字段都在管理 API 中可见）：
 //
 //	有效倍率 multiplier = 模型倍率 × Key 倍率 × 用户倍率（无归属用户的 Key 用户倍率为 1）
-//	计费 Token charged  = ceil(total_tokens × multiplier)（浮点误差 1e-6 内按整数处理）
-//	Key 已用 tokens_used += charged（仅成功请求）
-//	Key 归属用户时，同一事务内从用户余额扣除 charged 并写一条 usage 账单流水
+//	请求金额 cost(微元)  = round-up[(未缓存输入 × 输入单价 + 缓存输入 × 缓存单价 + 输出 × 输出单价) × multiplier]
+//	单价来自 model_prices（人民币元 / 百万 Token，等价于微元 / Token）
+//	Key 已用 cost_used += cost（仅成功请求）
+//	Key 归属用户时，同一事务内从用户余额扣除 cost 并写一条 usage 账单流水
 //
 // 模型倍率取 model_multipliers 中该模型的值；未配置时取 model='*' 的默认值；
 // 都没有则为 1。Key 倍率默认 1，可作为分组/客户级默认倍率。
 //
-// 额度在请求进入时检查：tokens_used >= token_limit（token_limit>0）即拒绝。
+// 额度在请求进入时检查：cost_used >= cost_limit（cost_limit>0）即拒绝。
 // 请求完成后才扣减，因此跨过额度线的那一次请求会完整返回，并发请求也可能
 // 共同超出少量额度；之后的请求一律拒绝。
 
@@ -31,7 +32,7 @@ const DefaultModelKey = "*"
 // MaxMultiplier 倍率上限，防止误填导致额度瞬间耗尽。
 const MaxMultiplier = 1000
 
-const keyColumns = `id, key, name, enabled, created_at, token_limit, tokens_used, multiplier, expires_at, allowed_models, rpm_limit, user_id`
+const keyColumns = `id, key, name, enabled, created_at, cost_limit, cost_used, multiplier, expires_at, allowed_models, rpm_limit, user_id`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -39,7 +40,7 @@ func scanKey(row rowScanner) (APIKey, error) {
 	var k APIKey
 	var enabled int
 	var allowed string
-	if err := row.Scan(&k.ID, &k.Key, &k.Name, &enabled, &k.CreatedAt, &k.TokenLimit, &k.TokensUsed, &k.Multiplier,
+	if err := row.Scan(&k.ID, &k.Key, &k.Name, &enabled, &k.CreatedAt, &k.CostLimit, &k.CostUsed, &k.Multiplier,
 		&k.ExpiresAt, &allowed, &k.RPMLimit, &k.UserID); err != nil {
 		return APIKey{}, err
 	}
@@ -62,19 +63,6 @@ func EffectiveMultiplier(modelMultiplier, keyMultiplier float64) float64 {
 	return modelMultiplier * keyMultiplier
 }
 
-// ChargedTokens 计费 Token = ceil(total × multiplier)。
-// 乘积与最近整数相差不超过 1e-6 时视为整数，避免 100×1.1=110.00000000000001 被进位成 111。
-func ChargedTokens(totalTokens int64, multiplier float64) int64 {
-	if totalTokens <= 0 || multiplier <= 0 {
-		return 0
-	}
-	value := float64(totalTokens) * multiplier
-	if rounded := math.Round(value); math.Abs(value-rounded) < 1e-6 {
-		return int64(rounded)
-	}
-	return int64(math.Ceil(value))
-}
-
 // QuotaExceeded 是否已无剩余额度（limit<=0 表示不限）。
 func QuotaExceeded(limit, used int64) bool {
 	return limit > 0 && used >= limit
@@ -84,8 +72,8 @@ func QuotaExceeded(limit, used int64) bool {
 type KeyAuth struct {
 	ID            int64
 	Enabled       bool
-	TokenLimit    int64
-	TokensUsed    int64
+	CostLimit     int64
+	CostUsed      int64
 	Multiplier    float64
 	ExpiresAt     int64
 	AllowedModels []string
@@ -94,7 +82,7 @@ type KeyAuth struct {
 	UserID int64
 	// UserEnabled 归属用户是否启用（无归属时为 true）。
 	UserEnabled bool
-	// Balance 归属用户的余额（计费 Token）。
+	// Balance 归属用户的余额（微元）。
 	Balance int64
 }
 
@@ -102,7 +90,7 @@ type KeyAuth struct {
 func (k KeyAuth) BalanceExhausted() bool { return k.UserID > 0 && k.Balance <= 0 }
 
 // Exhausted 额度是否用尽。
-func (k KeyAuth) Exhausted() bool { return QuotaExceeded(k.TokenLimit, k.TokensUsed) }
+func (k KeyAuth) Exhausted() bool { return QuotaExceeded(k.CostLimit, k.CostUsed) }
 
 // Expired 是否已过期（atUnix 为当前 Unix 秒）。
 func (k KeyAuth) Expired(atUnix int64) bool { return k.ExpiresAt > 0 && atUnix >= k.ExpiresAt }
@@ -154,10 +142,10 @@ func (s *Store) LookupKey(key string) (KeyAuth, bool, error) {
 	var allowed string
 	var userEnabled int
 	var userExists int
-	err := s.db.QueryRow(`SELECT k.id, k.enabled, k.token_limit, k.tokens_used, k.multiplier, k.expires_at, k.allowed_models, k.rpm_limit,
+	err := s.db.QueryRow(`SELECT k.id, k.enabled, k.cost_limit, k.cost_used, k.multiplier, k.expires_at, k.allowed_models, k.rpm_limit,
 		k.user_id, COALESCE(u.enabled, 1), COALESCE(u.balance, 0), CASE WHEN u.id IS NULL THEN 0 ELSE 1 END
 		FROM api_keys k LEFT JOIN users u ON u.id = k.user_id AND k.user_id > 0 WHERE k.key = ?`, key).
-		Scan(&info.ID, &enabled, &info.TokenLimit, &info.TokensUsed, &info.Multiplier, &info.ExpiresAt, &allowed, &info.RPMLimit,
+		Scan(&info.ID, &enabled, &info.CostLimit, &info.CostUsed, &info.Multiplier, &info.ExpiresAt, &allowed, &info.RPMLimit,
 			&info.UserID, &userEnabled, &info.Balance, &userExists)
 	info.AllowedModels = splitModels(allowed)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -187,9 +175,9 @@ func (s *Store) GetKey(id int64) (APIKey, error) {
 type KeyUpdate struct {
 	Name       *string
 	Enabled    *bool
-	TokenLimit *int64
+	CostLimit  *int64
 	Multiplier *float64
-	ResetUsage bool // tokens_used 归零（不删除用量明细）
+	ResetUsage bool // cost_used 归零（不删除用量明细）
 	// ExpiresAt 过期时间 Unix 秒；0 表示永不过期。
 	ExpiresAt *int64
 	// AllowedModels 模型白名单；空切片表示允许全部。
@@ -200,7 +188,7 @@ type KeyUpdate struct {
 
 // Empty 是否没有任何修改。
 func (u KeyUpdate) Empty() bool {
-	return u.Name == nil && u.Enabled == nil && u.TokenLimit == nil && u.Multiplier == nil && !u.ResetUsage &&
+	return u.Name == nil && u.Enabled == nil && u.CostLimit == nil && u.Multiplier == nil && !u.ResetUsage &&
 		u.ExpiresAt == nil && u.AllowedModels == nil && u.RPMLimit == nil
 }
 
@@ -214,11 +202,11 @@ func (s *Store) UpdateKey(id int64, update KeyUpdate) (APIKey, error) {
 	if update.Enabled != nil {
 		sets, args = append(sets, "enabled = ?"), append(args, boolToInt(*update.Enabled))
 	}
-	if update.TokenLimit != nil {
-		if *update.TokenLimit < 0 {
-			return APIKey{}, errors.New("token_limit 不能为负数（0 表示不限）")
+	if update.CostLimit != nil {
+		if *update.CostLimit < 0 {
+			return APIKey{}, errors.New("cost_limit 不能为负数（0 表示不限）")
 		}
-		sets, args = append(sets, "token_limit = ?"), append(args, *update.TokenLimit)
+		sets, args = append(sets, "cost_limit = ?"), append(args, *update.CostLimit)
 	}
 	if update.Multiplier != nil {
 		if err := ValidateMultiplier(*update.Multiplier); err != nil {
@@ -227,7 +215,7 @@ func (s *Store) UpdateKey(id int64, update KeyUpdate) (APIKey, error) {
 		sets, args = append(sets, "multiplier = ?"), append(args, *update.Multiplier)
 	}
 	if update.ResetUsage {
-		sets = append(sets, "tokens_used = 0")
+		sets = append(sets, "cost_used = 0")
 	}
 	if update.ExpiresAt != nil {
 		if *update.ExpiresAt < 0 {
@@ -354,6 +342,107 @@ func modelMultiplierFor(q queryRower, model string) (float64, error) {
 	return value, err
 }
 
+// ==================== 路由组倍率 ====================
+
+// GroupMultiplier 路由组（供应商）倍率。键是引擎名（custom 代表全部第三方 Key），
+// 与用量记录的 engine 列同一口径；作用于该组内未单独设置倍率的模型。
+type GroupMultiplier struct {
+	Group      string  `json:"group"`
+	Multiplier float64 `json:"multiplier"`
+	UpdatedAt  int64   `json:"updated_at"`
+}
+
+// normalizeGroupKey 组倍率的键：用量记录里的引擎可能是历史名 a/b，归一后再匹配。
+func normalizeGroupKey(engine string) string {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "a", "gemini":
+		return "geminiweb"
+	case "b":
+		return "aistudio"
+	default:
+		return strings.ToLower(strings.TrimSpace(engine))
+	}
+}
+
+// ListGroupMultipliers 全部已配置的路由组倍率。
+func (s *Store) ListGroupMultipliers() ([]GroupMultiplier, error) {
+	rows, err := s.db.Query(`SELECT group_key, multiplier, updated_at FROM group_multipliers ORDER BY group_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []GroupMultiplier{}
+	for rows.Next() {
+		var g GroupMultiplier
+		if err := rows.Scan(&g.Group, &g.Multiplier, &g.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// SetGroupMultiplier 新增或修改路由组倍率。
+func (s *Store) SetGroupMultiplier(group string, multiplier float64) (GroupMultiplier, error) {
+	group = normalizeGroupKey(group)
+	if group == "" {
+		return GroupMultiplier{}, errors.New("group 不能为空")
+	}
+	if err := ValidateMultiplier(multiplier); err != nil {
+		return GroupMultiplier{}, err
+	}
+	ts := now()
+	_, err := s.db.Exec(`INSERT INTO group_multipliers (group_key, multiplier, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(group_key) DO UPDATE SET multiplier = excluded.multiplier, updated_at = excluded.updated_at`, group, multiplier, ts)
+	if err != nil {
+		return GroupMultiplier{}, err
+	}
+	return GroupMultiplier{Group: group, Multiplier: multiplier, UpdatedAt: ts}, nil
+}
+
+// DeleteGroupMultiplier 删除路由组倍率（组内模型回落到各自模型倍率或默认倍率）。
+func (s *Store) DeleteGroupMultiplier(group string) error {
+	res, err := s.db.Exec(`DELETE FROM group_multipliers WHERE group_key = ?`, normalizeGroupKey(group))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// effectiveModelMultiplier 计费取的生效模型倍率：模型单独设置 → 路由组倍率 → '*' 默认。
+// 引擎名取用量记录的 engine（可能为空：请求失败没落到任何引擎时直接走默认链）。
+func effectiveModelMultiplier(q queryRower, modelName, engineName string) (float64, error) {
+	var value float64
+	err := q.QueryRow(`SELECT multiplier FROM model_multipliers WHERE model = ?`, modelName).Scan(&value)
+	if err == nil {
+		return value, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if group := normalizeGroupKey(engineName); group != "" {
+		if value, ok, err := groupMultiplierFor(q, group); err != nil || ok {
+			return value, err
+		}
+	}
+	return modelMultiplierFor(q, DefaultModelKey)
+}
+
+func groupMultiplierFor(q queryRower, group string) (float64, bool, error) {
+	var value float64
+	err := q.QueryRow(`SELECT multiplier FROM group_multipliers WHERE group_key = ?`, group).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return value, true, nil
+}
+
 // ==================== 逐请求用量 ====================
 
 // UsageRecord 一次请求的用量明细。
@@ -376,17 +465,34 @@ type UsageRecord struct {
 	ModelMultiplier  float64 `json:"model_multiplier"`
 	KeyMultiplier    float64 `json:"key_multiplier"`
 	Multiplier       float64 `json:"multiplier"`
-	ChargedTokens    int64   `json:"charged_tokens"`
-	Error            string  `json:"error,omitempty"`
-	LatencyMs        int64   `json:"latency_ms"`
+	// CostMicros 本次请求金额（微元，1 元 = 1000000 微元）。
+	CostMicros int64  `json:"cost_micros"`
+	Error      string `json:"error,omitempty"`
+	LatencyMs  int64  `json:"latency_ms"`
+	// Client 是调用方客户端（由 User-Agent 识别的友好名称，如 Claude Code）。
+	Client string `json:"client,omitempty"`
+	// ActualModel 是上游实际承接的模型；与 Model（请求模型）不同时展示。
+	ActualModel string `json:"actual_model,omitempty"`
+	// AccountID / AccountLabel / Provider 是实际接单账号的快照，账号删除后仍可追溯。
+	AccountID    int64  `json:"account_id"`
+	AccountLabel string `json:"account_label,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	// StatusCode 是返回给客户端的 HTTP 状态码；0 表示旧记录未采集。
+	StatusCode int64 `json:"status_code"`
+	// TTFTMs 是流式首字耗时；0 表示非流式或未采集。
+	TTFTMs int64 `json:"ttft_ms"`
+	// CachedTokens 是上游命中的缓存 Prompt Token（OpenAI 语义，含在 PromptTokens 内）。
+	CachedTokens int64 `json:"cached_tokens"`
 	// UserID 归属用户（0 = 无归属 Key）；UserMultiplier 为计费时的用户倍率。
 	UserID         int64   `json:"user_id"`
 	UserEmail      string  `json:"user_email,omitempty"`
 	UserMultiplier float64 `json:"user_multiplier"`
-	// BalanceAfter 本次扣费后的用户余额（仅归属用户且产生扣费时有意义）。
+	// BalanceAfter 本次扣费后的用户余额（微元，仅归属用户且产生扣费时有意义）。
 	BalanceAfter int64 `json:"balance_after,omitempty"`
-	// Refunded 已退款的计费 Token。
-	Refunded int64 `json:"refunded_tokens"`
+	// RefundedMicros 已退款的金额（微元）。
+	RefundedMicros int64 `json:"refunded_micros"`
+	// FixedCostMicros 非 Token 计费（如视频按秒）的固定金额；>0 时不再按单价计算。
+	FixedCostMicros int64 `json:"-"`
 }
 
 // RecordRequest 写入一条用量明细并按倍率扣减 Key 额度（同一事务），
@@ -429,36 +535,52 @@ func (s *Store) RecordRequest(rec UsageRecord) (UsageRecord, error) {
 		err = scanErr
 		return rec, err
 	}
-	if rec.ModelMultiplier, err = modelMultiplierFor(tx, rec.Model); err != nil {
+	if rec.ModelMultiplier, err = effectiveModelMultiplier(tx, rec.Model, rec.Engine); err != nil {
 		return rec, err
 	}
 	rec.Multiplier = EffectiveMultiplier(rec.ModelMultiplier, rec.KeyMultiplier) * rec.UserMultiplier
-	rec.ChargedTokens = 0
+	rec.CostMicros = 0
 	if rec.Success {
-		rec.ChargedTokens = ChargedTokens(rec.TotalTokens, rec.Multiplier)
+		if rec.FixedCostMicros > 0 {
+			// 视频等没有 Token 用量的接口，由调用方给出按秒金额。
+			rec.CostMicros = ScaledCostMicros(rec.FixedCostMicros, rec.Multiplier)
+		} else {
+			var price ModelPrice
+			if price, err = priceForBilling(tx, rec.ActualModel, rec.Model); err != nil {
+				return rec, err
+			}
+			// 兼容只上报 total_tokens 的调用方（视频以外的旧接口/测试）：没有拆分时按输入计。
+			prompt := rec.PromptTokens
+			if prompt == 0 && rec.CompletionTokens == 0 {
+				prompt = rec.TotalTokens
+			}
+			rec.CostMicros = CostMicros(prompt, rec.CompletionTokens, rec.CachedTokens, price, rec.Multiplier)
+		}
 	}
 	res, err := tx.Exec(`INSERT INTO usage_records (ts, key_id, api_key, engine, model, endpoint, stream, success,
-		prompt_tokens, completion_tokens, total_tokens, estimated, model_multiplier, key_multiplier, multiplier, charged_tokens, error, latency_ms,
-		user_id, user_multiplier)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		prompt_tokens, completion_tokens, total_tokens, estimated, model_multiplier, key_multiplier, multiplier, cost_micros, error, latency_ms,
+		user_id, user_multiplier, client, actual_model, account_id, account_label, provider, status_code, ttft_ms, cached_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.TS, rec.KeyID, rec.APIKey, rec.Engine, rec.Model, rec.Endpoint, boolToInt(rec.Stream), boolToInt(rec.Success),
 		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens, boolToInt(rec.Estimated),
-		rec.ModelMultiplier, rec.KeyMultiplier, rec.Multiplier, rec.ChargedTokens, rec.Error, rec.LatencyMs,
-		rec.UserID, rec.UserMultiplier)
+		rec.ModelMultiplier, rec.KeyMultiplier, rec.Multiplier, rec.CostMicros, rec.Error, rec.LatencyMs,
+		rec.UserID, rec.UserMultiplier, rec.Client, rec.ActualModel, rec.AccountID, rec.AccountLabel, rec.Provider,
+		rec.StatusCode, rec.TTFTMs, rec.CachedTokens)
 	if err != nil {
 		return rec, err
 	}
 	rec.ID, _ = res.LastInsertId()
-	if rec.KeyID > 0 && rec.ChargedTokens > 0 {
-		if _, err = tx.Exec(`UPDATE api_keys SET tokens_used = tokens_used + ? WHERE id = ?`, rec.ChargedTokens, rec.KeyID); err != nil {
+	if rec.KeyID > 0 && rec.CostMicros > 0 {
+		if _, err = tx.Exec(`UPDATE api_keys SET cost_used = cost_used + ? WHERE id = ?`, rec.CostMicros, rec.KeyID); err != nil {
 			return rec, err
 		}
 	}
-	if rec.UserID > 0 && rec.ChargedTokens > 0 {
+	if rec.UserID > 0 && rec.CostMicros > 0 {
 		// 余额允许被跨线的这一次请求扣成负数（请求已完整返回）；之后的请求在鉴权时被 402 拒绝。
 		var entry LedgerEntry
-		entry, err = applyBalanceTx(tx, rec.UserID, -rec.ChargedTokens, LedgerUsage, rec.ID,
-			fmt.Sprintf("%s · %d Token × %s", rec.Model, rec.TotalTokens, strconv.FormatFloat(rec.Multiplier, 'f', -1, 64)), "system", true)
+		entry, err = applyBalanceTx(tx, rec.UserID, -rec.CostMicros, LedgerUsage, rec.ID,
+			fmt.Sprintf("%s · 输入 %d / 输出 %d Token × %s = %s", rec.Model, rec.PromptTokens, rec.CompletionTokens,
+				strconv.FormatFloat(rec.Multiplier, 'f', -1, 64), FormatCNY(rec.CostMicros)), "system", true)
 		if err != nil {
 			return rec, err
 		}
@@ -511,7 +633,8 @@ func (s *Store) ListUsageRecords(filter UsageFilter) ([]UsageRecord, int64, erro
 	}
 	rows, err := s.db.Query(`SELECT r.id, r.ts, r.key_id, r.api_key, COALESCE(k.name, ''), r.engine, r.model, r.endpoint, r.stream, r.success,
 		r.prompt_tokens, r.completion_tokens, r.total_tokens, r.estimated, r.model_multiplier, r.key_multiplier, r.multiplier,
-		r.charged_tokens, r.error, r.latency_ms, r.user_id, COALESCE(u.email, ''), r.user_multiplier, r.refunded_tokens
+		r.cost_micros, r.error, r.latency_ms, r.user_id, COALESCE(u.email, ''), r.user_multiplier, r.refunded_micros,
+		r.client, r.actual_model, r.account_id, r.account_label, r.provider, r.status_code, r.ttft_ms, r.cached_tokens
 		FROM usage_records r LEFT JOIN api_keys k ON k.id = r.key_id LEFT JOIN users u ON u.id = r.user_id AND r.user_id > 0`+where+` ORDER BY r.id DESC LIMIT ? OFFSET ?`,
 		append(args, filter.Limit, filter.Offset)...)
 	if err != nil {
@@ -524,7 +647,8 @@ func (s *Store) ListUsageRecords(filter UsageFilter) ([]UsageRecord, int64, erro
 		var stream, success, estimated int
 		if err := rows.Scan(&r.ID, &r.TS, &r.KeyID, &r.APIKey, &r.KeyName, &r.Engine, &r.Model, &r.Endpoint, &stream, &success,
 			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &estimated, &r.ModelMultiplier, &r.KeyMultiplier, &r.Multiplier,
-			&r.ChargedTokens, &r.Error, &r.LatencyMs, &r.UserID, &r.UserEmail, &r.UserMultiplier, &r.Refunded); err != nil {
+			&r.CostMicros, &r.Error, &r.LatencyMs, &r.UserID, &r.UserEmail, &r.UserMultiplier, &r.RefundedMicros,
+			&r.Client, &r.ActualModel, &r.AccountID, &r.AccountLabel, &r.Provider, &r.StatusCode, &r.TTFTMs, &r.CachedTokens); err != nil {
 			return nil, 0, err
 		}
 		r.Engine = legacyEngineName(r.Engine)
@@ -546,7 +670,7 @@ type UsageBreakdownRow struct {
 	PromptTokens      int64  `json:"prompt_tokens"`
 	CompletionTokens  int64  `json:"completion_tokens"`
 	TotalTokens       int64  `json:"total_tokens"`
-	ChargedTokens     int64  `json:"charged_tokens"`
+	CostMicros        int64  `json:"cost_micros"`
 	EstimatedRequests int64  `json:"estimated_requests"`
 	AvgLatencyMs      int64  `json:"avg_latency_ms"`
 }
@@ -555,10 +679,10 @@ type UsageBreakdownRow struct {
 func (s *Store) UsageBreakdown(filter UsageFilter) ([]UsageBreakdownRow, error) {
 	where, args := filter.where()
 	rows, err := s.db.Query(`SELECT r.key_id, MAX(r.api_key), COALESCE(MAX(k.name), ''), r.model, COUNT(*), SUM(r.success),
-		SUM(r.prompt_tokens), SUM(r.completion_tokens), SUM(r.total_tokens), SUM(r.charged_tokens), SUM(r.estimated),
+		SUM(r.prompt_tokens), SUM(r.completion_tokens), SUM(r.total_tokens), SUM(r.cost_micros), SUM(r.estimated),
 		CAST(COALESCE(AVG(CASE WHEN r.success = 1 THEN r.latency_ms END), 0) AS INTEGER)
 		FROM usage_records r LEFT JOIN api_keys k ON k.id = r.key_id`+where+`
-		GROUP BY r.key_id, r.model ORDER BY SUM(r.charged_tokens) DESC, COUNT(*) DESC`, args...)
+		GROUP BY r.key_id, r.model ORDER BY SUM(r.cost_micros) DESC, COUNT(*) DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +692,7 @@ func (s *Store) UsageBreakdown(filter UsageFilter) ([]UsageBreakdownRow, error) 
 		var r UsageBreakdownRow
 		var key string
 		if err := rows.Scan(&r.KeyID, &key, &r.KeyName, &r.Model, &r.Requests, &r.SuccessRequests,
-			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.ChargedTokens, &r.EstimatedRequests, &r.AvgLatencyMs); err != nil {
+			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.CostMicros, &r.EstimatedRequests, &r.AvgLatencyMs); err != nil {
 			return nil, err
 		}
 		r.KeyMasked = MaskKey(key)
@@ -597,7 +721,7 @@ type UsagePoint struct {
 	Requests        int64 `json:"requests"`
 	SuccessRequests int64 `json:"success_requests"`
 	TotalTokens     int64 `json:"total_tokens"`
-	ChargedTokens   int64 `json:"charged_tokens"`
+	CostMicros      int64 `json:"cost_micros"`
 	AvgLatencyMs    int64 `json:"avg_latency_ms"`
 }
 
@@ -608,7 +732,7 @@ func (s *Store) UsageTimeseries(filter UsageFilter, bucketSeconds, offsetSeconds
 		bucketSeconds = 3600
 	}
 	where, args := filter.where()
-	query := `SELECT ((r.ts + ?) / ?) * ? - ? AS bucket, COUNT(*), SUM(r.success), SUM(r.total_tokens), SUM(r.charged_tokens),
+	query := `SELECT ((r.ts + ?) / ?) * ? - ? AS bucket, COUNT(*), SUM(r.success), SUM(r.total_tokens), SUM(r.cost_micros),
 		CAST(COALESCE(AVG(CASE WHEN r.success = 1 THEN r.latency_ms END), 0) AS INTEGER)
 		FROM usage_records r` + where + ` GROUP BY bucket ORDER BY bucket`
 	rows, err := s.db.Query(query, append([]any{offsetSeconds, bucketSeconds, bucketSeconds, offsetSeconds}, args...)...)
@@ -619,7 +743,7 @@ func (s *Store) UsageTimeseries(filter UsageFilter, bucketSeconds, offsetSeconds
 	byBucket := map[int64]UsagePoint{}
 	for rows.Next() {
 		var p UsagePoint
-		if err := rows.Scan(&p.TS, &p.Requests, &p.SuccessRequests, &p.TotalTokens, &p.ChargedTokens, &p.AvgLatencyMs); err != nil {
+		if err := rows.Scan(&p.TS, &p.Requests, &p.SuccessRequests, &p.TotalTokens, &p.CostMicros, &p.AvgLatencyMs); err != nil {
 			return nil, err
 		}
 		byBucket[p.TS] = p

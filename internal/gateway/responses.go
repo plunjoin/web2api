@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"web2api/internal/engine"
 	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
@@ -40,14 +41,15 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.mgr.Chat(r.Context(), chatReq)
+	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
+	res, err := s.mgr.Chat(ctx, chatReq)
 	if err != nil {
 		s.logger.Printf("[responses] 请求失败 model=%q: %v", chatReq.Model, err)
-		s.recordChat(r, chatReq, res, false, err, start, "/v1/responses")
+		s.recordChat(ctx, r, chatReq, res, false, err, start, "/v1/responses", upstreamErrorStatus(err), 0)
 		s.writeResponsesError(w, err)
 		return
 	}
-	rec := s.recordChat(r, chatReq, res, false, nil, start, "/v1/responses")
+	rec := s.recordChat(ctx, r, chatReq, res, false, nil, start, "/v1/responses", http.StatusOK, 0)
 	usage := usageFromRecord(rec)
 	writeJSON(w, http.StatusOK, responses.NonStreamResponse(chatReq, res, usage))
 }
@@ -61,16 +63,18 @@ func (s *Server) handleResponsesStream(w http.ResponseWriter, r *http.Request, r
 	}
 	defer sse.Close()
 
+	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
 	enc := responses.NewStreamEncoder(sse, req.Model)
 	enc.Open()
-	res, runErr := s.mgr.ChatStream(r.Context(), req, enc.Sink())
+	sink := newTimedSink(enc.Sink(), start)
+	res, runErr := s.mgr.ChatStream(ctx, req, sink)
 	if runErr != nil {
 		s.logger.Printf("[responses] 流式请求失败 model=%q: %v", req.Model, runErr)
-		s.recordChat(r, req, res, true, runErr, start, "/v1/responses")
+		s.recordChat(ctx, r, req, res, true, runErr, start, "/v1/responses", http.StatusOK, sink.TTFT())
 		enc.EmitFailed(runErr)
 		return
 	}
-	rec := s.recordChat(r, req, res, true, nil, start, "/v1/responses")
+	rec := s.recordChat(ctx, r, req, res, true, nil, start, "/v1/responses", http.StatusOK, sink.TTFT())
 	enc.Finish(res, usageFromRecord(rec))
 }
 

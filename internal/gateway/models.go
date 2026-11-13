@@ -22,11 +22,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // handleHealth 处理 GET /health（免鉴权探活）。
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
-		"status":     "ok",
-		"uptime":     time.Since(s.startAt).String(),
+		"status":           "ok",
+		"uptime":           time.Since(s.startAt).String(),
 		"engine_geminiweb": s.mgr.EngineReady("geminiweb"),
-		"engine_aistudio": s.mgr.EngineReady("aistudio"),
-		"gemini_api": s.gemini.Enabled(),
+		"engine_aistudio":  s.mgr.EngineReady("aistudio"),
+		"gemini_api":       s.gemini.Enabled(),
 	}
 	// 订阅引擎就绪状态（engine_codex / engine_antigravity / ...）
 	for name, ready := range s.mgr.EngineReadyMap() {

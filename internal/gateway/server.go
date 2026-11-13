@@ -290,21 +290,22 @@ func (s *Server) currentKey(r *http.Request) string {
 	return "anonymous"
 }
 
-// writeQuotaExceeded Key 的 Token 额度用尽：HTTP 429 + OpenAI 兼容 insufficient_quota。
+// writeQuotaExceeded Key 的金额额度用尽：HTTP 429 + OpenAI 兼容 insufficient_quota。
+// limit / used 都是微元（1 元 = 1000000 微元）。
 func writeQuotaExceeded(w http.ResponseWriter, info store.KeyAuth) {
-	w.Header().Set("X-Web2api-Token-Limit", strconv.FormatInt(info.TokenLimit, 10))
-	w.Header().Set("X-Web2api-Tokens-Used", strconv.FormatInt(info.TokensUsed, 10))
+	w.Header().Set("X-Web2api-Cost-Limit-Micros", strconv.FormatInt(info.CostLimit, 10))
+	w.Header().Set("X-Web2api-Cost-Used-Micros", strconv.FormatInt(info.CostUsed, 10))
 	writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
-		"API key token quota exhausted (Token 额度已用尽): used %d of %d charged tokens. "+
-			"Ask the administrator to raise token_limit or reset usage for this key.",
-		info.TokensUsed, info.TokenLimit), "insufficient_quota", "token_quota_exceeded")
+		"API key spending limit exhausted (Key 金额额度已用尽): used %d of %d micros. "+
+			"Ask the administrator to raise cost_limit or reset usage for this key.",
+		info.CostUsed, info.CostLimit), "insufficient_quota", "cost_limit_exceeded")
 }
 
 // writeInsufficientBalance Key 所属用户余额不足：HTTP 402 + OpenAI 兼容错误体。
 func writeInsufficientBalance(w http.ResponseWriter, info store.KeyAuth) {
-	w.Header().Set("X-Web2api-Balance", strconv.FormatInt(info.Balance, 10))
+	w.Header().Set("X-Web2api-Balance-Micros", strconv.FormatInt(info.Balance, 10))
 	writeError(w, http.StatusPaymentRequired, fmt.Sprintf(
-		"Insufficient balance (余额不足): your account balance is %d tokens. "+
+		"Insufficient balance (余额不足): your account balance is %d micros (1 yuan = 1000000 micros). "+
 			"Redeem a code in the console or ask the administrator to top up.", info.Balance),
 		"insufficient_quota", "insufficient_balance")
 }

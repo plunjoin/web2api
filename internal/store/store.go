@@ -41,16 +41,16 @@ type APIKey struct {
 	Name      string `json:"name"`
 	Enabled   bool   `json:"enabled"`
 	CreatedAt int64  `json:"created_at"`
-	// TokenLimit 是 Key 的 Token 额度（按倍率计费后的 Token），0 表示不限。
-	TokenLimit int64 `json:"token_limit"`
-	// TokensUsed 是已扣减的计费 Token（= Σ ceil(total_tokens × 模型倍率 × Key 倍率)）。
-	TokensUsed int64 `json:"tokens_used"`
+	// CostLimit 是 Key 的金额额度（微元），0 表示不限。
+	CostLimit int64 `json:"cost_limit"`
+	// CostUsed 是已扣减金额（微元，= Σ 本次请求金额）。
+	CostUsed int64 `json:"cost_used"`
 	// Multiplier 是 Key 倍率（分组默认倍率），与模型倍率相乘，默认 1。
 	Multiplier float64 `json:"multiplier"`
 	// UserID 归属用户（0 = 无归属：config Key 或管理员直接创建的 Key）。
 	UserID int64 `json:"user_id"`
-	// TokensRemaining 剩余额度；不限额时为 null。
-	TokensRemaining *int64 `json:"tokens_remaining"`
+	// CostRemaining 剩余额度（微元）；不限额时为 null。
+	CostRemaining *int64 `json:"cost_remaining"`
 	// QuotaExhausted 额度是否已用尽（用尽后请求返回 429 insufficient_quota）。
 	QuotaExhausted bool `json:"quota_exhausted"`
 	// ExpiresAt 过期时间（Unix 秒），0 表示永不过期；过期后请求返回 401 key_expired。
@@ -63,21 +63,21 @@ type APIKey struct {
 	RPMLimit int64 `json:"rpm_limit"`
 }
 
-// fillQuota 计算派生字段 TokensRemaining / QuotaExhausted。
+// fillQuota 计算派生字段 CostRemaining / QuotaExhausted。
 func (k *APIKey) fillQuota() {
 	k.Expired = k.ExpiresAt > 0 && now() >= k.ExpiresAt
 	if k.AllowedModels == nil {
 		k.AllowedModels = []string{}
 	}
-	k.TokensRemaining = nil
+	k.CostRemaining = nil
 	k.QuotaExhausted = false
-	if k.TokenLimit > 0 {
-		remaining := k.TokenLimit - k.TokensUsed
+	if k.CostLimit > 0 {
+		remaining := k.CostLimit - k.CostUsed
 		if remaining < 0 {
 			remaining = 0
 		}
-		k.TokensRemaining = &remaining
-		k.QuotaExhausted = k.TokensUsed >= k.TokenLimit
+		k.CostRemaining = &remaining
+		k.QuotaExhausted = k.CostUsed >= k.CostLimit
 	}
 }
 
@@ -181,6 +181,22 @@ func (s *Store) migrate() error {
 			multiplier REAL NOT NULL DEFAULT 1,
 			updated_at INTEGER NOT NULL
 		)`,
+		// 路由组（供应商）倍率：作用于该组内未单独设置倍率的模型。
+		// 键是引擎名（custom 代表全部第三方 Key），与用量记录的 engine 列同一口径。
+		`CREATE TABLE IF NOT EXISTS group_multipliers (
+			group_key TEXT PRIMARY KEY,
+			multiplier REAL NOT NULL DEFAULT 1,
+			updated_at INTEGER NOT NULL
+		)`,
+		// 模型单价（人民币元 / 百万 Token）；'*' 为默认单价。
+		// cache_read_price = -1 表示未单独定价，缓存命中按输入价计费。
+		`CREATE TABLE IF NOT EXISTS model_prices (
+			model TEXT PRIMARY KEY,
+			input_price REAL NOT NULL DEFAULT 1,
+			output_price REAL NOT NULL DEFAULT 1,
+			cache_read_price REAL NOT NULL DEFAULT -1,
+			updated_at INTEGER NOT NULL
+		)`,
 		// 模型上下架与检查记录：无记录视为启用；enabled=0 时下游 /v1/models 不可见。
 		`CREATE TABLE IF NOT EXISTS model_settings (
 			model TEXT PRIMARY KEY,
@@ -208,9 +224,17 @@ func (s *Store) migrate() error {
 			model_multiplier REAL NOT NULL DEFAULT 1,
 			key_multiplier REAL NOT NULL DEFAULT 1,
 			multiplier REAL NOT NULL DEFAULT 1,
-			charged_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_micros INTEGER NOT NULL DEFAULT 0,
 			error TEXT NOT NULL DEFAULT '',
-			latency_ms INTEGER NOT NULL DEFAULT 0
+			latency_ms INTEGER NOT NULL DEFAULT 0,
+			client TEXT NOT NULL DEFAULT '',
+			actual_model TEXT NOT NULL DEFAULT '',
+			account_id INTEGER NOT NULL DEFAULT 0,
+			account_label TEXT NOT NULL DEFAULT '',
+			provider TEXT NOT NULL DEFAULT '',
+			status_code INTEGER NOT NULL DEFAULT 0,
+			ttft_ms INTEGER NOT NULL DEFAULT 0,
+			cached_tokens INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_ts ON usage_records(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_key ON usage_records(key_id, ts)`,
@@ -232,10 +256,22 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("迁移失败: %w", err)
 		}
 	}
+	// 计费口径从「Token 积分」改为「微元」：旧列原地改名，历史数值无需换算
+	// （旧的 1 计费 Token 恰好等于 1 微元）。
+	if err := s.renameLegacyBillingColumns(); err != nil {
+		return fmt.Errorf("迁移计费列失败: %w", err)
+	}
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO platform_settings (key, value)
+		SELECT 'video_price_micros_per_second', value FROM platform_settings WHERE key = 'video_tokens_per_second'`); err != nil {
+		return fmt.Errorf("迁移视频单价设置失败: %w", err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM platform_settings WHERE key = 'video_tokens_per_second'`); err != nil {
+		return fmt.Errorf("迁移视频单价设置失败: %w", err)
+	}
 	// 旧库补列（CREATE TABLE IF NOT EXISTS 不会给已有表加列）。
 	for _, column := range []struct{ table, name, ddl string }{
-		{"api_keys", "token_limit", "INTEGER NOT NULL DEFAULT 0"},
-		{"api_keys", "tokens_used", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "cost_limit", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "cost_used", "INTEGER NOT NULL DEFAULT 0"},
 		{"api_keys", "multiplier", "REAL NOT NULL DEFAULT 1"},
 		{"api_keys", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"api_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
@@ -244,7 +280,15 @@ func (s *Store) migrate() error {
 		{"api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_records", "user_id", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_records", "user_multiplier", "REAL NOT NULL DEFAULT 1"},
-		{"usage_records", "refunded_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "refunded_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "client", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_records", "actual_model", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_records", "account_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "account_label", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_records", "provider", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_records", "status_code", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "ttft_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_catalog", "free", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.ddl); err != nil {
@@ -347,6 +391,46 @@ func (s *Store) ensureColumn(table, column, ddl string) error {
 	}
 	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl)
 	return err
+}
+
+// renameLegacyBillingColumns 把旧「Token 积分」列名原地改为微元列名。
+// 新库直接按新列名建表，检测不到旧列时什么也不做。
+func (s *Store) renameLegacyBillingColumns() error {
+	for _, rename := range []struct{ table, from, to string }{
+		{"api_keys", "token_limit", "cost_limit"},
+		{"api_keys", "tokens_used", "cost_used"},
+		{"usage_records", "charged_tokens", "cost_micros"},
+		{"usage_records", "refunded_tokens", "refunded_micros"},
+	} {
+		cols, err := tableColumns(s.db, rename.table)
+		if err != nil {
+			return err
+		}
+		if !cols[rename.from] || cols[rename.to] {
+			continue
+		}
+		if _, err := s.db.Exec(`ALTER TABLE ` + rename.table + ` RENAME COLUMN ` + rename.from + ` TO ` + rename.to); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }
 
 func now() int64 { return time.Now().Unix() }

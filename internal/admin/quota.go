@@ -24,7 +24,7 @@ import (
 type KeyOptions struct {
 	Name       *string  `json:"name"`
 	Enabled    *bool    `json:"enabled"`
-	TokenLimit *int64   `json:"token_limit"`
+	CostLimit  *int64   `json:"cost_limit"`
 	Multiplier *float64 `json:"multiplier"`
 	ResetUsage bool     `json:"reset_usage"`
 	// ExpiresAt Unix 秒；0 清除过期时间。
@@ -34,13 +34,13 @@ type KeyOptions struct {
 }
 
 func (o KeyOptions) update() store.KeyUpdate {
-	return store.KeyUpdate{Name: o.Name, Enabled: o.Enabled, TokenLimit: o.TokenLimit, Multiplier: o.Multiplier, ResetUsage: o.ResetUsage,
+	return store.KeyUpdate{Name: o.Name, Enabled: o.Enabled, CostLimit: o.CostLimit, Multiplier: o.Multiplier, ResetUsage: o.ResetUsage,
 		ExpiresAt: o.ExpiresAt, AllowedModels: o.AllowedModels, RPMLimit: o.RPMLimit}
 }
 
 func (o KeyOptions) validate() error {
-	if o.TokenLimit != nil && *o.TokenLimit < 0 {
-		return errors.New("token_limit 不能为负数（0 表示不限）")
+	if o.CostLimit != nil && *o.CostLimit < 0 {
+		return errors.New("cost_limit 不能为负数（0 表示不限）")
 	}
 	if o.Multiplier != nil {
 		if err := store.ValidateMultiplier(*o.Multiplier); err != nil {
@@ -116,6 +116,11 @@ func (a *API) handleListMultipliers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	groups, err := a.st.ListGroupMultipliers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	defaultMultiplier, _ := a.st.ModelMultiplierFor(store.DefaultModelKey)
 	models := []string{}
 	seen := map[string]bool{}
@@ -130,10 +135,42 @@ func (a *API) handleListMultipliers(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(models)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"multipliers":        items,
+		"groups":             groups,
 		"default_multiplier": defaultMultiplier,
 		"models":             models,
-		"formula":            "charged_tokens = ceil(total_tokens × model_multiplier × key_multiplier × user_multiplier)",
+		"formula":            "cost_micros = ceil((未缓存输入 × 输入单价 + 缓存输入 × 缓存单价 + 输出 × 输出单价) × 模型倍率 × Key 倍率 × 用户倍率)，单价单位：元/百万 Token",
 	})
+}
+
+// handlePutGroupMultiplier PUT /admin/api/multipliers/group {group, multiplier}
+func (a *API) handlePutGroupMultiplier(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Group      string   `json:"group"`
+		Multiplier *float64 `json:"multiplier"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.Multiplier == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "multiplier 必填"})
+		return
+	}
+	item, err := a.st.SetGroupMultiplier(req.Group, *req.Multiplier)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": item})
+}
+
+// handleDeleteGroupMultiplier DELETE /admin/api/multipliers/group/{group}
+func (a *API) handleDeleteGroupMultiplier(w http.ResponseWriter, r *http.Request) {
+	if err := a.st.DeleteGroupMultiplier(r.PathValue("group")); err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handlePutMultiplier PUT /admin/api/multipliers {model, multiplier}；model="*" 为默认倍率。
@@ -208,9 +245,10 @@ func (a *API) handleUsageExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte("\xEF\xBB\xBF")) // UTF-8 BOM，便于 Excel 正确识别中文
 	out := csv.NewWriter(w)
-	_ = out.Write([]string{"id", "time", "key_id", "key_name", "key_masked", "engine", "model", "endpoint", "stream", "success",
-		"prompt_tokens", "completion_tokens", "total_tokens", "usage_source", "model_multiplier", "key_multiplier", "multiplier",
-		"charged_tokens", "latency_ms", "error"})
+	_ = out.Write([]string{"id", "time", "key_id", "key_name", "key_masked", "engine", "model", "actual_model", "endpoint", "stream", "success",
+		"status_code", "client", "account_id", "account_label", "provider",
+		"prompt_tokens", "cached_tokens", "completion_tokens", "total_tokens", "usage_source", "model_multiplier", "key_multiplier", "multiplier",
+		"cost_micros", "ttft_ms", "latency_ms", "error"})
 	const pageSize = 500
 	for offset, written := 0, 0; written < 100000; offset += pageSize {
 		filter.Limit, filter.Offset = pageSize, offset
@@ -225,11 +263,12 @@ func (a *API) handleUsageExport(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = out.Write([]string{
 				strconv.FormatInt(rec.ID, 10), time.Unix(rec.TS, 0).Format(time.RFC3339), strconv.FormatInt(rec.KeyID, 10), rec.KeyName,
-				rec.KeyMasked, rec.Engine, rec.Model, rec.Endpoint, strconv.FormatBool(rec.Stream), strconv.FormatBool(rec.Success),
-				strconv.FormatInt(rec.PromptTokens, 10), strconv.FormatInt(rec.CompletionTokens, 10), strconv.FormatInt(rec.TotalTokens, 10),
+				rec.KeyMasked, rec.Engine, rec.Model, rec.ActualModel, rec.Endpoint, strconv.FormatBool(rec.Stream), strconv.FormatBool(rec.Success),
+				strconv.FormatInt(rec.StatusCode, 10), rec.Client, strconv.FormatInt(rec.AccountID, 10), rec.AccountLabel, rec.Provider,
+				strconv.FormatInt(rec.PromptTokens, 10), strconv.FormatInt(rec.CachedTokens, 10), strconv.FormatInt(rec.CompletionTokens, 10), strconv.FormatInt(rec.TotalTokens, 10),
 				source, strconv.FormatFloat(rec.ModelMultiplier, 'f', -1, 64), strconv.FormatFloat(rec.KeyMultiplier, 'f', -1, 64),
-				strconv.FormatFloat(rec.Multiplier, 'f', -1, 64), strconv.FormatInt(rec.ChargedTokens, 10),
-				strconv.FormatInt(rec.LatencyMs, 10), rec.Error,
+				strconv.FormatFloat(rec.Multiplier, 'f', -1, 64), strconv.FormatInt(rec.CostMicros, 10),
+				strconv.FormatInt(rec.TTFTMs, 10), strconv.FormatInt(rec.LatencyMs, 10), rec.Error,
 			})
 			written++
 		}
@@ -413,7 +452,7 @@ func catalogFromModels(models []model.ModelInfo) []store.CatalogModel {
 	out := make([]store.CatalogModel, 0, len(models))
 	for _, m := range models {
 		out = append(out, store.CatalogModel{
-			Engine: m.Engine, Model: strings.TrimSpace(m.ID), DisplayName: m.DisplayName, Kind: m.Kind, Free: m.Free,
+			Engine: m.Engine, Model: model.PublicModelID(m.ID), DisplayName: m.DisplayName, Kind: m.Kind, Free: m.Free,
 		})
 	}
 	return out
@@ -467,7 +506,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			}
 			multiplier, _ := a.st.ModelMultiplierFor(m.Model)
 			view := modelView{
-				ID: m.Model, DisplayName: m.DisplayName, Engine: m.Engine,
+				ID: model.PublicModelID(m.Model), DisplayName: m.DisplayName, Engine: m.Engine,
 				Available: true, Enabled: true, Kind: m.Kind, Free: m.Free, Multiplier: multiplier,
 			}
 			if s, ok := settings[model.CanonicalModelID(m.Model)]; ok {
@@ -479,21 +518,52 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			out = append(out, view)
 		}
 	}
-	// 已单独设置过上下架/检查、但不在已保存快照中的模型也展示。
+	// 已单独设置过上下架/检查、但不在已保存快照中的模型：只有实时目录里仍有
+	// 引擎声明它时才展示，并按该引擎归组（找不到归属的孤儿一律不展示）。
+	// 历史上检查过的模型（旧目录版本、已下线的别名等）会在 model_settings 里
+	// 留下大量死记录；全部塞进「未归类」组会让路由页出现一个 40 多个模型的
+	// 假供应商组，且点检查只会得到与真实归属无关的错误。记录保留在库里：
+	// 模型若回归目录，原来的上下架开关与检查历史仍然生效。
 	// 去重同样按归一化裸名：否则 models/xxx 是快照行、xxx 是设置行，会重复展示。
 	seen := map[string]struct{}{}
 	for _, m := range out {
 		seen[model.CanonicalModelID(m.ID)] = struct{}{}
 	}
-	for key, s := range settings {
-		if _, ok := seen[key]; ok {
-			continue
+	orphanKeys := make([]string, 0, len(settings))
+	for key := range settings {
+		if _, ok := seen[key]; !ok {
+			orphanKeys = append(orphanKeys, key)
 		}
-		multiplier, _ := a.st.ModelMultiplierFor(s.Model)
-		out = append(out, modelView{
-			ID: s.Model, Enabled: s.Enabled, Multiplier: multiplier,
-			LastCheckAt: s.LastCheckAt, LastCheckOK: s.LastCheckOK, LastCheckDetail: s.LastCheckDetail,
-		})
+	}
+	if len(orphanKeys) > 0 {
+		// 只有真存在「设置行不在快照里」时才扫实时目录（常见情况下没有孤儿）。
+		liveEngine := map[string]string{}
+		liveAvailable := map[string]bool{}
+		if a.mgr != nil {
+			for _, mi := range a.mgr.ListAllModels() {
+				key := model.CanonicalModelID(mi.ID)
+				if key == "" {
+					continue
+				}
+				if _, ok := liveEngine[key]; ok {
+					continue // 引擎注册顺序优先，与公开目录的合并规则一致
+				}
+				liveEngine[key] = mi.Engine
+				liveAvailable[key] = mi.Available
+			}
+		}
+		for _, key := range orphanKeys {
+			eng, live := liveEngine[key]
+			if !live {
+				continue // 所有引擎都不再声明：死记录，不展示
+			}
+			s := settings[key]
+			multiplier, _ := a.st.ModelMultiplierFor(s.Model)
+			out = append(out, modelView{
+				ID: s.Model, Engine: eng, Available: liveAvailable[key], Enabled: s.Enabled, Multiplier: multiplier,
+				LastCheckAt: s.LastCheckAt, LastCheckOK: s.LastCheckOK, LastCheckDetail: s.LastCheckDetail,
+			})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, map[string]any{"models": out, "fetched_at": fetchedAt})

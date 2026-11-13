@@ -125,4 +125,50 @@ func TestRoutingAccountOrderRoundTrip(t *testing.T) {
 	if len(ids) != 3 || ids[0] != "3" || ids[1] != "1" || ids[2] != "2" {
 		t.Fatalf("order = %v", ids)
 	}
+
+	mode, err := st.RoutingAffinity()
+	if err != nil || mode != "" {
+		t.Fatalf("unset affinity = %q, %v; want empty", mode, err)
+	}
+	if err := st.SetRoutingAffinity("off"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, err = st.RoutingAffinity(); err != nil || mode != "off" {
+		t.Fatalf("affinity = %q, %v; want off", mode, err)
+	}
+}
+
+// 请求日志的扩展字段（客户端、实际模型、接单账号、状态码、首字耗时、缓存）
+// 必须原样落库并读回，旧库迁移补列后默认值为空/0。
+func TestUsageRecordRequestMetaRoundTrip(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	saved, err := st.RecordRequest(UsageRecord{
+		Engine: "workbuddy", Model: "auto/hy4free", ActualModel: "hy4-free",
+		Endpoint: "/v1/chat/completions", Stream: true, Success: true,
+		PromptTokens: 1100, CachedTokens: 1089, CompletionTokens: 249,
+		Client: "Claude Desktop", AccountID: 7, AccountLabel: "copilot.tencent.cloud",
+		Provider: "https://copilot.tencent.cloud", StatusCode: 200, TTFTMs: 2700, LatencyMs: 7300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, total, err := st.ListUsageRecords(UsageFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(records) != 1 {
+		t.Fatalf("records = %d/%d", total, len(records))
+	}
+	got := records[0]
+	if got.ID != saved.ID || got.Client != "Claude Desktop" || got.ActualModel != "hy4-free" ||
+		got.AccountID != 7 || got.AccountLabel != "copilot.tencent.cloud" ||
+		got.Provider != "https://copilot.tencent.cloud" || got.StatusCode != 200 ||
+		got.TTFTMs != 2700 || got.CachedTokens != 1089 {
+		t.Fatalf("扩展字段读回不一致: %+v", got)
+	}
 }

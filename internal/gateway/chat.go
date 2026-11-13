@@ -1,12 +1,14 @@
 package gateway
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"web2api/internal/engine"
 	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
@@ -36,7 +38,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !s.modelAllowed(w, r, req.Model) {
 		return
 	}
-	ctx := r.Context()
+	// 账号跟踪必须在进入 manager 前挂到调用方 ctx 上：manager 会基于它派生
+	// 选路的 ctx，引擎把实际接单账号写回同一份跟踪状态，落库时才能读到。
+	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
 	start := time.Now()
 
 	// 流式 SSE
@@ -49,39 +53,46 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	res, err := s.mgr.Chat(ctx, req)
 	if err != nil {
 		s.logger.Printf("[chat] 请求失败 model=%q: %v", req.Model, err)
-		s.recordChat(r, req, res, false, err, start, "/v1/chat/completions")
-		if provider.IsModelDisabled(err) {
-			writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_unavailable")
-			return
+		status := upstreamErrorStatus(err)
+		s.recordChat(ctx, r, req, res, false, err, start, "/v1/chat/completions", status, 0)
+		switch {
+		case provider.IsModelDisabled(err):
+			writeError(w, status, err.Error(), "invalid_request_error", "model_unavailable")
+		case provider.IsModelNotFound(err):
+			writeError(w, status, err.Error(), "invalid_request_error", "model_not_found")
+		case provider.IsUnsupportedEndpoint(err):
+			writeError(w, status, err.Error(), "invalid_request_error", "unsupported_endpoint")
+		case provider.IsToolsNotSupported(err):
+			writeError(w, status, err.Error(), "invalid_request_error", "tools_not_supported")
+		default:
+			writeError(w, status, err.Error(), "api_error", nil)
 		}
-		if provider.IsModelNotFound(err) {
-			writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_not_found")
-			return
-		}
-		if provider.IsUnsupportedEndpoint(err) {
-			writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "unsupported_endpoint")
-			return
-		}
-		if provider.IsToolsNotSupported(err) {
-			writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "tools_not_supported")
-			return
-		}
-		writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 		return
 	}
-	rec := s.recordChat(r, req, res, false, nil, start, "/v1/chat/completions")
+	rec := s.recordChat(ctx, r, req, res, false, nil, start, "/v1/chat/completions", http.StatusOK, 0)
 	usage := resolveUsage(req, res).Normalize()
 	resp := chat.NonStreamResponse(req, res, usage)
 	w.Header().Set("X-Web2api-Usage-Source", usageSource(rec.Estimated))
 	w.Header().Set("X-Web2api-Multiplier", strconv.FormatFloat(rec.Multiplier, 'f', -1, 64))
-	w.Header().Set("X-Web2api-Charged-Tokens", strconv.FormatInt(rec.ChargedTokens, 10))
-	if rec.UserID > 0 && rec.ChargedTokens > 0 {
-		w.Header().Set("X-Web2api-Balance", strconv.FormatInt(rec.BalanceAfter, 10))
+	w.Header().Set("X-Web2api-Cost-Micros", strconv.FormatInt(rec.CostMicros, 10))
+	if rec.UserID > 0 && rec.CostMicros > 0 {
+		w.Header().Set("X-Web2api-Balance-Micros", strconv.FormatInt(rec.BalanceAfter, 10))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleChatStream 以 chat.completion.chunk 事件流返回结果。
+// sessionHintFrom 读取客户端显式会话标识，供会话粘性保持同一账号。
+// 没有这些请求头时，会话键会退回「system + 首条 user 消息」的哈希。
+func sessionHintFrom(r *http.Request) string {
+	for _, name := range []string{"X-Session-Id", "X-Conversation-Id", "X-Thread-Id", "Session-Id"} {
+		if v := strings.TrimSpace(r.Header.Get(name)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request, req model.ChatRequest, start time.Time) {
 	sse := newSSEStream(w)
 	if err := sse.Start(); err != nil {
@@ -90,17 +101,20 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request, req mo
 	}
 	defer sse.Close()
 
+	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
 	enc := chat.NewStreamEncoder(req, sse)
-	res, runErr := s.mgr.ChatStream(r.Context(), req, enc.Sink())
+	sink := newTimedSink(enc.Sink(), start)
+	res, runErr := s.mgr.ChatStream(ctx, req, sink)
+	// 流式响应头已经发出，错误也以 200 + 流内错误提示交付。
 	if runErr != nil {
 		s.logger.Printf("[chat] 流式请求失败 model=%q: %v", req.Model, runErr)
-		s.recordChat(r, req, res, true, runErr, start, "/v1/chat/completions")
+		s.recordChat(ctx, r, req, res, true, runErr, start, "/v1/chat/completions", http.StatusOK, sink.TTFT())
 		stop := "stop"
 		_ = enc.WriteRaw(model.Delta{Content: "[Error] " + runErr.Error()}, &stop, nil)
 		_ = sse.Write("", []byte("[DONE]"))
 		return
 	}
-	_ = s.recordChat(r, req, res, true, nil, start, "/v1/chat/completions")
+	_ = s.recordChat(ctx, r, req, res, true, nil, start, "/v1/chat/completions", http.StatusOK, sink.TTFT())
 	usage := resolveUsage(req, res).Normalize()
 	includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 	if err := enc.Finish(res, usage, includeUsage); err != nil {
@@ -157,14 +171,19 @@ func messagesText(messages []model.ChatMessage) string {
 
 // recordChat 写入逐请求用量并按倍率扣减 Key 额度。失败请求只记录、不扣额度。
 // endpoint 为调用入口（/v1/chat/completions 或 /v1/responses），用于用量归因。
-func (s *Server) recordChat(r *http.Request, req model.ChatRequest, res *model.ChatResult, stream bool, runErr error, start time.Time, endpoint string) store.UsageRecord {
+// ctx 必须是实际调用引擎的那一个：引擎把「真实接单账号」写在它的 context 里。
+// status 是最终返回给客户端的 HTTP 状态码；ttft 是流式首字耗时（非流式为 0）。
+func (s *Server) recordChat(ctx context.Context, r *http.Request, req model.ChatRequest, res *model.ChatResult, stream bool, runErr error, start time.Time, endpoint string, status int, ttft time.Duration) store.UsageRecord {
 	rec := store.UsageRecord{
-		APIKey:    s.currentKey(r),
-		Model:     req.Model,
-		Endpoint:  endpoint,
-		Stream:    stream,
-		Success:   runErr == nil,
-		LatencyMs: time.Since(start).Milliseconds(),
+		APIKey:     s.currentKey(r),
+		Model:      req.Model,
+		Endpoint:   endpoint,
+		Stream:     stream,
+		Success:    runErr == nil,
+		LatencyMs:  time.Since(start).Milliseconds(),
+		Client:     clientName(r),
+		StatusCode: int64(status),
+		TTFTMs:     ttft.Milliseconds(),
 	}
 	if info, ok := keyInfoFrom(r); ok {
 		rec.KeyID = info.ID
@@ -174,12 +193,27 @@ func (s *Server) recordChat(r *http.Request, req model.ChatRequest, res *model.C
 	} else if s.mgr != nil {
 		rec.Engine = s.mgr.EngineForModel(req.Model)
 	}
+	if res != nil {
+		rec.ActualModel = strings.TrimSpace(res.ActualModel)
+	}
+	// 引擎在 context 里回传真正接单的账号；账号名称落库成快照，
+	// 之后账号被删除或改名也能还原这次请求走的是谁。
+	if id, ok := engine.ServedAccount(ctx); ok {
+		rec.AccountID, _ = strconv.ParseInt(id, 10, 64)
+		if s.mgr != nil {
+			if _, label, provider, found := s.mgr.AccountRef(id); found {
+				rec.AccountLabel = label
+				rec.Provider = provider
+			}
+		}
+	}
 	if runErr != nil {
 		rec.Error = runErr.Error()
 	} else {
 		usage := resolveUsage(req, res)
 		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 		rec.Estimated = usage.Estimated
+		rec.CachedTokens = usage.CachedTokens
 	}
 	saved, err := s.st.RecordRequest(rec)
 	if err != nil {

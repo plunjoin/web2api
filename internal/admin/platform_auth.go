@@ -227,7 +227,7 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := a.st.CreateUser(store.NewUser{
 		Email: input.Email, Nickname: input.Nickname, PasswordHash: string(hash), Role: store.RoleUser,
-		Multiplier: settings.DefaultUserMultiplier, InitialBalance: settings.SignupBonus, InitialKind: store.LedgerSignupBonus,
+		Multiplier: settings.DefaultUserMultiplier, InitialBalance: settings.SignupBonusMicros, InitialKind: store.LedgerSignupBonus,
 		InitialNote: "注册赠送", Operator: "system",
 	})
 	if errors.Is(err, store.ErrEmailTaken) {
@@ -253,11 +253,12 @@ func (a *API) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 	v, _ := a.st.AdminSettings()
 	settings, _ := a.st.GetPlatformSettings()
 	writeJSON(w, 200, map[string]any{
-		"initialized":       v != nil,
-		"registration_open": settings.RegistrationOpen,
-		"signup_bonus":      settings.SignupBonus,
-		"site_name":         settings.SiteName,
-		"version":           version.Get().Version,
+		"initialized":         v != nil,
+		"registration_open":   settings.RegistrationOpen,
+		"signup_bonus_micros": settings.SignupBonusMicros,
+		"cny_per_usd":         settings.CNYPerUSD,
+		"site_name":           settings.SiteName,
+		"version":             version.Get().Version,
 	})
 }
 

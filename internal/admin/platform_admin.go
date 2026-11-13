@@ -392,14 +392,15 @@ func (a *API) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, p *
 		return
 	}
 	var req struct {
-		RegistrationOpen      *bool    `json:"registration_open"`
-		SignupBonus           *int64   `json:"signup_bonus"`
-		DefaultUserMultiplier *float64 `json:"default_user_multiplier"`
-		MaxKeysPerUser        *int     `json:"max_keys_per_user"`
-		SiteName              *string  `json:"site_name"`
-		Announcement          *string  `json:"announcement"`
-		VideoTokensPerSecond  *int64   `json:"video_tokens_per_second"`
-		UserUnmeteredRoutes   *bool    `json:"user_unmetered_routes"`
+		RegistrationOpen          *bool    `json:"registration_open"`
+		SignupBonusMicros         *int64   `json:"signup_bonus_micros"`
+		DefaultUserMultiplier     *float64 `json:"default_user_multiplier"`
+		MaxKeysPerUser            *int     `json:"max_keys_per_user"`
+		SiteName                  *string  `json:"site_name"`
+		Announcement              *string  `json:"announcement"`
+		VideoPriceMicrosPerSecond *int64   `json:"video_price_micros_per_second"`
+		UserUnmeteredRoutes       *bool    `json:"user_unmetered_routes"`
+		CNYPerUSD                 *float64 `json:"cny_per_usd"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "请求 JSON 无效"})
@@ -408,8 +409,8 @@ func (a *API) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, p *
 	if req.RegistrationOpen != nil {
 		current.RegistrationOpen = *req.RegistrationOpen
 	}
-	if req.SignupBonus != nil {
-		current.SignupBonus = *req.SignupBonus
+	if req.SignupBonusMicros != nil {
+		current.SignupBonusMicros = *req.SignupBonusMicros
 	}
 	if req.DefaultUserMultiplier != nil {
 		current.DefaultUserMultiplier = *req.DefaultUserMultiplier
@@ -423,11 +424,14 @@ func (a *API) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, p *
 	if req.Announcement != nil {
 		current.Announcement = *req.Announcement
 	}
-	if req.VideoTokensPerSecond != nil {
-		current.VideoTokensPerSecond = *req.VideoTokensPerSecond
+	if req.VideoPriceMicrosPerSecond != nil {
+		current.VideoPriceMicrosPerSecond = *req.VideoPriceMicrosPerSecond
 	}
 	if req.UserUnmeteredRoutes != nil {
 		current.UserUnmeteredRoutes = *req.UserUnmeteredRoutes
+	}
+	if req.CNYPerUSD != nil {
+		current.CNYPerUSD = *req.CNYPerUSD
 	}
 	saved, err := a.st.SavePlatformSettings(current)
 	if err != nil {

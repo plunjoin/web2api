@@ -16,8 +16,8 @@ import (
 //
 // 返回结构兼容 Sub2API 的 /v1/usage，CC Switch 内置的「Sub2API」模板可以
 // 直接解析：isValid / planName / remaining（不限额为 -1）/ unit /
-// quota{limit,used,remaining,unit} / status。单位是网关计费 Token
-// （= 实际 Token × 模型倍率 × Key 倍率，与管理台口径一致）。
+// quota{limit,used,remaining,unit} / status。单位是微元（1 元 = 1000000 微元），
+// 与余额、账单流水同口径。
 func (s *Server) handleKeyUsage(w http.ResponseWriter, r *http.Request) {
 	key := bearerKey(r)
 	if key == "" {
@@ -48,7 +48,7 @@ func (s *Server) handleKeyUsage(w http.ResponseWriter, r *http.Request) {
 // 剩余额度取「Key 自身额度剩余」与「归属用户余额」中更紧的一个；两者都不限时
 // remaining = -1（Sub2API 约定：不限量，不当作余额显示）。
 func keyUsageReport(info store.KeyAuth, name string, nowUnix int64) map[string]any {
-	const unit = "tokens"
+	const unit = "micro_cny"
 	status := "active"
 	switch {
 	case !info.Enabled:
@@ -64,9 +64,9 @@ func keyUsageReport(info store.KeyAuth, name string, nowUnix int64) map[string]a
 	}
 
 	remaining := int64(-1)
-	quota := map[string]any{"limit": info.TokenLimit, "used": info.TokensUsed, "unit": unit}
-	if info.TokenLimit > 0 {
-		left := info.TokenLimit - info.TokensUsed
+	quota := map[string]any{"limit": info.CostLimit, "used": info.CostUsed, "unit": unit}
+	if info.CostLimit > 0 {
+		left := info.CostLimit - info.CostUsed
 		if left < 0 {
 			left = 0
 		}
@@ -95,7 +95,7 @@ func keyUsageReport(info store.KeyAuth, name string, nowUnix int64) map[string]a
 		"status":    status,
 		"planName":  plan,
 		"remaining": remaining,
-		"used":      info.TokensUsed,
+		"used":      info.CostUsed,
 		"unit":      unit,
 		"quota":     quota,
 	}

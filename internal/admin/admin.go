@@ -18,6 +18,7 @@ import (
 	"web2api/internal/engine/antigravity"
 	"web2api/internal/engine/codex"
 	"web2api/internal/engine/custom"
+	"web2api/internal/engine/teleagent"
 	"web2api/internal/engine/workbuddy"
 	"web2api/internal/provider"
 	"web2api/internal/store"
@@ -88,6 +89,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", a.auth(a.handlePatchAccount))
 	mux.HandleFunc("PUT /admin/api/accounts/{id}/credentials", a.auth(a.handleUpdateCredentials))
 	mux.HandleFunc("POST /admin/api/accounts/{id}/check", a.auth(a.handleCheckAccount))
+	mux.HandleFunc("POST /admin/api/accounts/{id}/checkin", a.auth(a.handleAccountCheckIn))
+	mux.HandleFunc("PATCH /admin/api/accounts/{id}/auto-checkin", a.auth(a.handleAccountAutoCheckIn))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", a.auth(a.handleDeleteAccount))
 	// 引擎元数据与订阅引擎 OAuth 授权
 	mux.HandleFunc("GET /admin/api/routing", a.auth(a.handleRouting))
@@ -115,7 +118,12 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/version", a.auth(a.handleVersion))
 	mux.HandleFunc("GET /admin/api/multipliers", a.auth(a.handleListMultipliers))
 	mux.HandleFunc("PUT /admin/api/multipliers", a.auth(a.handlePutMultiplier))
+	mux.HandleFunc("PUT /admin/api/multipliers/group", a.auth(a.handlePutGroupMultiplier))
+	mux.HandleFunc("DELETE /admin/api/multipliers/group/{group...}", a.auth(a.handleDeleteGroupMultiplier))
 	mux.HandleFunc("DELETE /admin/api/multipliers/{model...}", a.auth(a.handleDeleteMultiplier))
+	mux.HandleFunc("GET /admin/api/prices", a.adminAuth(a.handleListPrices))
+	mux.HandleFunc("PUT /admin/api/prices", a.adminAuth(a.handlePutPrice))
+	mux.HandleFunc("DELETE /admin/api/prices/{model...}", a.adminAuth(a.handleDeletePrice))
 	mux.HandleFunc("GET /admin/api/status", a.auth(a.handleStatus))
 	mux.HandleFunc("GET /admin/api/upgrade", a.auth(a.handleUpgradeStatus))
 	mux.HandleFunc("POST /admin/api/upgrade/check", a.auth(a.handleUpgradeCheck))
@@ -174,7 +182,7 @@ func (a *API) handleDocs(w http.ResponseWriter, r *http.Request) {
 var startedAt = time.Now()
 
 var (
-	tokenLimitSchema    = map[string]any{"type": "integer", "minimum": 0, "description": "Token 额度（按倍率计费后的 Token），0 表示不限。用尽后网关返回 429 insufficient_quota"}
+	costLimitSchema     = map[string]any{"type": "integer", "minimum": 0, "description": "金额额度（微元，1 元 = 1000000），0 表示不限。用尽后网关返回 429 insufficient_quota"}
 	expiresSchema       = map[string]any{"type": "integer", "minimum": 0, "description": "过期时间（Unix 秒），0 表示永不过期。过期后网关返回 401 key_expired"}
 	allowedModelsSchema = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "模型白名单，空数组表示允许全部；支持末尾 * 前缀匹配，如 gemini-3.5-*。不允许时网关返回 403 model_not_allowed"}
 	rpmSchema           = map[string]any{"type": "integer", "minimum": 0, "description": "每分钟请求数上限，0 表示只受全局限流约束。超限返回 429 rpm_limit_exceeded"}
@@ -245,12 +253,14 @@ func openAPISpec() map[string]any {
 				"patch":      map[string]any{"tags": []string{"账号"}, "summary": "启用或停用账号", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}},
 				"delete":     map[string]any{"tags": []string{"账号"}, "summary": "删除账号", "responses": map[string]any{"200": response("删除成功"), "404": response("账号不存在")}},
 			},
-			"/admin/api/accounts/{id}/credentials": map[string]any{"put": map[string]any{"tags": []string{"账号"}, "summary": "更新账号凭据", "description": "Gemini Web：{psid, psidts}；订阅引擎：{credentials: {...}}。", "requestBody": body("GeminiCredentialsInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
-			"/admin/api/accounts/{id}/check":       map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "触发账号健康检测", "responses": map[string]any{"200": response("检测已触发")}}},
-			"/admin/api/engines":                   map[string]any{"get": map[string]any{"tags": []string{"账号"}, "summary": "引擎元数据列表（添加账号表单数据驱动）", "responses": map[string]any{"200": response("engines")}}},
+			"/admin/api/accounts/{id}/credentials":  map[string]any{"put": map[string]any{"tags": []string{"账号"}, "summary": "更新账号凭据", "description": "Gemini Web：{psid, psidts}；订阅引擎：{credentials: {...}}。", "requestBody": body("GeminiCredentialsInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
+			"/admin/api/accounts/{id}/check":        map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "触发账号健康检测", "responses": map[string]any{"200": response("检测已触发")}}},
+			"/admin/api/accounts/{id}/checkin":      map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "立即签到（TeleAgent）", "responses": map[string]any{"200": response("ok、result"), "400": response("参数错误")}}},
+			"/admin/api/accounts/{id}/auto-checkin": map[string]any{"patch": map[string]any{"tags": []string{"账号"}, "summary": "开关自动签到（TeleAgent）", "requestBody": body("EnabledInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误")}}},
+			"/admin/api/engines":                    map[string]any{"get": map[string]any{"tags": []string{"账号"}, "summary": "引擎元数据列表（添加账号表单数据驱动）", "responses": map[string]any{"200": response("engines")}}},
 			"/admin/api/routing": map[string]any{
 				"get": map[string]any{"tags": []string{"账号"}, "summary": "账号路由顺序（按供应商分组）", "description": "返回当前保存的账号顺序；configured=false 表示使用默认顺序（供应商与账号的添加顺序）。供应商之间、供应商内部账号之间都按 order 的先后尝试，前一个失败才换下一个。", "responses": map[string]any{"200": response("configured、order、suppliers")}},
-				"put": map[string]any{"tags": []string{"账号"}, "summary": "保存账号路由顺序", "description": "accounts 为全局平铺的账号 ID 列表，按顺序优先；传空数组恢复默认顺序。未知或已删除的 ID 会被忽略。", "requestBody": body("RoutingOrderInput"), "responses": map[string]any{"200": response("configured、order、suppliers"), "400": response("参数错误")}},
+				"put": map[string]any{"tags": []string{"账号"}, "summary": "保存账号路由顺序与会话粘性", "description": "accounts 为全局平铺的账号 ID 列表，按顺序优先；传空数组恢复默认顺序。affinity 可选：off 关闭会话粘性，session 让同一会话优先留在上次接单的账号；留空表示只改顺序。未知或已删除的 ID 会被忽略。", "requestBody": body("RoutingOrderInput"), "responses": map[string]any{"200": response("configured、order、suppliers、affinity"), "400": response("参数错误")}},
 			},
 			"/admin/api/custom/models":            map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "探测第三方供应商模型列表", "description": "用 base_url + api_key 调用上游 /v1/models，添加账号前预览可用模型。", "requestBody": body("CustomProbeInput"), "responses": map[string]any{"200": response("models"), "400": response("探测失败")}}},
 			"/admin/api/oauth/{engine}/authorize": map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "生成订阅引擎 OAuth 授权链接", "description": "支持 codex（OpenAI）、antigravity（Google）、workbuddy（腾讯 CodeBuddy 设备授权）。返回 auth_url 供浏览器打开。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("session_id、auth_url"), "400": response("引擎不支持 OAuth")}}},
@@ -262,13 +272,13 @@ func openAPISpec() map[string]any {
 			},
 			"/admin/api/keys/{id}": map[string]any{
 				"parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}},
-				"patch":      map[string]any{"tags": []string{"API Key"}, "summary": "修改 API Key（启停、备注、Token 额度、倍率、重置已用）", "description": "所有字段可选，至少提供一个。返回 {ok, key}。", "requestBody": body("KeyPatchInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误"), "404": response("Key 不存在")}},
+				"patch":      map[string]any{"tags": []string{"API Key"}, "summary": "修改 API Key（启停、备注、金额额度、倍率、重置已用）", "description": "所有字段可选，至少提供一个。返回 {ok, key}。", "requestBody": body("KeyPatchInput"), "responses": map[string]any{"200": response("更新成功"), "400": response("参数错误"), "404": response("Key 不存在")}},
 				"delete":     map[string]any{"tags": []string{"API Key"}, "summary": "删除 API Key", "responses": map[string]any{"200": response("删除成功")}},
 			},
-			"/admin/api/usage":                map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "查询用量聚合", "description": "usage 为旧的按 Key/引擎/模型聚合（兼容）；breakdown 按 Key×模型汇总逐请求明细，含 total_tokens、charged_tokens、estimated_requests；totals 为合计。", "parameters": usageParams(false), "responses": map[string]any{"200": response("days、usage、breakdown、totals")}}},
-			"/admin/api/usage/records":        map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "逐请求用量明细", "description": "每条含 prompt/completion/total_tokens、estimated（true=本地估算，上游未返回用量）、model_multiplier、key_multiplier、multiplier、charged_tokens。Key 以 key_masked 脱敏显示。", "parameters": usageParams(true), "responses": map[string]any{"200": response("days、total、limit、offset、records")}}},
+			"/admin/api/usage":                map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "查询用量聚合", "description": "usage 为旧的按 Key/引擎/模型聚合（兼容）；breakdown 按 Key×模型汇总逐请求明细，含 total_tokens、cost_micros、estimated_requests；totals 为合计。", "parameters": usageParams(false), "responses": map[string]any{"200": response("days、usage、breakdown、totals")}}},
+			"/admin/api/usage/records":        map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "逐请求用量明细", "description": "每条含 prompt/completion/total_tokens、estimated（true=本地估算，上游未返回用量）、model_multiplier、key_multiplier、multiplier、cost_micros。Key 以 key_masked 脱敏显示。", "parameters": usageParams(true), "responses": map[string]any{"200": response("days、total、limit、offset、records")}}},
 			"/admin/api/keys/{id}/regenerate": map[string]any{"post": map[string]any{"tags": []string{"API Key"}, "summary": "重新生成密钥", "description": "换发新的 sk- 密钥，旧密钥立即失效；额度、倍率、白名单等设置保留。", "parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}}, "responses": map[string]any{"200": response("key"), "404": response("Key 不存在")}}},
-			"/admin/api/usage/timeseries":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "用量时间序列", "description": "days=1 按小时，其余按本地自然日分桶；空桶补零。每点含 requests、success_requests、total_tokens、charged_tokens、avg_latency_ms。", "parameters": usageParams(false), "responses": map[string]any{"200": response("bucket、points")}}},
+			"/admin/api/usage/timeseries":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "用量时间序列", "description": "days=1 按小时，其余按本地自然日分桶；空桶补零。每点含 requests、success_requests、total_tokens、cost_micros、avg_latency_ms。", "parameters": usageParams(false), "responses": map[string]any{"200": response("bucket、points")}}},
 			"/admin/api/usage/export.csv":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "导出逐请求明细 CSV", "description": "UTF-8（带 BOM），最多 100000 行，Key 脱敏。", "parameters": usageParams(false), "responses": map[string]any{"200": map[string]any{"description": "CSV 文件", "content": map[string]any{"text/csv": map[string]any{}}}}}},
 			"/admin/api/models": map[string]any{
 				"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含用途分类、生效倍率、上下架与检查状态）", "description": "读的是上次「获取模型」保存的快照，不是引擎写死的默认目录。kind 为 chat、image、video、music、speech、embedding。enabled=false 的模型不会出现在下游 /v1/models。", "responses": map[string]any{"200": response("models、fetched_at、engines")}},
@@ -286,10 +296,17 @@ func openAPISpec() map[string]any {
 			"/admin/api/models/batch": map[string]any{"post": map[string]any{"tags": []string{"概览"}, "summary": "批量设置模型上下架", "description": "models 去重后单事务写入，单次最多 500 个；enabled=false 时下游无法获取这些模型，调用也会被拒绝。适合按引擎批量精简目录。", "requestBody": body("ModelBatchInput"), "responses": map[string]any{"200": response("ok、total、enabled"), "400": response("参数错误")}}},
 			"/admin/api/version":      map[string]any{"get": map[string]any{"tags": []string{"概览"}, "summary": "版本信息", "responses": map[string]any{"200": response("version、commit、build_time、go_version")}}},
 			"/admin/api/multipliers": map[string]any{
-				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "charged_tokens = ceil(total_tokens × 模型倍率 × Key 倍率 × 用户倍率)，用户倍率只对用户 Key 生效。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
+				"get": map[string]any{"tags": []string{"用量"}, "summary": "列出模型倍率", "description": "cost_micros = ceil((未缓存输入 × 输入单价 + 缓存输入 × 缓存单价 + 输出 × 输出单价) × 模型倍率 × Key 倍率 × 用户倍率)，用户倍率只对用户 Key 生效，单价见 /admin/api/prices。model=\"*\" 为未配置模型的默认倍率；均未配置时为 1。", "responses": map[string]any{"200": response("multipliers、default_multiplier、models、formula")}},
 				"put": map[string]any{"tags": []string{"用量"}, "summary": "设置模型倍率", "requestBody": body("MultiplierInput"), "responses": map[string]any{"200": response("已保存"), "400": response("参数错误")}},
 			},
-			"/admin/api/multipliers/{model}": map[string]any{"delete": map[string]any{"tags": []string{"用量"}, "summary": "删除模型倍率（恢复默认）", "parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}, "responses": map[string]any{"200": response("已删除"), "404": response("未配置")}}},
+			"/admin/api/multipliers/{model}":       map[string]any{"delete": map[string]any{"tags": []string{"用量"}, "summary": "删除模型倍率（恢复默认）", "parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}, "responses": map[string]any{"200": response("已删除"), "404": response("未配置")}}},
+			"/admin/api/multipliers/group":         map[string]any{"put": map[string]any{"tags": []string{"用量"}, "summary": "设置分组倍率", "description": "分组倍率作为该组 API Key 的默认 Key 倍率，与模型倍率相乘。", "requestBody": body("GroupMultiplierInput"), "responses": map[string]any{"200": response("group"), "400": response("参数错误")}}},
+			"/admin/api/multipliers/group/{group}": map[string]any{"delete": map[string]any{"tags": []string{"用量"}, "summary": "删除分组倍率（恢复默认）", "parameters": []any{map[string]any{"name": "group", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}, "responses": map[string]any{"200": response("已删除"), "404": response("未配置")}}},
+			"/admin/api/prices": map[string]any{
+				"get": map[string]any{"tags": []string{"计费"}, "summary": "列出模型单价", "description": "单价单位：人民币元 / 百万 Token。model=\"*\" 为默认单价；cache_read=-1 表示缓存命中按输入价计费。", "responses": map[string]any{"200": response("prices、default_price、models、cny_per_usd、unit")}},
+				"put": map[string]any{"tags": []string{"计费"}, "summary": "设置模型单价", "requestBody": body("PriceInput"), "responses": map[string]any{"200": response("price"), "400": response("参数错误")}},
+			},
+			"/admin/api/prices/{model}": map[string]any{"delete": map[string]any{"tags": []string{"计费"}, "summary": "删除模型单价（恢复默认价）", "parameters": []any{map[string]any{"name": "model", "in": "path", "required": true, "schema": map[string]any{"type": "string"}}}, "responses": map[string]any{"200": response("已删除"), "404": response("未配置")}}},
 		},
 		"components": map[string]any{
 			"securitySchemes": map[string]any{
@@ -299,10 +316,12 @@ func openAPISpec() map[string]any {
 				"SetupInput":             map[string]any{"type": "object", "required": []string{"email", "password", "nickname", "redis_url"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "minLength": 8, "description": "最多 72 字节", "writeOnly": true}, "nickname": map[string]any{"type": "string", "minLength": 1, "maxLength": 64}, "redis_url": map[string]any{"type": "string", "description": "redis://[user:password@]host:port/db，支持 rediss:// TLS", "writeOnly": true}}},
 				"LoginInput":             map[string]any{"type": "object", "required": []string{"email", "password"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "writeOnly": true}}},
 				"EnabledInput":           map[string]any{"type": "object", "required": []string{"enabled"}, "properties": map[string]any{"enabled": map[string]any{"type": "boolean", "description": "是否允许调度或调用"}}},
-				"RoutingOrderInput":      map[string]any{"type": "object", "required": []string{"accounts"}, "properties": map[string]any{"accounts": map[string]any{"type": "array", "items": map[string]any{"type": "integer", "format": "int64"}, "description": "全局账号 ID 顺序，靠前的优先；空数组恢复默认顺序"}}},
-				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
-				"KeyPatchInput":          map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}, "name": map[string]any{"type": "string"}, "token_limit": tokenLimitSchema, "multiplier": keyMultiplierSchema, "reset_usage": map[string]any{"type": "boolean", "description": "true 时把 tokens_used 归零（保留用量明细）"}, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
+				"RoutingOrderInput":      map[string]any{"type": "object", "description": "accounts 与 affinity 至少提供一个；只传 affinity 时只改会话粘性，不动已保存顺序", "properties": map[string]any{"accounts": map[string]any{"type": "array", "items": map[string]any{"type": "integer", "format": "int64"}, "description": "全局账号 ID 顺序，靠前的优先；空数组恢复默认顺序；缺省时保持现有顺序"}, "affinity": map[string]any{"type": "string", "enum": []string{"off", "session"}, "description": "会话粘性：off 关闭，session 同一会话优先留在上次接单的账号；缺省时保持不变"}}},
+				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}, "cost_limit": costLimitSchema, "multiplier": keyMultiplierSchema, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
+				"KeyPatchInput":          map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}, "name": map[string]any{"type": "string"}, "cost_limit": costLimitSchema, "multiplier": keyMultiplierSchema, "reset_usage": map[string]any{"type": "boolean", "description": "true 时把 cost_used 归零（保留用量明细）"}, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
 				"MultiplierInput":        map[string]any{"type": "object", "required": []string{"model", "multiplier"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；\"*\" 为默认倍率"}, "multiplier": map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier}}},
+				"GroupMultiplierInput":   map[string]any{"type": "object", "required": []string{"group", "multiplier"}, "properties": map[string]any{"group": map[string]any{"type": "string", "description": "分组名，对应 API Key 的分组"}, "multiplier": map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier, "description": "分组默认 Key 倍率"}}},
+				"PriceInput":             map[string]any{"type": "object", "required": []string{"model", "input", "output"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；\"*\" 为默认单价"}, "input": map[string]any{"type": "number", "minimum": 0, "description": "输入单价，元 / 百万 Token"}, "output": map[string]any{"type": "number", "minimum": 0, "description": "输出单价，元 / 百万 Token"}, "cache_read": map[string]any{"type": "number", "minimum": -1, "description": "缓存命中单价，元 / 百万 Token；-1 表示按输入价"}}},
 				"ModelCheckInput":        map[string]any{"type": "object", "properties": map[string]any{"model": map[string]any{"type": "string", "description": "单个模型 ID"}, "models": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "批量模型 ID"}, "sync_status": map[string]any{"type": "boolean", "description": "默认 true：检查通过则开放；失败只记录检查结果，不改变上下架（临时故障不该把模型关掉）"}}},
 				"ModelBatchInput":        map[string]any{"type": "object", "required": []string{"models", "enabled"}, "properties": map[string]any{"models": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 500, "description": "模型 ID 列表（自动去重、忽略空白）"}, "enabled": map[string]any{"type": "boolean", "description": "true=批量开放，false=批量下架"}}},
 				"GeminiAccountInput":     map[string]any{"type": "object", "required": []string{"label", "psid", "psidts"}, "properties": map[string]any{"label": map[string]any{"type": "string"}, "psid": map[string]any{"type": "string", "description": "__Secure-1PSID Cookie"}, "psidts": map[string]any{"type": "string", "description": "__Secure-1PSIDTS Cookie"}}},
@@ -389,7 +408,7 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	var keysLimited, keysExhausted int
 	for _, k := range keys {
-		if k.TokenLimit > 0 {
+		if k.CostLimit > 0 {
 			keysLimited++
 		}
 		if k.QuotaExhausted {
@@ -402,7 +421,7 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if breakdown, err := a.st.UsageBreakdown(store.UsageFilter{Since: since}); err == nil {
 		for _, row := range breakdown {
 			tokens24h += row.TotalTokens
-			charged24h += row.ChargedTokens
+			charged24h += row.CostMicros
 			metered24h += row.Requests
 		}
 	}
@@ -419,7 +438,7 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"keys_limited":         keysLimited,
 		"keys_exhausted":       keysExhausted,
 		"tokens_24h":           tokens24h,
-		"charged_tokens_24h":   charged24h,
+		"cost_micros_24h":      charged24h,
 		"version":              version.Get(),
 		"uptime_seconds":       int64(time.Since(startedAt).Seconds()),
 	}
@@ -664,6 +683,14 @@ func (a *API) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 			AuthURL: start.AuthURL, Proxy: proxy, Site: siteID, CreatedAt: time.Now(),
 		}
 		a.saveWorkBuddySession(start.State, base, proxy)
+	case "teleagent":
+		// 登录无需 PKCE/state：登录入口打开后，浏览器最终跳到
+		// `…/superCowork/sapi/cowork/auth?code=…&token=…`，token 直接在 URL 里。
+		s := teleagent.NewLoginSession()
+		sess = &provider.OAuthPendingSession{
+			Engine: engineName, SessionID: s.SessionID,
+			AuthURL: s.AuthURL, Proxy: proxy, CreatedAt: time.Now(),
+		}
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持 OAuth 授权"})
 		return
@@ -744,6 +771,23 @@ func (a *API) handleOAuthExchange(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"account": acc, "email": email})
+	case "teleagent":
+		// 回调 URL 里直接带 token，无需换码。设备/安装指纹与 apiKey/版本由
+		// provider.addTeleAgentAccount 兜底生成（或从已读到的旧凭据合并）。
+		token := teleagent.ExtractToken(code)
+		if strings.TrimSpace(token) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "回调 URL 里没有 token 参数"})
+			return
+		}
+		acc, err := a.mgr.AddAccountFromStorageState(provider.AccountInput{
+			Engine: "teleagent", Label: req.Label, Email: req.Email,
+			Credentials: json.RawMessage(mustJSON(teleagent.Credentials{Token: token})),
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"account": acc})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + engineName + " 不支持 code 交换"})
 	}
@@ -855,6 +899,42 @@ func (a *API) handleCheckAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleAccountCheckIn 立即签到（teleagent / workbuddy 国服）。
+func (a *API) handleAccountCheckIn(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	result, err := a.mgr.AccountCheckIn(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
+// handleAccountAutoCheckIn 开关自动签到（teleagent / workbuddy 国服）。
+func (a *API) handleAccountAutoCheckIn(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := a.mgr.SetAccountAutoCheckIn(id, req.Enabled); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // handleDeleteAccount 删除账号。
 func (a *API) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -887,19 +967,19 @@ func (a *API) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	charged24h := map[int64]int64{}
 	if breakdown, err := a.st.UsageBreakdown(store.UsageFilter{Since: since}); err == nil {
 		for _, row := range breakdown {
-			charged24h[row.KeyID] += row.ChargedTokens
+			charged24h[row.KeyID] += row.CostMicros
 		}
 	}
 	type keyView struct {
 		store.APIKey
-		Requests24h      int64  `json:"requests_24h"`
-		ChargedTokens24h int64  `json:"charged_tokens_24h"`
-		OwnerEmail       string `json:"owner_email,omitempty"`
+		Requests24h   int64  `json:"requests_24h"`
+		CostMicros24h int64  `json:"cost_micros_24h"`
+		OwnerEmail    string `json:"owner_email,omitempty"`
 	}
 	emails, _ := a.st.UserEmails()
 	out := make([]keyView, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key], ChargedTokens24h: charged24h[k.ID], OwnerEmail: emails[k.UserID]})
+		out = append(out, keyView{APIKey: k, Requests24h: usageByKey[k.Key], CostMicros24h: charged24h[k.ID], OwnerEmail: emails[k.UserID]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }
@@ -948,7 +1028,7 @@ func (a *API) handlePatchKey(w http.ResponseWriter, r *http.Request) {
 	}
 	update := req.update()
 	if update.Empty() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请至少提供 enabled、name、token_limit、multiplier 或 reset_usage 之一"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请至少提供 enabled、name、cost_limit、multiplier 或 reset_usage 之一"})
 		return
 	}
 	if err := req.validate(); err != nil {
@@ -999,7 +1079,7 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		totals.PromptTokens += row.PromptTokens
 		totals.CompletionTokens += row.CompletionTokens
 		totals.TotalTokens += row.TotalTokens
-		totals.ChargedTokens += row.ChargedTokens
+		totals.CostMicros += row.CostMicros
 		totals.EstimatedRequests += row.EstimatedRequests
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1009,7 +1089,7 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		"totals": map[string]any{
 			"requests": totals.Requests, "success_requests": totals.SuccessRequests,
 			"prompt_tokens": totals.PromptTokens, "completion_tokens": totals.CompletionTokens,
-			"total_tokens": totals.TotalTokens, "charged_tokens": totals.ChargedTokens,
+			"total_tokens": totals.TotalTokens, "cost_micros": totals.CostMicros,
 			"estimated_requests": totals.EstimatedRequests,
 		},
 	})

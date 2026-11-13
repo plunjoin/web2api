@@ -106,22 +106,23 @@ go build -o web2api.exe .
 
 | 管理台页面 | 能力 |
 |---|---|
-| 概览 | 上游账号可用数、24h 请求与计费 Token、用户数与活跃度、用户余额合计、30 天充值/消耗、未使用兑换码、14 天趋势、模型与 Key 消耗排行 |
+| 概览 | 上游账号可用数、24h 请求与消耗金额、用户数与活跃度、用户余额合计、30 天充值/消耗、未使用兑换码、14 天趋势、模型与 Key 消耗排行 |
 | 用户 | 搜索/筛选、点击查看详情（Key、最近流水、7 天用量）、新建用户、调整余额（必填备注）、修改角色与用户倍率、重置密码、停用、删除 |
 | 兑换码 | 批量生成（面值/数量/批次/有效期/备注）、生成后一键复制或下载 CSV、按状态/批次筛选与导出、停用/整批停用/删除未使用的码、查看兑换人 |
 | 余额流水 | 全部用户的余额变动（变动前后余额），按用户/类型/时间/关键词筛选，入账与出账合计 |
 | 号池账号 | **运行时加号/删号/启停（不重启即生效）**：Gemini 号填 Cookie；AI Studio 粘贴 `storage-state.json`；订阅引擎 OAuth/粘贴 token；**第三方 Key** 填 Base URL + API Key；实时状态与健康检测 |
-| API 密钥 | 管理员 Key 与用户 Key，**Token 额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、清零已用额度、重新生成 |
-| 用量 | 按 Key × 模型汇总、趋势图（计费 Token/总 Token/请求）、逐请求明细与扣费计算过程、对用户请求退款、CSV 导出 |
+| API 密钥 | 管理员 Key 与用户 Key，**金额额度、Key 倍率、过期时间、模型白名单、每分钟请求上限**、清零已用额度、重新生成 |
+| 用量 | 按 Key × 模型汇总、趋势图（费用/总 Token/请求）、逐请求明细与扣费计算过程、对用户请求退款、CSV 导出 |
+| 计费 | 按模型设置人民币单价（元 / 百万 Token，输入/输出/缓存分别定价），默认单价与实时汇率参考 |
 | 模型与定价 | 模型目录、默认倍率 `*`、逐模型倍率行内编辑与恢复默认；**按引擎分组折叠**展示，勾选或整组**批量上下架**（含「全部开放/全部下架」一键操作，不可用时下游 `/v1/models` 不可见）；**模型检查**与上下架 |
-| 设置 | 开放注册、注册赠送、新用户默认倍率、每人 Key 上限、视频计费、不计量接口开关、站点名与公告、版本与一键升级 |
+| 设置 | 开放注册、注册赠送（元）、新用户默认倍率、每人 Key 上限、视频每秒费用（元）、美元参考汇率、不计量接口开关、站点名与公告、版本与一键升级 |
 | 接口文档 | 网关 API 与管理 API 的 OpenAPI 3.1 浏览、搜索与导出 |
 
 | 用户控制台页面 | 能力 |
 |---|---|
 | 概览 | 余额、今日/7 天消耗、14 天趋势、模型分布、最近请求、接入示例、公告 |
 | API 密钥 | 创建（可设额度上限）、复制、改名、停用、重新生成、删除 |
-| 用量明细 / 账单 | 每次请求的 Token 与扣费过程；余额流水（充值、扣费、退款、调整） |
+| 用量明细 / 账单 | 每次请求的 Token、缓存命中与人民币费用；余额流水（充值、扣费、退款、调整） |
 | 兑换充值 | 输入兑换码即时到账，查看兑换记录 |
 | 模型与价格 / 账号设置 | 可用模型与对自己生效的倍率；昵称与密码 |
 
@@ -183,14 +184,17 @@ PUT    /admin/api/accounts/{id}/credentials        更新 Gemini Cookie {psid, p
 POST   /admin/api/accounts/{id}/check              触发健康检测
 DELETE /admin/api/accounts/{id}                     删除号（出池+删库+删凭据）
 GET    /admin/api/keys                             Key 列表（含额度、倍率、限制与 24h 用量）
-POST   /admin/api/keys                             {name, token_limit?, multiplier?, expires_at?, allowed_models?, rpm_limit?} → 生成 sk- Key
-PATCH  /admin/api/keys/{id}                        任意组合 {enabled, name, token_limit, multiplier, reset_usage, expires_at, allowed_models, rpm_limit}
+POST   /admin/api/keys                             {name, cost_limit?, multiplier?, expires_at?, allowed_models?, rpm_limit?} → 生成 sk- Key
+PATCH  /admin/api/keys/{id}                        任意组合 {enabled, name, cost_limit, multiplier, reset_usage, expires_at, allowed_models, rpm_limit}
 POST   /admin/api/keys/{id}/regenerate             换发新密钥（旧密钥立即失效，设置保留）
 DELETE /admin/api/keys/{id}
 GET    /admin/api/usage?days=7&key_id&model        用量聚合（最大 90 天）：usage（旧口径）+ breakdown + totals
 GET    /admin/api/usage/records?days&key_id&model&limit&offset   逐请求明细（每页最多 500）
 GET    /admin/api/usage/timeseries?days&key_id&model             时间序列（days=1 按小时，否则按天）
 GET    /admin/api/usage/export.csv?days&key_id&model             导出明细 CSV（Key 脱敏）
+GET    /admin/api/prices                           模型单价（元/百万 Token）、默认单价、可选模型、汇率
+PUT    /admin/api/prices                           {model, input, output, cache_read?} 设置模型单价（model 为 * 时设置默认价）
+DELETE /admin/api/prices/{model}                   删除单独单价，回落到默认
 GET    /admin/api/multipliers                      模型倍率列表、默认倍率、可选模型、计费公式
 PUT    /admin/api/multipliers                      {model, multiplier}（model 为 * 时设置默认倍率）
 DELETE /admin/api/multipliers/{model}              删除单独倍率，回落到默认
@@ -214,21 +218,22 @@ GET/PUT             /admin/api/settings                  平台设置（开放�
 
 `/admin/api/auth/login` 与 `/api/auth/login` 是同一个登录接口：root 管理员和平台用户都用邮箱密码登录。
 
-### Token 额度与倍率
+### 计费、金额额度与倍率
 
 - 每次 `/v1/chat/completions` 请求记录一条明细：`prompt_tokens`、`completion_tokens`、`total_tokens`。
   AI Studio 和 upstream 引擎返回的真实用量直接采用；拿不到时（Gemini Web、流式响应等）按文本长度估算，
   明细中 `estimated: true`，管理台显示「估算」。
-- 计费：`charged_tokens = ⌈total_tokens × 模型倍率 × Key 倍率 × 用户倍率⌉`。模型倍率按「精确模型 → `*` 默认 → 1」查找；
+- 计费：`cost_micros = ⌈(未缓存输入 × 输入单价 + 缓存输入 × 缓存单价 + 输出 × 输出单价) × 模型倍率 × Key 倍率 × 用户倍率⌉`。
+  单价为人民币元 / 百万 Token（数值上等于微元 / Token），按「精确模型 → `*` 默认 → ¥1」查找，可在管理台「计费」页维护；
   Key 倍率即分组默认倍率（默认 1）；用户倍率只对用户自己创建的 Key 生效（管理员 Key 恒为 1）。失败请求不计费。
 - 用户 Key 的扣费在写用量记录的同一个事务里从用户余额扣除，并写一条余额流水；余额 ≤ 0 后返回
   `402 {"error":{"type":"insufficient_quota","code":"insufficient_balance"}}`。管理员 Key 不涉及余额，行为不变。
-- Key 的 `token_limit > 0` 时，`tokens_used ≥ token_limit` 的新请求返回
-  `429 {"error":{"type":"insufficient_quota","code":"token_quota_exceeded",...}}`，并附带
-  `X-Web2api-Token-Limit` / `X-Web2api-Tokens-Used` 响应头。扣减发生在请求完成后，所以越线的那次请求（以及并发请求）可能略超额度。
+- Key 的 `cost_limit > 0` 时，`cost_used ≥ cost_limit` 的新请求返回
+  `429 {"error":{"type":"insufficient_quota","code":"cost_limit_exceeded",...}}`，并附带
+  `X-Web2api-Cost-Limit` / `X-Web2api-Cost-Used` 响应头。扣减发生在请求完成后，所以越线的那次请求（以及并发请求）可能略超额度。
 - 其他限制：过期 `401 key_expired`；模型不在白名单 `403 model_not_allowed`（聊天、视频、Gemini 原生路径中的 `models/{id}` 与 JSON 体 `model` 都会检查）；
   超过每分钟上限 `429 rpm_limit_exceeded`（含 `Retry-After`）。
-- 只有 `/v1/chat/completions` 计量 Token；`/v1/videos`、多模态透传与 Gemini 原生路由受 Key 的启停、过期、额度、白名单与 RPM 约束，但不产生 Token 明细。
+- 只有 `/v1/chat/completions` 产生按 Token 的费用明细；`/v1/videos` 按秒 × 视频每秒单价扣费；多模态透传与 Gemini 原生路由受 Key 的启停、过期、额度、白名单与 RPM 约束。
 
 ### 前端构建
 
@@ -276,10 +281,10 @@ curl -X POST http://localhost:8800/admin/api/keys \
 curl "http://localhost:8800/admin/api/usage?days=30" \
   -H "Authorization: Bearer $ADMIN_JWT"
 
-# 创建限额 Key：100 万计费 Token、0.5 倍、30 天后过期、只允许 gemini-3.5-* 模型、每分钟 60 次
+# 创建限额 Key：¥1.00 额度、0.5 倍、30 天后过期、只允许 gemini-3.5-* 模型、每分钟 60 次
 curl -X POST http://localhost:8800/admin/api/keys \
   -H "Authorization: Bearer $ADMIN_JWT" -H "Content-Type: application/json" \
-  -d "{\"name\":\"团队A\",\"token_limit\":1000000,\"multiplier\":0.5,\"expires_at\":$(( $(date +%s) + 30*86400 )),\"allowed_models\":[\"gemini-3.5-*\"],\"rpm_limit\":60}"
+  -d "{\"name\":\"团队A\",\"cost_limit\":1000000,\"multiplier\":0.5,\"expires_at\":$(( $(date +%s) + 30*86400 )),\"allowed_models\":[\"gemini-3.5-*\"],\"rpm_limit\":60}"
 
 # 设置模型倍率（* 为默认倍率）
 curl -X PUT http://localhost:8800/admin/api/multipliers \

@@ -1,6 +1,6 @@
 # 用户、余额与兑换码
 
-web2api 可以作为对外运营的 API 平台使用：用户自助注册（或由管理员创建），在控制台创建自己的 API Key，调用按 Token 从账户余额扣费，余额通过兑换码或管理员调整充值。管理员自己的 Key（在管理台「API 密钥」创建，不属于任何用户）行为与旧版本完全一致，不扣任何余额。
+web2api 可以作为对外运营的 API 平台使用：用户自助注册（或由管理员创建），在控制台创建自己的 API Key，调用按人民币从账户余额扣费，余额通过兑换码或管理员调整充值。管理员自己的 Key（在管理台「API 密钥」创建，不属于任何用户）行为与旧版本完全一致，不扣任何余额。
 
 ## 入口
 
@@ -9,22 +9,25 @@ web2api 可以作为对外运营的 API 平台使用：用户自助注册（或�
 | `/login` | 统一登录页。初始化时设置的管理员（root）和平台用户都从这里登录 |
 | `/register` | 自助注册，只有管理员在「设置」里开启「开放注册」后可用（默认关闭） |
 | `/console` | 用户控制台：概览、API 密钥、用量明细、账单、兑换充值、模型与价格、账号设置 |
-| `/admin` | 管理台：概览、用户、兑换码、余额流水、号池账号、API 密钥、用量、模型与定价、设置、接口文档 |
+| `/admin` | 管理台：概览、用户、兑换码、余额流水、号池账号、API 密钥、用量、计费、模型与定价、设置、接口文档 |
 
 角色分为 `admin` 与 `user`。初始化时创建的 root 管理员只进入管理台；被设为 `admin` 角色的平台用户可以同时使用控制台和管理台。
 
 ## 计费
 
 ```
-扣费 Token = ⌈总 Token × 模型倍率 × Key 倍率 × 用户倍率⌉
+费用（微元）= ⌈(未缓存输入 × 输入单价 + 缓存输入 × 缓存单价 + 输出 × 输出单价) × 模型倍率 × Key 倍率 × 用户倍率⌉
 ```
 
+金额一律以人民币结算，数据库中存整数微元（1 元 = 1000000 微元），界面上按 ¥ 显示并附 ≈$ 参考价。
+
+- 单价在「计费」页设置：人民币元 / 百万 Token（数值上等于微元 / Token），支持默认单价与逐模型覆盖；缓存价留空表示按输入价计费。
 - 模型倍率在「模型与定价」设置（`*` 为默认倍率）；Key 倍率在 Key 上设置；用户倍率在用户详情里设置，新用户的默认值在「设置」里调整。
 - 扣费和用量记录在同一个数据库事务里完成，同时写一条余额流水（`kind = usage`），记录变动前后余额。
 - 余额 ≤ 0 时，该用户的所有 Key 返回 `402 insufficient_balance`。跨过 0 的那一次请求会照常完成并扣成负数（请求完成后才知道实际 Token），之后的请求被拒绝。
-- Key 的 `token_limit`、过期时间、模型白名单、RPM 限制对用户 Key 同样生效。
+- Key 的 `cost_limit`（金额额度）、过期时间、模型白名单、RPM 限制对用户 Key 同样生效。
 - 用户 Key 默认不能调用无法按 Token 计费的接口（Gemini 原生接口、多模态透传）；在「设置」里打开「允许用户密钥使用不计量接口」才放行。
-- 用户 Key 调用 `/v1/videos` 时按 `秒数 × 视频每秒计费 Token` 扣费；该值为 0（默认）时用户 Key 不能生成视频。
+- 用户 Key 调用 `/v1/videos` 时按 `秒数 × 视频每秒费用（元）` 扣费；该值为 0（默认）时用户 Key 不能生成视频。
 
 ## 余额流水
 
@@ -67,8 +70,8 @@ POST   /api/auth/logout
 GET    /api/auth/me
 GET    /api/user/overview                 余额、今日/7 天消耗、14 天趋势、最近请求
 GET    /api/user/keys                     我的 Key 与每人上限
-POST   /api/user/keys                     {name, token_limit?}
-PATCH  /api/user/keys/{id}                {name?, enabled?, token_limit?}
+POST   /api/user/keys                     {name, cost_limit?}
+PATCH  /api/user/keys/{id}                {name?, enabled?, cost_limit?}
 DELETE /api/user/keys/{id}
 POST   /api/user/keys/{id}/regenerate
 GET    /api/user/usage/records?days&key_id&model&limit&offset
@@ -101,5 +104,5 @@ DELETE /admin/api/redeem-codes/{id}       仅限未兑换的码
 POST   /admin/api/redeem-codes/batches/{batch}/disable
 GET    /admin/api/settings
 PUT    /admin/api/settings                {registration_open?, signup_bonus?, default_user_multiplier?, max_keys_per_user?,
-                                           site_name?, announcement?, video_tokens_per_second?, user_unmetered_routes?}
+                                           site_name?, announcement?, video_price_micros_per_second?, signup_bonus_micros?, cny_per_usd?, user_unmetered_routes?}
 ```

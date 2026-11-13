@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/provider"
 )
@@ -99,10 +100,11 @@ func (s *Server) handleMusicGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	res, chatErr := s.mgr.Chat(r.Context(), chatReq)
+	ctx := engine.WithAccountTracking(r.Context())
+	res, chatErr := s.mgr.Chat(ctx, chatReq)
 	if chatErr != nil {
 		s.logger.Printf("[music] 请求失败 model=%q: %v", chatReq.Model, chatErr)
-		s.recordChat(r, chatReq, res, false, chatErr, start, path)
+		s.recordChat(ctx, r, chatReq, res, false, chatErr, start, path, upstreamErrorStatus(chatErr), 0)
 		if provider.IsModelDisabled(chatErr) {
 			writeError(w, http.StatusNotFound, chatErr.Error(), "invalid_request_error", "model_unavailable")
 			return
@@ -119,13 +121,13 @@ func (s *Server) handleMusicGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec := s.recordChat(r, chatReq, res, false, nil, start, path)
+	rec := s.recordChat(ctx, r, chatReq, res, false, nil, start, path, http.StatusOK, 0)
 	usage := resolveUsage(chatReq, res).Normalize()
 	w.Header().Set("X-Web2api-Usage-Source", usageSource(rec.Estimated))
 	w.Header().Set("X-Web2api-Multiplier", strconv.FormatFloat(rec.Multiplier, 'f', -1, 64))
-	w.Header().Set("X-Web2api-Charged-Tokens", strconv.FormatInt(rec.ChargedTokens, 10))
-	if rec.UserID > 0 && rec.ChargedTokens > 0 {
-		w.Header().Set("X-Web2api-Balance", strconv.FormatInt(rec.BalanceAfter, 10))
+	w.Header().Set("X-Web2api-Cost-Micros", strconv.FormatInt(rec.CostMicros, 10))
+	if rec.UserID > 0 && rec.CostMicros > 0 {
+		w.Header().Set("X-Web2api-Balance-Micros", strconv.FormatInt(rec.BalanceAfter, 10))
 	}
 
 	items := extractMusicItemsFromText(res.Text)

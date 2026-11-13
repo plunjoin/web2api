@@ -63,16 +63,16 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	if seconds == 0 {
 		seconds = 4
 	}
-	// 用户 Key：视频没有 Token 用量，按「秒 × 每秒计费 Token」在创建成功后扣费；未配置单价时不开放。
-	var videoPrice int64
+	// 用户 Key：视频没有 Token 用量，按「秒 × 每秒金额（微元）」在创建成功后扣费；未配置单价时不开放。
+	var videoPriceMicros int64
 	if info, ok := keyInfoFrom(r); ok && info.UserID > 0 {
 		settings, err := s.st.GetPlatformSettings()
-		if err != nil || settings.VideoTokensPerSecond <= 0 {
+		if err != nil || settings.VideoPriceMicrosPerSecond <= 0 {
 			writeError(w, http.StatusForbidden, "Video generation is not enabled for user API keys (视频接口未对用户 Key 开放).",
 				"permission_error", "endpoint_not_allowed")
 			return
 		}
-		videoPrice = settings.VideoTokensPerSecond
+		videoPriceMicros = settings.VideoPriceMicrosPerSecond
 	}
 	start := time.Now()
 	operation, err := s.mgr.GenerateVideo(r.Context(), aistudio.VideoRequest{
@@ -85,11 +85,11 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 		writeVideoError(w, err)
 		return
 	}
-	if videoPrice > 0 {
+	if videoPriceMicros > 0 {
 		info, _ := keyInfoFrom(r)
 		if _, err := s.st.RecordRequest(store.UsageRecord{
 			KeyID: info.ID, APIKey: s.currentKey(r), Engine: "aistudio", Model: req.Model, Endpoint: "/v1/videos",
-			Success: true, TotalTokens: int64(seconds) * videoPrice, LatencyMs: time.Since(start).Milliseconds(),
+			Success: true, FixedCostMicros: int64(seconds) * videoPriceMicros, LatencyMs: time.Since(start).Milliseconds(),
 		}); err != nil {
 			s.logger.Printf("[video] 记录视频扣费失败 model=%q: %v", req.Model, err)
 		}

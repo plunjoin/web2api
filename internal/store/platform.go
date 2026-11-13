@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net/mail"
 	"strconv"
@@ -14,7 +15,7 @@ import (
 
 // ==================== 用户、余额、账单流水与兑换码 ====================
 //
-// 余额以「计费 Token」为单位（与 usage_records.charged_tokens 同口径）。
+// 余额以「微元」为单位（1 元 = 1000000 微元，与 usage_records.cost_micros 同口径）。
 // 每一次余额变动都在同一事务里写一条 ledger 记录（变动前/后余额），
 // 因此任何时刻都满足：users.balance = Σ ledger.amount（按用户）。
 
@@ -242,7 +243,7 @@ func (s *Store) GetUserByEmail(email string) (User, error) {
 type UserSummary struct {
 	User
 	KeyCount      int64 `json:"key_count"`
-	Charged7d     int64 `json:"charged_7d"`
+	Cost7d        int64 `json:"cost_7d"`
 	Requests7d    int64 `json:"requests_7d"`
 	TotalRecharge int64 `json:"total_recharge"`
 }
@@ -283,7 +284,7 @@ func (s *Store) ListUsers(f UserFilter) ([]UserSummary, int64, error) {
 	rows, err := s.db.Query(`SELECT u.id, u.email, u.nickname, u.password_hash, u.role, u.enabled, u.balance, u.multiplier, u.note,
 		u.token_version, u.created_at, u.updated_at, u.last_login_at,
 		(SELECT COUNT(*) FROM api_keys k WHERE k.user_id = u.id),
-		(SELECT COALESCE(SUM(r.charged_tokens), 0) FROM usage_records r WHERE r.user_id = u.id AND r.ts >= ?),
+		(SELECT COALESCE(SUM(r.cost_micros), 0) FROM usage_records r WHERE r.user_id = u.id AND r.ts >= ?),
 		(SELECT COUNT(*) FROM usage_records r WHERE r.user_id = u.id AND r.ts >= ?),
 		(SELECT COALESCE(SUM(l.amount), 0) FROM ledger l WHERE l.user_id = u.id AND l.kind IN ('adjust','redeem','signup_bonus') AND l.amount > 0)
 		FROM users u`+where+` ORDER BY u.id DESC LIMIT ? OFFSET ?`, append([]any{since, since}, append(args, f.Limit, f.Offset)...)...)
@@ -296,7 +297,7 @@ func (s *Store) ListUsers(f UserFilter) ([]UserSummary, int64, error) {
 		var u UserSummary
 		var enabled int
 		if err := rows.Scan(&u.ID, &u.Email, &u.Nickname, &u.PasswordHash, &u.Role, &enabled, &u.Balance, &u.Multiplier, &u.Note,
-			&u.TokenVersion, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.KeyCount, &u.Charged7d, &u.Requests7d, &u.TotalRecharge); err != nil {
+			&u.TokenVersion, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.KeyCount, &u.Cost7d, &u.Requests7d, &u.TotalRecharge); err != nil {
 			return nil, 0, err
 		}
 		u.Enabled = enabled != 0
@@ -473,9 +474,9 @@ func (s *Store) RefundUsage(recordID int64, note, operator string) (LedgerEntry,
 		return LedgerEntry{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var userID, keyID, charged, refunded int64
-	err = tx.QueryRow(`SELECT user_id, key_id, charged_tokens, refunded_tokens FROM usage_records WHERE id = ?`, recordID).
-		Scan(&userID, &keyID, &charged, &refunded)
+	var userID, keyID, cost, refunded int64
+	err = tx.QueryRow(`SELECT user_id, key_id, cost_micros, refunded_micros FROM usage_records WHERE id = ?`, recordID).
+		Scan(&userID, &keyID, &cost, &refunded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LedgerEntry{}, ErrNotFound
 	}
@@ -485,20 +486,20 @@ func (s *Store) RefundUsage(recordID int64, note, operator string) (LedgerEntry,
 	if refunded > 0 {
 		return LedgerEntry{}, ErrAlreadyRefunded
 	}
-	if userID == 0 || charged <= 0 {
+	if userID == 0 || cost <= 0 {
 		return LedgerEntry{}, ErrNothingToRefund
 	}
 	if strings.TrimSpace(note) == "" {
 		note = fmt.Sprintf("退回请求 #%d 的扣费", recordID)
 	}
-	entry, err := applyBalanceTx(tx, userID, charged, LedgerRefund, recordID, note, operator, true)
+	entry, err := applyBalanceTx(tx, userID, cost, LedgerRefund, recordID, note, operator, true)
 	if err != nil {
 		return LedgerEntry{}, err
 	}
-	if _, err := tx.Exec(`UPDATE usage_records SET refunded_tokens = ? WHERE id = ?`, charged, recordID); err != nil {
+	if _, err := tx.Exec(`UPDATE usage_records SET refunded_micros = ? WHERE id = ?`, cost, recordID); err != nil {
 		return LedgerEntry{}, err
 	}
-	if _, err := tx.Exec(`UPDATE api_keys SET tokens_used = MAX(tokens_used - ?, 0) WHERE id = ?`, charged, keyID); err != nil {
+	if _, err := tx.Exec(`UPDATE api_keys SET cost_used = MAX(cost_used - ?, 0) WHERE id = ?`, cost, keyID); err != nil {
 		return LedgerEntry{}, err
 	}
 	return entry, tx.Commit()
@@ -938,9 +939,9 @@ func MaskCode(code string) string {
 // ---------- 用户 Key ----------
 
 // CreateUserKey 为用户创建 Key（受每人 Key 数上限约束；与计数在同一事务内）。
-func (s *Store) CreateUserKey(userID int64, name string, tokenLimit int64, maxKeys int) (APIKey, error) {
-	if tokenLimit < 0 {
-		return APIKey{}, errors.New("token_limit 不能为负数（0 表示不限）")
+func (s *Store) CreateUserKey(userID int64, name string, costLimit int64, maxKeys int) (APIKey, error) {
+	if costLimit < 0 {
+		return APIKey{}, errors.New("cost_limit 不能为负数（0 表示不限）")
 	}
 	if len(name) > 200 {
 		return APIKey{}, errors.New("名称最长 200 字节")
@@ -963,8 +964,8 @@ func (s *Store) CreateUserKey(userID int64, name string, tokenLimit int64, maxKe
 			return APIKey{}, fmt.Errorf("%w（每个用户最多 %d 个）", ErrKeyLimitReached, maxKeys)
 		}
 	}
-	res, err := tx.Exec(`INSERT INTO api_keys (key, name, enabled, created_at, token_limit, user_id) VALUES (?, ?, 1, ?, ?, ?)`,
-		key, strings.TrimSpace(name), now(), tokenLimit, userID)
+	res, err := tx.Exec(`INSERT INTO api_keys (key, name, enabled, created_at, cost_limit, user_id) VALUES (?, ?, 1, ?, ?, ?)`,
+		key, strings.TrimSpace(name), now(), costLimit, userID)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -1018,8 +1019,8 @@ func (s *Store) UserEmails() (map[int64]string, error) {
 type PlatformSettings struct {
 	// RegistrationOpen 是否开放自助注册（默认关闭，升级后的已有部署不会突然对外开放）。
 	RegistrationOpen bool `json:"registration_open"`
-	// SignupBonus 注册赠送余额（计费 Token）。
-	SignupBonus int64 `json:"signup_bonus"`
+	// SignupBonusMicros 注册赠送余额（微元）。
+	SignupBonusMicros int64 `json:"signup_bonus_micros"`
 	// DefaultUserMultiplier 新用户默认倍率。
 	DefaultUserMultiplier float64 `json:"default_user_multiplier"`
 	// MaxKeysPerUser 每个用户最多可创建的 Key 数。
@@ -1028,16 +1029,18 @@ type PlatformSettings struct {
 	SiteName string `json:"site_name"`
 	// Announcement 用户控制台顶部公告（可留空）。
 	Announcement string `json:"announcement"`
-	// VideoTokensPerSecond 用户 Key 创建视频时按秒扣的计费 Token（再乘模型/Key/用户倍率）。
+	// VideoPriceMicrosPerSecond 用户 Key 创建视频时按秒扣的金额（微元，再乘倍率）。
 	// 0 表示不向用户 Key 开放 /v1/videos（视频没有 Token 用量，避免免费使用）。
-	VideoTokensPerSecond int64 `json:"video_tokens_per_second"`
+	VideoPriceMicrosPerSecond int64 `json:"video_price_micros_per_second"`
+	// CNYPerUSD 人民币兑美元汇率，仅用于把人民币金额折算成 $ 参考价展示。
+	CNYPerUSD float64 `json:"cny_per_usd"`
 	// UserUnmeteredRoutes 是否允许用户 Key 调用不计 Token 的接口（Gemini 原生、多模态透传）。默认关闭。
 	UserUnmeteredRoutes bool `json:"user_unmetered_routes"`
 }
 
 // DefaultPlatformSettings 默认值。
 func DefaultPlatformSettings() PlatformSettings {
-	return PlatformSettings{RegistrationOpen: false, SignupBonus: 0, DefaultUserMultiplier: 1, MaxKeysPerUser: 20, SiteName: "web2api"}
+	return PlatformSettings{RegistrationOpen: false, SignupBonusMicros: 0, DefaultUserMultiplier: 1, MaxKeysPerUser: 20, SiteName: "web2api", CNYPerUSD: 7.2}
 }
 
 // GetPlatformSettings 读取设置（缺省项取默认值）。
@@ -1057,7 +1060,7 @@ func (s *Store) GetPlatformSettings() (PlatformSettings, error) {
 		case "registration_open":
 			out.RegistrationOpen = value == "true"
 		case "signup_bonus":
-			out.SignupBonus, _ = strconv.ParseInt(value, 10, 64)
+			out.SignupBonusMicros, _ = strconv.ParseInt(value, 10, 64)
 		case "default_user_multiplier":
 			if v, err := strconv.ParseFloat(value, 64); err == nil {
 				out.DefaultUserMultiplier = v
@@ -1070,10 +1073,14 @@ func (s *Store) GetPlatformSettings() (PlatformSettings, error) {
 			out.SiteName = value
 		case "announcement":
 			out.Announcement = value
-		case "video_tokens_per_second":
-			out.VideoTokensPerSecond, _ = strconv.ParseInt(value, 10, 64)
+		case "video_price_micros_per_second":
+			out.VideoPriceMicrosPerSecond, _ = strconv.ParseInt(value, 10, 64)
 		case "user_unmetered_routes":
 			out.UserUnmeteredRoutes = value == "true"
+		case "cny_per_usd":
+			if v, err := strconv.ParseFloat(value, 64); err == nil {
+				out.CNYPerUSD = v
+			}
 		}
 	}
 	return out, rows.Err()
@@ -1081,8 +1088,8 @@ func (s *Store) GetPlatformSettings() (PlatformSettings, error) {
 
 // SavePlatformSettings 校验并保存设置。
 func (s *Store) SavePlatformSettings(v PlatformSettings) (PlatformSettings, error) {
-	if v.SignupBonus < 0 || v.SignupBonus > MaxBalanceChange {
-		return v, errors.New("注册赠送必须是非负整数")
+	if v.SignupBonusMicros < 0 || v.SignupBonusMicros > MaxBalanceChange {
+		return v, errors.New("注册赠送必须是非负整数（微元）")
 	}
 	if err := ValidateMultiplier(v.DefaultUserMultiplier); err != nil {
 		return v, err
@@ -1100,18 +1107,22 @@ func (s *Store) SavePlatformSettings(v PlatformSettings) (PlatformSettings, erro
 	if utf8.RuneCountInString(v.Announcement) > 500 {
 		return v, errors.New("公告最长 500 字")
 	}
-	if v.VideoTokensPerSecond < 0 || v.VideoTokensPerSecond > 100_000_000 {
-		return v, errors.New("视频每秒计费 Token 需在 0–100000000 之间")
+	if v.VideoPriceMicrosPerSecond < 0 || v.VideoPriceMicrosPerSecond > 100_000_000 {
+		return v, errors.New("视频每秒金额需在 0–100000000 微元之间")
+	}
+	if math.IsNaN(v.CNYPerUSD) || math.IsInf(v.CNYPerUSD, 0) || v.CNYPerUSD < 0.1 || v.CNYPerUSD > 100 {
+		return v, errors.New("汇率需在 0.1–100 之间")
 	}
 	values := map[string]string{
-		"registration_open":       strconv.FormatBool(v.RegistrationOpen),
-		"signup_bonus":            strconv.FormatInt(v.SignupBonus, 10),
-		"default_user_multiplier": strconv.FormatFloat(v.DefaultUserMultiplier, 'f', -1, 64),
-		"max_keys_per_user":       strconv.Itoa(v.MaxKeysPerUser),
-		"site_name":               v.SiteName,
-		"announcement":            strings.TrimSpace(v.Announcement),
-		"video_tokens_per_second": strconv.FormatInt(v.VideoTokensPerSecond, 10),
-		"user_unmetered_routes":   strconv.FormatBool(v.UserUnmeteredRoutes),
+		"registration_open":             strconv.FormatBool(v.RegistrationOpen),
+		"signup_bonus":                  strconv.FormatInt(v.SignupBonusMicros, 10),
+		"default_user_multiplier":       strconv.FormatFloat(v.DefaultUserMultiplier, 'f', -1, 64),
+		"max_keys_per_user":             strconv.Itoa(v.MaxKeysPerUser),
+		"site_name":                     v.SiteName,
+		"announcement":                  strings.TrimSpace(v.Announcement),
+		"video_price_micros_per_second": strconv.FormatInt(v.VideoPriceMicrosPerSecond, 10),
+		"user_unmetered_routes":         strconv.FormatBool(v.UserUnmeteredRoutes),
+		"cny_per_usd":                   strconv.FormatFloat(v.CNYPerUSD, 'f', -1, 64),
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
