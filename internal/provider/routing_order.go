@@ -272,12 +272,8 @@ func (m *Manager) chatEnginePlan(ctx context.Context, req model.ChatRequest) ([]
 		}
 		return []engine.Engine{eng}, r, nil
 	}
-	// 未配置顺序时保持原有首选引擎，仅把它排到最前；配置了顺序则完全按顺序。
-	if !m.routingConfigured() {
-		if primary, _ := m.pickEngine(name); primary != nil {
-			list = moveEngineFirst(list, primary)
-		}
-	}
+	// 同名模型路由组：按组模式（默认智能）决定先试哪个供应商。
+	list = m.applyGroupRouting(name, list)
 	return list, req, nil
 }
 

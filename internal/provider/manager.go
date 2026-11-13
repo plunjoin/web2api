@@ -59,6 +59,11 @@ type Manager struct {
 	// 会话粘性（会话键 → 上次接单账号）。
 	affinity affinityCache
 
+	// 同名模型路由组：组键（归一化模型名）→ 模式，以及轮询计数。
+	groupMu     sync.RWMutex
+	groupModes  map[string]string
+	groupRotate sync.Map // 组键 → *atomic.Uint64
+
 	// 管理台「获取模型」保存的目录快照归属（canonical model → engine），带 TTL 缓存。
 	// 实时目录会随上游 /v3/config、账号重连等波动，快照是持久的归属记录。
 	snapMu       sync.RWMutex
@@ -98,6 +103,13 @@ func (m *Manager) register(name string, eng engine.Engine, pool accountPool) {
 	if pool != nil {
 		m.pools[name] = pool
 	}
+}
+
+// EngineOrder 引擎注册顺序（管理台供应商默认展示顺序）。
+func (m *Manager) EngineOrder() []string {
+	out := make([]string, len(m.engineOrder))
+	copy(out, m.engineOrder)
+	return out
 }
 
 // Engines 全部引擎。
@@ -247,6 +259,7 @@ func (m *Manager) Init(ctx context.Context) error {
 	// 账号装配完成后再下发管理台保存的路由顺序，新增账号顺延到末尾。
 	m.ReloadRoutingOrder()
 	m.ReloadAffinity()
+	m.ReloadRoutingGroupModes()
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
 	}

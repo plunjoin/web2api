@@ -95,6 +95,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	// 引擎元数据与订阅引擎 OAuth 授权
 	mux.HandleFunc("GET /admin/api/routing", a.auth(a.handleRouting))
 	mux.HandleFunc("PUT /admin/api/routing", a.auth(a.handlePutRouting))
+	mux.HandleFunc("GET /admin/api/route-groups", a.auth(a.handleRouteGroups))
+	mux.HandleFunc("PUT /admin/api/route-groups", a.auth(a.handlePutRouteGroup))
 	mux.HandleFunc("GET /admin/api/engines", a.auth(a.handleEngineMeta))
 	mux.HandleFunc("POST /admin/api/custom/models", a.auth(a.handleProbeCustomModels))
 	mux.HandleFunc("POST /admin/api/oauth/{engine}/authorize", a.auth(a.handleOAuthAuthorize))
@@ -262,6 +264,10 @@ func openAPISpec() map[string]any {
 				"get": map[string]any{"tags": []string{"账号"}, "summary": "账号路由顺序（按供应商分组）", "description": "返回当前保存的账号顺序；configured=false 表示使用默认顺序（供应商与账号的添加顺序）。供应商之间、供应商内部账号之间都按 order 的先后尝试，前一个失败才换下一个。", "responses": map[string]any{"200": response("configured、order、suppliers")}},
 				"put": map[string]any{"tags": []string{"账号"}, "summary": "保存账号路由顺序与会话粘性", "description": "accounts 为全局平铺的账号 ID 列表，按顺序优先；传空数组恢复默认顺序。affinity 可选：off 关闭会话粘性，session 让同一会话优先留在上次接单的账号；留空表示只改顺序。未知或已删除的 ID 会被忽略。", "requestBody": body("RoutingOrderInput"), "responses": map[string]any{"200": response("configured、order、suppliers、affinity"), "400": response("参数错误")}},
 			},
+			"/admin/api/route-groups": map[string]any{
+				"get": map[string]any{"tags": []string{"账号"}, "summary": "同名模型路由组（自动成组）", "description": "目录快照里同一个模型名被两个及以上供应商提供时自动成组。返回每组的成员、默认模式与可选模式（smart / order / rotate / cheap）。", "responses": map[string]any{"200": response("groups、modes")}},
+				"put": map[string]any{"tags": []string{"账号"}, "summary": "设置同名模型路由组的模式", "description": "model 为模型 ID（归一化后作为组键），mode 为 smart（默认）/ order / rotate / cheap。", "requestBody": body("RouteGroupModeInput"), "responses": map[string]any{"200": response("ok、groups、modes"), "400": response("参数错误")}},
+			},
 			"/admin/api/custom/models":            map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "探测第三方供应商模型列表", "description": "用 base_url + api_key 调用上游 /v1/models，添加账号前预览可用模型。", "requestBody": body("CustomProbeInput"), "responses": map[string]any{"200": response("models"), "400": response("探测失败")}}},
 			"/admin/api/oauth/{engine}/authorize": map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "生成订阅引擎 OAuth 授权链接", "description": "支持 codex（OpenAI）、antigravity（Google）、workbuddy（腾讯 CodeBuddy 设备授权）。返回 auth_url 供浏览器打开。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("session_id、auth_url"), "400": response("引擎不支持 OAuth")}}},
 			"/admin/api/oauth/{engine}/exchange":  map[string]any{"post": map[string]any{"tags": []string{"账号"}, "summary": "授权码换 token 并加号（codex/antigravity）", "description": "把浏览器回调 URL（含 code）或裸授权码回填，服务端交换 refresh_token 并入池。", "requestBody": body("OAuthExchangeInput"), "responses": map[string]any{"200": response("account"), "400": response("参数或授权错误")}}},
@@ -317,6 +323,7 @@ func openAPISpec() map[string]any {
 				"LoginInput":             map[string]any{"type": "object", "required": []string{"email", "password"}, "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email"}, "password": map[string]any{"type": "string", "writeOnly": true}}},
 				"EnabledInput":           map[string]any{"type": "object", "required": []string{"enabled"}, "properties": map[string]any{"enabled": map[string]any{"type": "boolean", "description": "是否允许调度或调用"}}},
 				"RoutingOrderInput":      map[string]any{"type": "object", "description": "accounts 与 affinity 至少提供一个；只传 affinity 时只改会话粘性，不动已保存顺序", "properties": map[string]any{"accounts": map[string]any{"type": "array", "items": map[string]any{"type": "integer", "format": "int64"}, "description": "全局账号 ID 顺序，靠前的优先；空数组恢复默认顺序；缺省时保持现有顺序"}, "affinity": map[string]any{"type": "string", "enum": []string{"off", "session"}, "description": "会话粘性：off 关闭，session 同一会话优先留在上次接单的账号；缺省时保持不变"}}},
+				"RouteGroupModeInput":    map[string]any{"type": "object", "required": []string{"model", "mode"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；归一化（忽略 models/ 前缀与大小写）后作为组键"}, "mode": map[string]any{"type": "string", "enum": []string{provider.RouteGroupSmart, provider.RouteGroupOrder, provider.RouteGroupRotate, provider.RouteGroupCheap}, "description": "smart=智能（默认），order=按路由顺序，rotate=轮询，cheap=最便宜"}}},
 				"KeyInput":               map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "备注名，可留空"}, "cost_limit": costLimitSchema, "multiplier": keyMultiplierSchema, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
 				"KeyPatchInput":          map[string]any{"type": "object", "properties": map[string]any{"enabled": map[string]any{"type": "boolean"}, "name": map[string]any{"type": "string"}, "cost_limit": costLimitSchema, "multiplier": keyMultiplierSchema, "reset_usage": map[string]any{"type": "boolean", "description": "true 时把 cost_used 归零（保留用量明细）"}, "expires_at": expiresSchema, "allowed_models": allowedModelsSchema, "rpm_limit": rpmSchema}},
 				"MultiplierInput":        map[string]any{"type": "object", "required": []string{"model", "multiplier"}, "properties": map[string]any{"model": map[string]any{"type": "string", "description": "模型 ID；\"*\" 为默认倍率"}, "multiplier": map[string]any{"type": "number", "minimum": 0, "maximum": store.MaxMultiplier}}},

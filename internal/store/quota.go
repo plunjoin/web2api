@@ -431,6 +431,16 @@ func effectiveModelMultiplier(q queryRower, modelName, engineName string) (float
 	return modelMultiplierFor(q, DefaultModelKey)
 }
 
+// EffectiveModelMultiplier 返回某引擎接某个模型时的生效模型倍率：
+// 模型单独设置 → 该引擎的路由组倍率 → '*' 默认。用于「最便宜」路由排序。
+func (s *Store) EffectiveModelMultiplier(modelName, engineName string) float64 {
+	value, err := effectiveModelMultiplier(s.db, modelName, engineName)
+	if err != nil {
+		return 1
+	}
+	return value
+}
+
 func groupMultiplierFor(q queryRower, group string) (float64, bool, error) {
 	var value float64
 	err := q.QueryRow(`SELECT multiplier FROM group_multipliers WHERE group_key = ?`, group).Scan(&value)
