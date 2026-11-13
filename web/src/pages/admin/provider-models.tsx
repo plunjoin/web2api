@@ -10,7 +10,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { Pill, StatusDot } from '@/components/status'
 import { ModelKindPill } from '@/components/model-kind'
+import { ProviderIcon } from '@/components/provider-icon'
 import { api } from '@/lib/api'
+import { resolveProvider } from '@/lib/provider-presets'
 import { engineLabel, type ModelInfo } from '@/lib/types'
 
 type CheckResult = { model: string; ok: boolean; detail?: string; enabled: boolean }
@@ -156,13 +158,17 @@ export function ProviderModelsDialog({
   }
 
   const enabledCount = rows.filter((m) => m.enabled !== false).length
+  // 第三方 Key 显示识别出的厂商名，而不是整段 base_url。
+  const dialogTitle = engine === 'custom' ? resolveProvider('custom', provider || (catalogKey || '')).name : engine ? engineLabel(engine) : ''
+  const dialogIcon = engine === 'custom' ? resolveProvider('custom', provider || (catalogKey || '')).icon : engine ? resolveProvider(engine).icon : ''
 
   return (
     <Dialog open={!!engine} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="text-[15px]">
-            {catalogKey && catalogKey !== engine ? catalogKey.replace(/^custom\|/, '') : engine ? engineLabel(engine) : ''} 的模型
+          <DialogTitle className="flex items-center gap-2 text-[15px]">
+            <ProviderIcon icon={dialogIcon} name={dialogTitle} />
+            {dialogTitle} 的模型
           </DialogTitle>
           <DialogDescription className="text-[13px]">
             {engine === 'workbuddy' ? '此处管理 WorkBuddy 双发行版共享的引擎模型，测试可使用任一发行版的可用账号。' : '拉取与测试仅使用这个供应商，不转投其他来源。'}新模型默认未开放；开放开关对所有供应商的同名模型全局生效，测试不改变开放状态。

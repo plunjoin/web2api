@@ -14,8 +14,10 @@ import { EmptyState, ErrorState, TableSkeleton } from '@/components/states'
 import { type RowAction } from '@/components/row-menu'
 import { accountHealth } from '@/components/account-status'
 import { Field } from '@/components/fields'
+import { ProviderIcon } from '@/components/provider-icon'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
+import { ENGINE_PROVIDERS } from '@/lib/provider-presets'
 import { canonicalEngine, engineLabel, type Account, type EngineName } from '@/lib/types'
 import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddKiroDialog, AddTeleAgentDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
 import { ProviderModelsDialog } from './provider-models'
@@ -166,9 +168,12 @@ export default function AdminAccounts() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
         {addMenuItems.map((item) => (
-          <DropdownMenuItem key={item.key} onSelect={() => setAdding(item.key)} className="flex-col items-start gap-0.5">
-            <span className="text-[13px]">{item.title}</span>
-            <span className="text-[11px] text-muted-foreground">{item.hint}</span>
+          <DropdownMenuItem key={item.key} onSelect={() => setAdding(item.key)} className="items-start gap-2.5 py-2">
+            <ProviderIcon icon={ENGINE_PROVIDERS[item.key]?.icon} name={item.title} size="md" className="mt-0.5" />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[13px]">{item.title}</span>
+              <span className="text-[11px] text-muted-foreground">{item.hint}</span>
+            </span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

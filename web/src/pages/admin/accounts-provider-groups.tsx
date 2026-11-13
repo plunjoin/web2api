@@ -4,8 +4,10 @@ import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { RowMenu, type RowAction } from '@/components/row-menu'
 import { AccountStatus, CooldownLines, TierPill, accountHealth } from '@/components/account-status'
-import { StatusDot } from '@/components/status'
+import { Pill, StatusDot } from '@/components/status'
+import { ProviderIcon } from '@/components/provider-icon'
 import { canonicalEngine, engineLabel, type Account, type QuotaWindow } from '@/lib/types'
+import { resolveProvider } from '@/lib/provider-presets'
 import { aggregateQuota, freshQuota, knownWindow, quotaLabel } from '@/lib/account-quota'
 import { relative } from '@/lib/format'
 
@@ -19,9 +21,18 @@ function groupKey(a: Account): string {
   return engine === 'workbuddy' ? a.live?.service || engine : engine
 }
 
-function groupLabel(key: string, engine: string): string {
-  return engine === 'custom' ? key === UNKNOWN ? '第三方 Key（未识别地址）' : key : engineLabel(key)
+// 第三方 Key 显示识别出的厂商名 + 图标，base_url 只留在 tooltip 里；
+// 未识别的地址才退回主机名。
+function groupMeta(key: string, engine: string) {
+  if (engine === 'custom') {
+    if (key === UNKNOWN) return { name: '第三方 Key（未识别地址）', icon: '', note: undefined, subscription: false, title: undefined }
+    const p = resolveProvider('custom', key)
+    return { name: p.name, icon: p.icon, note: p.note, subscription: !!p.subscription, title: p.host && p.host !== p.name ? key : undefined }
+  }
+  const p = resolveProvider(engine, key)
+  return { name: engine === 'workbuddy' ? engineLabel(key) : p.name, icon: p.icon, note: p.note, subscription: !!p.subscription, title: undefined }
 }
+
 
 function QuotaFigures({ windows }: { windows: QuotaWindow[] }) {
   return (
@@ -138,18 +149,23 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
       {keys.filter((_, i) => i % 2 === column).map((key) => {
         const list = groups.get(key)!
         const engine = canonicalEngine(list[0].engine)
+        const meta = groupMeta(key, engine)
         const up = list.filter((a) => accountHealth(a) === 'up').length
         const broken = list.filter((a) => accountHealth(a) === 'down').length
         const cooling = list.filter((a) => a.live?.cooldowns?.length).length
         const summary = engine === 'workbuddy' ? aggregateQuota(list) : null
         const isCollapsed = collapsed.has(key)
         return (
-          <section key={key} aria-label={groupLabel(key, engine)} className="min-w-0 overflow-hidden rounded-xl border bg-card">
+          <section key={key} aria-label={meta.name} className="min-w-0 overflow-hidden rounded-xl border bg-card">
             <header className="flex items-start gap-2 px-4 pt-4 pb-3">
               <button type="button" className="flex min-h-8 min-w-0 flex-1 items-start gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-ring" onClick={() => onToggle(key)} aria-expanded={!isCollapsed}>
                 {isCollapsed ? <ChevronRight aria-hidden="true" className="mt-1 size-4 shrink-0 text-muted-foreground" /> : <ChevronDown aria-hidden="true" className="mt-1 size-4 shrink-0 text-muted-foreground" />}
+                <ProviderIcon icon={meta.icon} name={meta.name} className="mt-0.5" />
                 <span className="min-w-0">
-                  <span className="block break-words text-sm font-semibold [overflow-wrap:anywhere]">{groupLabel(key, engine)}</span>
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    <span className="break-words text-sm font-semibold [overflow-wrap:anywhere]" title={meta.title}>{meta.name}</span>
+                    {meta.note && <Pill tone={meta.subscription ? 'primary' : 'muted'}>{meta.note}</Pill>}
+                  </span>
                   <span className="mt-1 block text-xs font-normal text-muted-foreground">{list.length} 个账号 · 可用 {up}{cooling ? ` · 冷却 ${cooling}` : ''}{broken ? ` · 异常 ${broken}` : ''}</span>
                 </span>
               </button>
