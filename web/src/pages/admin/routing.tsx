@@ -3,18 +3,24 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ChevronDown, ChevronUp, RotateCcw, Save, Shuffle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { PageHeader, Section } from '@/components/page'
+import { Section } from '@/components/page'
 import { ErrorState, BlockSkeleton } from '@/components/states'
-import { StatusDot } from '@/components/status'
+import { Pill, StatusDot } from '@/components/status'
+import { ProviderIcon } from '@/components/provider-icon'
 import { api } from '@/lib/api'
+import { resolveProvider } from '@/lib/provider-presets'
 import { engineLabel, type RoutingAccount, type RoutingSupplier, type RoutingView } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 type Draft = RoutingSupplier[]
 
+function supplierProvider(s: RoutingSupplier) {
+  return resolveProvider(s.engine === 'custom' ? 'custom' : s.engine, s.engine === 'custom' ? s.provider : undefined)
+}
+
 function supplierLabel(s: RoutingSupplier): string {
   if (s.engine === 'custom') {
-    return s.provider ? `第三方 Key · ${s.provider}` : '第三方 Key · 未识别地址'
+    return s.provider ? supplierProvider(s).name : '第三方 Key · 未识别地址'
   }
   return engineLabel(s.engine)
 }
@@ -61,7 +67,8 @@ function AccountRow({ account, index, total, onMove }: {
   )
 }
 
-export default function AdminRouting() {
+/** 路由顺序面板：作为「路由」页的「路由顺序」标签页使用。 */
+export function RoutingOrderPanel() {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['admin', 'routing'], queryFn: () => api<RoutingView>('/admin/api/routing') })
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -116,20 +123,19 @@ export default function AdminRouting() {
 
   return (
     <>
-      <PageHeader
-        title="路由顺序"
-        description="同一个模型有多个供应商/账号可用时，按这里的顺序从上到下尝试：当前供应商的账号全部失败后，才走下一个供应商。没保存过时按供应商、账号的添加顺序。"
-        actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" disabled={saving || !q.data.configured} onClick={() => save([])}>
-              <RotateCcw /> 恢复默认
-            </Button>
-            <Button disabled={!canSave || saving} onClick={() => save(currentOrder)}>
-              <Save /> {saving ? '保存中…' : '保存顺序'}
-            </Button>
-          </div>
-        }
-      />
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
+          同一个模型有多个供应商/账号可用时，按这里的顺序从上到下尝试：当前供应商的账号全部失败后，才走下一个供应商。没保存过时按供应商、账号的添加顺序。
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" disabled={saving || !q.data.configured} onClick={() => save([])}>
+            <RotateCcw /> 恢复默认
+          </Button>
+          <Button disabled={!canSave || saving} onClick={() => save(currentOrder)}>
+            <Save /> {saving ? '保存中…' : '保存顺序'}
+          </Button>
+        </div>
+      </div>
 
       <div className="grid max-w-4xl gap-4">
         <Section
@@ -169,10 +175,18 @@ export default function AdminRouting() {
         {groups.length === 0 && (
           <Section title="路由顺序"><div className="px-4 py-10 text-center text-sm text-muted-foreground">还没有可排序的账号，请先在「供应商」页添加。</div></Section>
         )}
-        {groups.map((group, gi) => (
+        {groups.map((group, gi) => {
+          const meta = supplierProvider(group)
+          return (
           <Section
             key={group.key}
-            title={supplierLabel(group)}
+            title={
+              <span className="flex items-center gap-2">
+                <ProviderIcon icon={meta.icon} name={supplierLabel(group)} />
+                <span title={group.engine === 'custom' ? group.provider : undefined}>{supplierLabel(group)}</span>
+                {meta.note && <Pill tone={meta.subscription ? 'primary' : 'muted'}>{meta.note}</Pill>}
+              </span>
+            }
             description={`${group.accounts.length} 个账号 · 供应商顺序 ${gi + 1}`}
             actions={
               <div className="flex items-center gap-1">
@@ -198,7 +212,8 @@ export default function AdminRouting() {
               {group.accounts.length === 0 && <div className="px-4 py-4 text-xs text-muted-foreground">该供应商暂无账号</div>}
             </div>
           </Section>
-        ))}
+          )
+        })}
       </div>
     </>
   )

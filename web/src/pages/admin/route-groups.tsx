@@ -1,21 +1,26 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Link } from 'react-router'
+import { useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Boxes, Check, Download, Pencil, RefreshCw, Search, X } from 'lucide-react'
+import { ArrowUpDown, Boxes, Check, Download, Pencil, RefreshCw, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PageHeader, Section } from '@/components/page'
 import { EmptyState, ErrorState } from '@/components/states'
 import { Pill, StatusDot } from '@/components/status'
 import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/model-kind'
 import { CopyButton } from '@/components/copy'
+import { ProviderIcon } from '@/components/provider-icon'
 import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { dateTime, multiplier, relative } from '@/lib/format'
+import { resolveProvider } from '@/lib/provider-presets'
 import { canonicalEngine, engineLabel, type ModelInfo, type RoutingView } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { RoutingOrderPanel } from './routing'
 
 interface MultItem {
   model: string
@@ -27,6 +32,37 @@ interface GroupMultItem {
   group: string
   multiplier: number
   updated_at: number
+}
+
+// 同名模型路由组：目录里同一个模型名由多个供应商提供时自动成组。
+interface RouteGroupMember {
+  key: string // 路由组键：引擎名或 custom|<base_url>
+  engine: string
+  provider?: string
+  model: string
+  display?: string
+  kind?: string
+  free?: boolean
+  accounts: number
+  enabled_accounts: number
+  ready_accounts: number
+  ready: boolean
+  direct?: boolean
+  multiplier: number
+}
+
+interface RouteGroupItem {
+  key: string // 归一化模型名
+  name: string
+  enabled: boolean
+  mode: string
+  members: RouteGroupMember[]
+}
+
+interface RouteGroupMode {
+  id: string
+  name: string
+  desc: string
 }
 
 // 目录快照按「供应商 × 模型」存行；路由组按供应商（引擎）聚合，同名模型跨组共享同一条目。
@@ -73,50 +109,21 @@ const canonicalModelID = (id: string) => id.trim().toLowerCase().replace(/^model
 // 用量记录现在也按 custom|<base_url> 归因，供应商级组倍率才能在计费时命中。
 const routeGroupKey = (engine: string) => canonicalEngine(engine)
 
-// 组显示名：第三方 Key 只显示主机名，比整段 URL 短、和图里一致。
+// 组显示名：第三方 Key 显示识别出的厂商名（DeepSeek、OpenRouter…），
+// 未识别时才退回主机名；base_url 只留在 tooltip 里。
 const groupLabel = (engine: string) => {
   if (engine.startsWith('custom|')) {
-    const host = engine.slice('custom|'.length).replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
-    return host || engineLabel(engine)
+    return resolveProvider('custom', engine).name
   }
   return engineLabel(engine)
 }
 
-// 供应商头像：模型行用它标出「这个同名模型由哪些供应商提供」。
-const ENGINE_AVATARS: Record<string, { bg: string; label: string }> = {
-  geminiweb: { bg: 'bg-blue-500', label: 'GW' },
-  aistudio: { bg: 'bg-violet-500', label: 'AS' },
-  codex: { bg: 'bg-zinc-700', label: 'GPT' },
-  antigravity: { bg: 'bg-sky-600', label: 'AG' },
-  kiro: { bg: 'bg-orange-500', label: 'KI' },
-  workbuddy: { bg: 'bg-emerald-500', label: 'WB' },
-  teleagent: { bg: 'bg-cyan-600', label: 'TA' },
-  custom: { bg: 'bg-slate-500', label: '3K' },
-}
-
-// 第三方 Key 各地址用主机名缩写 + 按地址取色，视觉上和内置引擎区分开。
-const PROVIDER_PALETTE = ['bg-emerald-600', 'bg-rose-500', 'bg-amber-500', 'bg-indigo-500', 'bg-teal-600', 'bg-fuchsia-500', 'bg-lime-600', 'bg-red-500']
-
-function providerAvatar(engine: string): { bg: string; label: string } {
-  const url = engine.slice('custom|'.length)
-  const host = url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
-  const letters = host.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || 'K'
-  let hash = 0
-  for (let i = 0; i < host.length; i++) hash = (hash * 31 + host.charCodeAt(i)) >>> 0
-  return { bg: PROVIDER_PALETTE[hash % PROVIDER_PALETTE.length], label: letters }
-}
+const resolveEngine = (engine: string) =>
+  resolveProvider(engine.startsWith('custom|') ? 'custom' : engine, engine.startsWith('custom|') ? engine : undefined)
 
 function EngineAvatar({ engine }: { engine: string }) {
-  const meta = ENGINE_AVATARS[engine] || (engine.startsWith('custom|') ? providerAvatar(engine) : undefined)
-  return (
-    <span
-      className={cn('grid size-5 shrink-0 place-items-center rounded-md text-[9px] font-semibold text-white', meta?.bg || 'bg-zinc-500')}
-      title={engineLabel(engine)}
-      aria-label={engineLabel(engine)}
-    >
-      {meta?.label || engine.slice(0, 2).toUpperCase()}
-    </span>
-  )
+  const p = resolveEngine(engine)
+  return <ProviderIcon icon={p.icon} name={p.name} />
 }
 
 export default function AdminRouteGroups() {
@@ -124,16 +131,31 @@ export default function AdminRouteGroups() {
   const models = useQuery({ queryKey: ['admin', 'models'], queryFn: () => api<{ models: ModelInfo[]; fetched_at: number }>('/admin/api/models') })
   const mults = useQuery({ queryKey: ['admin', 'multipliers'], queryFn: () => api<{ multipliers: MultItem[]; groups: GroupMultItem[]; default_multiplier: number; formula: string }>('/admin/api/multipliers') })
   const routing = useQuery({ queryKey: ['admin', 'routing'], queryFn: () => api<RoutingView>('/admin/api/routing') })
+  const routeGroups = useQuery({
+    queryKey: ['admin', 'route-groups'],
+    queryFn: () => api<{ groups: RouteGroupItem[]; modes: RouteGroupMode[] }>('/admin/api/route-groups'),
+  })
   const [search, setSearch] = useState('')
   const [kind, setKind] = useState('all')
   const [status, setStatus] = useState<'all' | 'enabled' | 'disabled'>('all')
-  const [selected, setSelected] = useState<string | 'default' | null>(null)
+  const [selected, setSelected] = useState<string | 'default' | 'groups'>('groups')
   const [editing, setEditing] = useState<EditTarget | null>(null)
   const [value, setValue] = useState('')
   const [checking, setChecking] = useState<string | null>(null)
   const [toggling, setToggling] = useState(false)
   const [fetching, setFetching] = useState(false)
   const confirm = useConfirm()
+  // 路由顺序不再单独占一个页签，收进「调整顺序」对话框；旧链接 ?tab=order 仍可直接打开。
+  const [params, setParams] = useSearchParams()
+  const [orderOpen, setOrderOpen] = useState(() => params.get('tab') === 'order')
+  const closeOrder = (open: boolean) => {
+    setOrderOpen(open)
+    if (!open && params.get('tab') === 'order') {
+      const next = new URLSearchParams(params)
+      next.delete('tab')
+      setParams(next, { replace: true })
+    }
+  }
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin', 'models'] })
 
@@ -162,6 +184,20 @@ export default function AdminRouteGroups() {
       toast.error((e as Error).message)
     } finally {
       setFetching(false)
+    }
+  }
+
+  // 切换同名模型路由组的模式（智能 / 顺序 / 轮询 / 最便宜），立即生效。
+  const setGroupMode = async (key: string, mode: string) => {
+    try {
+      const res = await api<{ groups: RouteGroupItem[]; modes: RouteGroupMode[] }>('/admin/api/route-groups', {
+        method: 'PUT',
+        json: { model: key, mode },
+      })
+      qc.setQueryData(['admin', 'route-groups'], res)
+      toast.success(`${key} 路由模式已切换为${res.modes.find((m) => m.id === mode)?.name || mode}`)
+    } catch (e) {
+      toast.error((e as Error).message)
     }
   }
 
@@ -251,8 +287,8 @@ export default function AdminRouteGroups() {
   )
   const def = mults.data?.default_multiplier ?? 1
 
-  const selectedKey = selected ?? 'default'
-  const current = selectedKey !== 'default' ? groups.find((g) => g.key === selectedKey) : undefined
+  const selectedKey = selected ?? 'groups'
+  const current = selectedKey !== 'default' && selectedKey !== 'groups' ? groups.find((g) => g.key === selectedKey) : undefined
 
   // 筛选只作用于右侧模型列表；左侧组列表始终显示全量（组数很少，不随筛选消失）。
   const visibleRows = useMemo(() => {
@@ -266,7 +302,7 @@ export default function AdminRouteGroups() {
 
   // 选中组被删除（供应商目录清空）后回落到默认倍率视图。
   useEffect(() => {
-    if (selected && selected !== 'default' && !groups.some((g) => g.key === selected)) setSelected(null)
+    if (selected && selected !== 'default' && selected !== 'groups' && !groups.some((g) => g.key === selected)) setSelected('groups')
   }, [groups, selected])
 
   // 本组模型的生效倍率：模型单独设置 → 组倍率 → 默认。
@@ -354,6 +390,27 @@ export default function AdminRouteGroups() {
     } catch (e) {
       toast.error((e as Error).message)
       invalidate()
+    } finally {
+      setToggling(false)
+    }
+  }
+
+  // 路由组的上下架就是该模型名的全局开放状态：关掉后下游 /v1/models 不可见、调用被拒绝，
+  // 组内所有供应商一起生效。复用模型的批量接口，并同步路由组与模型两份缓存。
+  const setRouteGroupEnabled = async (g: RouteGroupItem, enabled: boolean) => {
+    setToggling(true)
+    try {
+      await api('/admin/api/models/batch', { method: 'POST', json: { models: [g.key], enabled } })
+      qc.setQueryData<{ groups: RouteGroupItem[]; modes: RouteGroupMode[] }>(['admin', 'route-groups'], (prev) =>
+        prev ? { ...prev, groups: prev.groups.map((x) => (x.key === g.key ? { ...x, enabled } : x)) } : prev,
+      )
+      qc.setQueryData<{ models: ModelInfo[] }>(['admin', 'models'], (prev) =>
+        prev ? { ...prev, models: prev.models.map((m) => (canonicalModelID(m.id) === g.key ? { ...m, enabled } : m)) } : prev,
+      )
+      toast.success(enabled ? `${g.name} 已开放` : `${g.name} 已下架`)
+    } catch (e) {
+      toast.error((e as Error).message)
+      routeGroups.refetch()
     } finally {
       setToggling(false)
     }
@@ -570,21 +627,143 @@ export default function AdminRouteGroups() {
   }
 
   const currentRows = useMemo(() => (current ? visibleRows(current.rows) : []), [current, visibleRows])
+  const currentMeta = current && current.key !== '_none' ? resolveEngine(current.key) : null
+
+  const routeGroupsPane = (
+    <div className="space-y-4">
+      <div className="rounded-xl border bg-card px-4 py-3">
+        <p className="text-sm font-medium">同名模型自动成组</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          不同供应商目录里出现同一个模型名时自动归入一个路由组。下游只请求模型名，网关按下面的模式选供应商；一个失败会在组内自动换下一个。
+          「智能」是默认模式；组内供应商的先后仍由「调整顺序」里的供应商顺序决定。
+        </p>
+      </div>
+      {routeGroups.isLoading ? (
+        <Section title="路由组"><div className="p-4 text-sm text-muted-foreground">加载中…</div></Section>
+      ) : routeGroups.isError ? (
+        <Section title="路由组"><ErrorState error={routeGroups.error} onRetry={() => routeGroups.refetch()} /></Section>
+      ) : !routeGroups.data?.groups.length ? (
+        <Section title="路由组">
+          <EmptyState
+            icon={<Boxes />}
+            title="还没有同名模型路由组"
+            description="当两个及以上供应商都提供同一个模型名时，这里会自动出现路由组。先点右上角「获取模型」。"
+            action={
+              <Button size="sm" onClick={fetchModels} disabled={fetching}>
+                <Download className={fetching ? 'animate-pulse' : undefined} /> 获取模型
+              </Button>
+            }
+          />
+        </Section>
+      ) : (
+        routeGroups.data.groups.map((g) => {
+          const mode = routeGroups.data?.modes.find((m) => m.id === g.mode)
+          return (
+            <div key={g.key} className={cn('overflow-hidden rounded-xl border bg-card', !g.enabled && 'opacity-70')}>
+              <div className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
+                <Checkbox
+                  checked={g.enabled}
+                  disabled={toggling}
+                  onClick={() => setRouteGroupEnabled(g, !g.enabled)}
+                  aria-label={g.enabled ? `下架 ${g.name}` : `开放 ${g.name}`}
+                  title={g.enabled ? '取消勾选即下架该路由组（组内所有供应商一起）' : '勾选即开放该路由组'}
+                />
+                <div className="flex -space-x-1.5">
+                  {g.members.slice(0, 5).map((m) => (
+                    <span key={m.key} className="rounded-full ring-2 ring-card">
+                      <EngineAvatar engine={m.key} />
+                    </span>
+                  ))}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium">{g.name}</span>
+                    <span className="font-mono text-xs text-muted-foreground">{g.key}</span>
+                    <Pill tone="muted">{g.members.length} 个供应商</Pill>
+                    {!g.enabled && <Pill tone="danger">已下架</Pill>}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">{mode?.desc || '按账号可用性与模型归属自动首选，失败后自动切换下一位'}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs text-muted-foreground">路由模式</span>
+                  <Select value={g.mode} onValueChange={(value) => setGroupMode(g.key, value)}>
+                    <SelectTrigger className="h-8 w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(routeGroups.data?.modes || []).map((m) => (
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div>
+                {g.members.map((m) => {
+                  const meta =
+                    m.engine === 'custom'
+                      ? resolveProvider('custom', m.key)
+                      : resolveProvider(m.engine, undefined, engineLabel(m.engine))
+                  return (
+                    <div key={m.key} className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0">
+                      <EngineAvatar engine={m.key} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-medium">{meta.name}</span>
+                          {meta.note && <Pill tone={meta.subscription ? 'primary' : 'muted'}>{meta.note}</Pill>}
+                          {m.free && <Pill tone="success">免费</Pill>}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-muted-foreground">
+                          <span className="font-mono">{m.model}</span>
+                          {m.display && m.display !== m.model && <span>{m.display}</span>}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <StatusDot tone={m.ready ? 'success' : 'danger'}>{m.direct ? '上游直连' : m.ready ? '就绪' : '无可用账号'}</StatusDot>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          {m.direct ? '无需账号行' : `${m.enabled_accounts}/${m.accounts} 个账号启用 · ${m.ready_accounts} 个就绪`}
+                        </div>
+                      </div>
+                      <div className="w-20 shrink-0 text-right">
+                        <div className="text-xs text-muted-foreground">生效倍率</div>
+                        <div className="text-sm tabular-nums">{multiplier(m.multiplier)}</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })
+      )}
+      <p className="px-1 text-[11px] text-muted-foreground">
+        路由模式只决定「先试哪个供应商」，失败后仍会在组内继续换下一个；第三方 Key 之间的先后由账号顺序控制。
+        组的成员来自各供应商最近一次「获取模型」的快照，同名（忽略 models/ 前缀与大小写）才会归入同一组。
+      </p>
+    </div>
+  )
 
   return (
     <>
       <PageHeader
         title="路由"
-        description="供应商加入并「获取模型」后自动成一个路由组；同名模型跨组自动识别为同一条目，开放状态与倍率全局共享。倍率取值：模型 → 组 → 默认。"
+        description="同一模型名被多个供应商提供时自动成为一个路由组，客户端只填模型名即可在供应商之间选择与故障切换。左侧「路由组」看跨供应商同名模型；供应商条目管理开放状态与倍率，倍率取值：模型 → 组 → 默认。"
         actions={
-          <Button onClick={fetchModels} disabled={fetching}>
-            <Download className={fetching ? 'animate-pulse' : undefined} />
-            {fetching ? '各供应商获取中…' : '获取模型'}
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => closeOrder(true)}>
+              <ArrowUpDown /> 调整顺序
+            </Button>
+            <Button onClick={fetchModels} disabled={fetching}>
+              <Download className={fetching ? 'animate-pulse' : undefined} />
+              {fetching ? '各供应商获取中…' : '获取模型'}
+            </Button>
+          </>
         }
       />
       <div className="grid items-start gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
-        <aside className="overflow-hidden rounded-xl border bg-card">
+        <aside className="overflow-hidden rounded-xl border bg-card lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:self-start">
           <div className="border-b p-2">
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -603,7 +782,15 @@ export default function AdminRouteGroups() {
               ))}
             </div>
           </div>
-          <div className="max-h-[calc(100dvh-22rem)] overflow-y-auto p-1.5">
+          <div className="max-h-[calc(100dvh-22rem)] overflow-y-auto p-1.5 lg:max-h-[calc(100dvh-15rem)]">
+            {leftItem(selectedKey === 'groups', () => setSelected('groups'), (
+              <>
+                <Boxes className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="flex-1 font-medium">路由组</span>
+                <span className="tabular-nums text-muted-foreground">{routeGroups.data?.groups.length ?? 0}</span>
+              </>
+            ))}
+            <div className="my-1 border-t" />
             {leftItem(selectedKey === 'default', () => setSelected('default'), (
               <>
                 <span className="flex-1 font-medium">默认倍率</span>
@@ -640,7 +827,9 @@ export default function AdminRouteGroups() {
         </aside>
 
         <div className="space-y-4">
-          {models.isLoading || mults.isLoading ? (
+          {selectedKey === 'groups' ? (
+            routeGroupsPane
+          ) : models.isLoading || mults.isLoading ? (
             <Section title="路由组"><div className="p-4 text-sm text-muted-foreground">加载中…</div></Section>
           ) : models.isError ? (
             <Section title="路由组"><ErrorState error={models.error} onRetry={() => models.refetch()} /></Section>
@@ -672,7 +861,13 @@ export default function AdminRouteGroups() {
             </Section>
           ) : current ? (
             <Section
-              title={current.label}
+              title={
+                <span className="flex items-center gap-2">
+                  {current.key !== '_none' && <EngineAvatar engine={current.key} />}
+                  <span>{current.label}</span>
+                  {currentMeta?.note && <Pill tone={currentMeta.subscription ? 'primary' : 'muted'}>{currentMeta.note}</Pill>}
+                </span>
+              }
               description={`${current.rows.length} 个模型 · 开放 ${current.openCount} · 上次获取 ${models.data?.fetched_at ? dateTime(models.data.fetched_at) : '从未'}${current.key === '_none' ? ' · 这些模型不在任何供应商目录里，不会被路由到' : ''}`}
             >
               {current.key !== '_none' && groupMultiplierBlock(current)}
@@ -686,7 +881,7 @@ export default function AdminRouteGroups() {
                 {currentRows.length === current.rows.length
                   ? `共 ${current.rows.length} 个模型`
                   : `筛选出 ${currentRows.length}/${current.rows.length} 个模型`} · 开放状态与倍率是全局设置，同名模型在所有组里保持一致 · 供应商接单顺序在{' '}
-                <Link to="/admin/routing" className="underline underline-offset-2">路由顺序</Link>
+                <button type="button" onClick={() => closeOrder(true)} className="underline underline-offset-2">调整顺序</button>
                 里调整
               </div>
             </Section>
@@ -695,8 +890,19 @@ export default function AdminRouteGroups() {
               <EmptyState icon={<Boxes />} title="选择一个路由组" description="在左侧选择供应商查看它的模型、设置组倍率与上下架；或选择「默认倍率」。" />
             </Section>
           )}
-        </div>
-      </div>
+          </div>
+          </div>
+        <Dialog open={orderOpen} onOpenChange={closeOrder}>
+          <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>调整路由顺序</DialogTitle>
+              <DialogDescription>
+                调整供应商与账号的接单顺序；同名模型路由组的「智能」模式也按这里的供应商顺序接力，一个失败自动换下一个。
+              </DialogDescription>
+            </DialogHeader>
+            <RoutingOrderPanel />
+          </DialogContent>
+        </Dialog>
     </>
   )
 }

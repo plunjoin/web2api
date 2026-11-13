@@ -44,10 +44,9 @@ export const adminNav: NavGroup[] = [
     label: '网关',
     items: [
       { to: '/admin/accounts', label: '供应商', icon: Server, keywords: 'accounts pool provider gongyingshang gemini aistudio haochi' },
-      { to: '/admin/routing', label: '路由顺序', icon: Route, keywords: 'routing route order priority failover luyou shunxu' },
       { to: '/admin/keys', label: 'API Key', icon: KeyRound, keywords: 'keys api miyao' },
       { to: '/admin/usage', label: '用量', icon: BarChart3, keywords: 'usage yongliang records' },
-      { to: '/admin/routes', label: '路由', icon: Route, keywords: 'routing route group models multiplier beilv luyou' },
+      { to: '/admin/routes', label: '路由', icon: Route, keywords: 'routing route group models multiplier beilv luyou shunxu order priority failover' },
       { to: '/admin/pricing', label: '计费', icon: ReceiptText, keywords: 'pricing price cost billing jifei danjia' },
     ],
   },
