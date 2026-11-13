@@ -330,7 +330,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 
 // candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
 // 否则保持原来的轮询起点。
-func (e *Engine) candidates() []*geminiAccount {
+func (e *Engine) candidates(ctx context.Context) []*geminiAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -349,7 +349,8 @@ func (e *Engine) candidates() []*geminiAccount {
 		}
 	}
 	e.order.Sort(list, func(acc *geminiAccount) string { return acc.id })
-	return list
+	// 会话粘性：上次接单的账号排到最前，失败时仍可换下一个。
+	return engine.PreferAccount(ctx, list, func(acc *geminiAccount) string { return acc.id })
 }
 
 // pick 轮询选择可用账号；返回 nil 表示无可用。
@@ -408,7 +409,7 @@ func messagesToPrompt(messages []model.ChatMessage) string {
 // Chat 非流式对话（可用账号间故障切换）。
 func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	prompt := messagesToPrompt(req.Messages)
-	accounts := e.candidates()
+	accounts := e.candidates(ctx)
 	if len(accounts) == 0 {
 		return nil, errors.New("引擎A 无可用账号（未添加账号、初始化中或配额耗尽）")
 	}
@@ -416,6 +417,7 @@ func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 	for _, acc := range accounts {
 		text, err := acc.client.Generate(ctx, prompt, req.Model)
 		if err == nil {
+			engine.NoteServedAccount(ctx, acc.id)
 			return &model.ChatResult{Text: text, Engine: "geminiweb", Model: req.Model}, nil
 		}
 		lastErr = err
@@ -426,7 +428,7 @@ func (e *Engine) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 // ChatStream 流式对话（可用账号间故障切换）。
 func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta model.ChatStreamFunc) (*model.ChatResult, error) {
 	prompt := messagesToPrompt(req.Messages)
-	accounts := e.candidates()
+	accounts := e.candidates(ctx)
 	if len(accounts) == 0 {
 		return nil, errors.New("引擎A 无可用账号（未添加账号、初始化中或配额耗尽）")
 	}
@@ -434,6 +436,7 @@ func (e *Engine) ChatStream(ctx context.Context, req model.ChatRequest, onDelta 
 	for _, acc := range accounts {
 		text, err := acc.client.GenerateStream(ctx, prompt, req.Model, onDelta)
 		if err == nil {
+			engine.NoteServedAccount(ctx, acc.id)
 			return &model.ChatResult{Text: text, Engine: "geminiweb", Model: req.Model}, nil
 		}
 		lastErr = err

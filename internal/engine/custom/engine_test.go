@@ -83,6 +83,27 @@ func TestAccountOrderDrivesCandidates(t *testing.T) {
 	}
 }
 
+// 会话粘性指定的账号排在候选最前，但其他账号仍在列表里可故障切换。
+func TestPreferredAccountMovesToFront(t *testing.T) {
+	e := New(config.CustomConfig{}, nil)
+	for _, acc := range []*customAccount{
+		{id: "1", creds: Credentials{BaseURL: "https://a.example"}, enabled: true, ready: true, models: []model.ModelInfo{{ID: "shared", Available: true}}},
+		{id: "2", creds: Credentials{BaseURL: "https://a.example"}, enabled: true, ready: true, models: []model.ModelInfo{{ID: "shared", Available: true}}},
+	} {
+		e.accounts = append(e.accounts, acc)
+	}
+	e.SetAccountOrder([]string{"1", "2"})
+	ctx := engine.WithPreferredAccount(context.Background(), "2")
+	usable, _, _ := e.candidatesCtx(ctx, "shared")
+	if len(usable) != 2 || usable[0].id != "2" || usable[1].id != "1" {
+		ids := make([]string, 0, len(usable))
+		for _, acc := range usable {
+			ids = append(ids, acc.id)
+		}
+		t.Fatalf("candidates with preferred account = %v, want [2 1]", ids)
+	}
+}
+
 func TestStripChatToolsFlattensHistory(t *testing.T) {
 	req := model.ChatRequest{
 		Model:      "MiniMax-M2",

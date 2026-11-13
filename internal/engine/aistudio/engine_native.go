@@ -451,10 +451,36 @@ func (e *NativeEngine) generate(ctx context.Context, req model.ChatRequest, sink
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// 会话粘性：把上次接单的账号（管理 ID）解析成池内账号 ID 后钉住。
+	// 钉住的账号不可用时 Generate 会直接报错，此时清掉 AccountID 再试一次，
+	// 交回账号池按正常策略选号——粘性只是偏好，不阻断故障切换。
+	if preferred := engine.PreferredAccount(ctx); preferred != "" {
+		if poolID := e.poolAccountID(preferred); poolID != "" {
+			genReq.AccountID = poolID
+		}
+	}
+	// 记录本次真正选中的池内账号，成功后再换算回管理 ID 上报给网关。
+	var (
+		chosenMu sync.Mutex
+		chosen   string
+	)
+	cctx = ContextWithAccountSelectionObserver(cctx, func(acc *Account) {
+		if acc == nil {
+			return
+		}
+		chosenMu.Lock()
+		chosen = acc.ID
+		chosenMu.Unlock()
+	})
+
 	// 必须通过 PooledService 生成请求：它负责从账号池取得租约、填充
 	// GenerateRequest.AccountID，并把同一租约传给协议上下文和传输层。
 	// 直接调用 Client.Generate 会遗漏账户 ID，最终报“请求上下文缺少账户 ID”。
 	events, err := e.service.Generate(cctx, genReq)
+	if err != nil && genReq.AccountID != "" {
+		genReq.AccountID = ""
+		events, err = e.service.Generate(cctx, genReq)
+	}
 	if err != nil {
 		e.setErr(err)
 		return nil, err
@@ -562,6 +588,12 @@ func (e *NativeEngine) generate(ctx context.Context, req model.ChatRequest, sink
 	// 生成还是执行工具。
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
+	}
+	chosenMu.Lock()
+	served := chosen
+	chosenMu.Unlock()
+	if managed := e.managedAccountID(served); managed != "" {
+		engine.NoteServedAccount(ctx, managed)
 	}
 	return &model.ChatResult{
 		Text:         full.String(),
@@ -697,6 +729,29 @@ func (e *NativeEngine) RegisterAccountID(managedID, aistudioID string) {
 	e.idMu.Lock()
 	e.idMap[managedID] = aistudioID
 	e.idMu.Unlock()
+}
+
+// poolAccountID 管理 ID → 池内账号 ID（邮箱）；没有映射时返回空。
+func (e *NativeEngine) poolAccountID(managedID string) string {
+	e.idMu.RLock()
+	defer e.idMu.RUnlock()
+	return e.idMap[strings.TrimSpace(managedID)]
+}
+
+// managedAccountID 池内账号 ID → 管理 ID；没有映射时返回空。
+func (e *NativeEngine) managedAccountID(aistudioID string) string {
+	aistudioID = strings.TrimSpace(aistudioID)
+	if aistudioID == "" {
+		return ""
+	}
+	e.idMu.RLock()
+	defer e.idMu.RUnlock()
+	for managed, poolID := range e.idMap {
+		if strings.EqualFold(poolID, aistudioID) {
+			return managed
+		}
+	}
+	return ""
 }
 
 // PoolAccountIDs 池内账号 ID（邮箱）列表。

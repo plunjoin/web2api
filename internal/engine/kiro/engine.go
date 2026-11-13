@@ -358,7 +358,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 
 // candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
 // 否则保持原来的轮询起点。
-func (e *Engine) candidates() []*kiroAccount {
+func (e *Engine) candidates(ctx context.Context) []*kiroAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -381,7 +381,8 @@ func (e *Engine) candidates() []*kiroAccount {
 		}
 	}
 	e.order.Sort(list, func(acc *kiroAccount) string { return acc.id })
-	return list
+	// 会话粘性：上次接单的账号排到最前，失败时仍可换下一个。
+	return engine.PreferAccount(ctx, list, func(acc *kiroAccount) string { return acc.id })
 }
 
 // pick 轮询选择可用账号。
@@ -458,9 +459,10 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, onDelta fu
 		return nil, err
 	}
 	var lastErr error
-	for _, acc := range e.candidates() {
+	for _, acc := range e.candidates(ctx) {
 		res, err := e.chatOnce(ctx, acc, cReq, onDelta)
 		if err == nil {
+			engine.NoteServedAccount(ctx, acc.id)
 			return &model.ChatResult{
 				Text:   res.Text,
 				Engine: e.name,

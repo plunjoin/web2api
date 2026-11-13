@@ -70,25 +70,30 @@ func (m *Manager) applyRoutingOrder(ids []string) {
 	// 供应商优先级：取该供应商在顺序里最靠前的账号位置；没有账号的供应商
 	// 按引擎注册顺序排在已配置的供应商之后。
 	engineOf := map[string]string{}
-	if m.st != nil && len(clean) > 0 {
+	if m.st != nil {
 		if accounts, err := m.st.ListAccounts(); err == nil {
 			missing := make([]string, 0, len(accounts))
 			for _, acc := range accounts {
 				id := strconv.FormatInt(acc.ID, 10)
 				engineOf[id] = config.NormalizeEngineName(acc.Engine)
+				if len(clean) == 0 {
+					continue // 未配置顺序时保持轮询，不把账号追加进列表
+				}
 				if _, ok := seen[id]; !ok {
 					missing = append(missing, id)
 				}
 			}
-			// 新账号按创建顺序（自增 ID）追加到末尾。
-			sort.Slice(missing, func(i, j int) bool {
-				li, _ := strconv.ParseInt(missing[i], 10, 64)
-				lj, _ := strconv.ParseInt(missing[j], 10, 64)
-				return li < lj
-			})
-			for _, id := range missing {
-				seen[id] = struct{}{}
-				clean = append(clean, id)
+			if len(clean) > 0 {
+				// 新账号按创建顺序（自增 ID）追加到末尾。
+				sort.Slice(missing, func(i, j int) bool {
+					li, _ := strconv.ParseInt(missing[i], 10, 64)
+					lj, _ := strconv.ParseInt(missing[j], 10, 64)
+					return li < lj
+				})
+				for _, id := range missing {
+					seen[id] = struct{}{}
+					clean = append(clean, id)
+				}
 			}
 		}
 	}
@@ -113,7 +118,15 @@ func (m *Manager) applyRoutingOrder(ids []string) {
 	m.routeMu.Lock()
 	m.routeIDs = clean
 	m.routeSupplier = rank
+	m.routeEngine = engineOf
 	m.routeMu.Unlock()
+}
+
+// engineForAccount 返回账号所属引擎；账号不在当前号池时返回空。
+func (m *Manager) engineForAccount(id string) string {
+	m.routeMu.RLock()
+	defer m.routeMu.RUnlock()
+	return m.routeEngine[id]
 }
 
 // routingConfigured 管理台是否保存过账号顺序。

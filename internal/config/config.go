@@ -63,6 +63,7 @@ type EnginesConfig struct {
 	Antigravity AntigravityConfig `yaml:"antigravity"`
 	Kiro        KiroConfig        `yaml:"kiro"`
 	WorkBuddy   WorkBuddyConfig   `yaml:"workbuddy"`
+	TeleAgent   TeleAgentConfig   `yaml:"teleagent"`
 	Custom      CustomConfig      `yaml:"custom"` // 第三方 OpenAI
 }
 
@@ -146,6 +147,27 @@ type WorkBuddyAccountConf struct {
 	EnterpriseID string `yaml:"enterprise_id"`
 	BaseURL      string `yaml:"base_url"`
 	Proxy        string `yaml:"proxy"`
+}
+
+// TeleAgentConfig 中国电信天翼 AI「星辰超级智能体」引擎。
+type TeleAgentConfig struct {
+	Enabled  bool                  `yaml:"enabled"`
+	Proxy    string                `yaml:"proxy"`
+	Accounts []TeleAgentAccountConf `yaml:"accounts"`
+}
+
+// TeleAgentAccountConf TeleAgent 种子账号（凭据为本机桌面端登录态，通常由
+// scripts/import-teleagent-accounts.go 导入，而不是手写配置）。
+type TeleAgentAccountConf struct {
+	Name       string `yaml:"name"`
+	Token      string `yaml:"token"`
+	DeviceID   string `yaml:"device_id"`
+	InstallID  string `yaml:"install_id"`
+	APIKey     string `yaml:"api_key"`
+	AppVersion string `yaml:"app_version"`
+	Scope      string `yaml:"scope"`
+	Email      string `yaml:"email"`
+	Proxy      string `yaml:"proxy"`
 }
 
 // GeminiAPIConfig configures the official backend independently of web accounts.

@@ -17,8 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +33,10 @@ import (
 
 // DefaultBaseURL 默认上游（国服 WorkBuddy）。
 var DefaultBaseURL = SiteCN.Endpoint
+
+// debugUpstream 由 WEB2API_DEBUG_UPSTREAM=1 开启：打印上游响应头与用量原始
+// JSON，用于核对缓存/用量字段。启动时读取，运行中不变化。
+var debugUpstream = os.Getenv("WEB2API_DEBUG_UPSTREAM") != ""
 
 // 旧 CodeBuddy CLI 的伪装常量：仅用于 base_url 仍是 www.codebuddy.ai 的
 // 旧账号，保持它们升级后仍能登录。
@@ -468,11 +474,15 @@ type Request struct {
 
 // Result 推理结果。
 type Result struct {
-	Text             string
-	Reasoning        string
-	ToolCalls        []model.ToolCall
+	Text      string
+	Reasoning string
+	ToolCalls []model.ToolCall
+	// Model 是上游分片里回报的实际模型（请求 auto/别名时可能与请求模型不同）。
+	Model            string
 	PromptTokens     int64
 	CompletionTokens int64
+	// CachedTokens 是上游命中的缓存 Prompt Token（含在 PromptTokens 内）。
+	CachedTokens int64
 }
 
 type chatToolCall struct {
@@ -602,6 +612,9 @@ func Stream(ctx context.Context, proxy string, a StreamAuth, req *Request, sink 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, newUpstreamError(resp.StatusCode, b)
+	}
+	if debugUpstream {
+		log.Printf("[workbuddy] response headers: %v", resp.Header)
 	}
 	return parseSSE(resp.Body, sink)
 }
@@ -788,6 +801,7 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 			continue
 		}
 		var chunk struct {
+			Model   string `json:"model"`
 			Choices []struct {
 				Delta struct {
 					Content          string                `json:"content"`
@@ -799,10 +813,23 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 			Usage *struct {
 				PromptTokens     int64 `json:"prompt_tokens"`
 				CompletionTokens int64 `json:"completion_tokens"`
+				// WorkBuddy 同时给出多套缓存计数字段，取其中最大的非零值：
+				// OpenAI 兼容的 prompt_tokens_details.cached_tokens、顶层
+				// cached_tokens、prompt_cache_hit_tokens，以及 Anthropic 风格
+				// 的 cache_read_input_tokens。
+				CachedTokens         int64 `json:"cached_tokens"`
+				PromptCacheHitTokens int64 `json:"prompt_cache_hit_tokens"`
+				CacheReadInputTokens int64 `json:"cache_read_input_tokens"`
+				PromptTokensDetails  *struct {
+					CachedTokens int64 `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		if chunk.Model != "" {
+			result.Model = chunk.Model
 		}
 		for _, ch := range chunk.Choices {
 			if r := ch.Delta.ReasoningContent; r != "" {
@@ -840,8 +867,22 @@ func parseSSE(r io.Reader, sink model.StreamSink) (*Result, error) {
 			}
 		}
 		if chunk.Usage != nil {
+			if debugUpstream {
+				log.Printf("[workbuddy] usage raw: %s", data)
+			}
 			result.PromptTokens = chunk.Usage.PromptTokens
 			result.CompletionTokens = chunk.Usage.CompletionTokens
+			cached := chunk.Usage.CachedTokens
+			if v := chunk.Usage.PromptCacheHitTokens; v > cached {
+				cached = v
+			}
+			if v := chunk.Usage.CacheReadInputTokens; v > cached {
+				cached = v
+			}
+			if d := chunk.Usage.PromptTokensDetails; d != nil && d.CachedTokens > cached {
+				cached = d.CachedTokens
+			}
+			result.CachedTokens = cached
 		}
 	}
 	if err := scanner.Err(); err != nil {

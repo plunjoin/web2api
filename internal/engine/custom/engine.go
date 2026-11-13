@@ -640,6 +640,8 @@ func (e *Engine) candidatesCtx(ctx context.Context, modelName string) (usable []
 	if ordered {
 		e.order.Sort(usable, func(acc *customAccount) string { return acc.id })
 	}
+	// 会话粘性：上次接单的账号排到最前，失败时仍可换下一个。
+	usable = engine.PreferAccount(ctx, usable, func(acc *customAccount) string { return acc.id })
 	return usable, declared, total
 }
 
@@ -888,6 +890,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		}
 		acc.mu.Lock()
 		up := acc.up
+		base := acc.creds.BaseURL
 		acc.mu.Unlock()
 		if up == nil {
 			lastErr = errors.New("上游客户端未初始化")
@@ -913,8 +916,15 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		}
 		if err == nil {
 			if res != nil {
-				res.Engine = e.name
+				// 用量与路由组倍率按「第三方 Key 的具体上游地址」归因：
+				// custom|<base_url> 与模型目录快照、路由顺序里的供应商键同一口径。
+				if norm := upstream.NormalizeBaseURL(base); norm != "" {
+					res.Engine = catalogKey(norm)
+				} else {
+					res.Engine = e.name
+				}
 			}
+			engine.NoteServedAccount(ctx, acc.id)
 			return res, nil
 		}
 		lastErr = err

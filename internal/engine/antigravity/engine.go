@@ -695,7 +695,7 @@ func (e *Engine) resolveModel(acc *antigravityAccount, name string) string {
 // pick 轮询选择可用账号。
 // candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
 // 否则保持原来的轮询起点。
-func (e *Engine) candidates() []*antigravityAccount {
+func (e *Engine) candidates(ctx context.Context) []*antigravityAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -718,7 +718,8 @@ func (e *Engine) candidates() []*antigravityAccount {
 		}
 	}
 	e.order.Sort(list, func(acc *antigravityAccount) string { return acc.id })
-	return list
+	// 会话粘性：上次接单的账号排到最前，失败时仍可换下一个。
+	return engine.PreferAccount(ctx, list, func(acc *antigravityAccount) string { return acc.id })
 }
 
 func (e *Engine) pick() *antigravityAccount {
@@ -912,7 +913,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 	// 先取 projectID 占位（chatOnce 内 token() 会重取）
 	cReq := toAntigravityRequest(req, "")
 	var lastErr error
-	for _, acc := range e.candidates() {
+	for _, acc := range e.candidates(ctx) {
 		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta ToolCallDelta) error {
 			extra := json.RawMessage(nil)
 			if strings.TrimSpace(delta.ThoughtSig) != "" {
@@ -936,10 +937,11 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		})
 		if err == nil {
 			result := &model.ChatResult{
-				Text:   res.Text,
-				Engine: e.name,
-				Model:  req.Model,
-				Usage:  engine.SubResultUsage(res.PromptTokens, res.CompletionTokens+res.ReasoningTokens, res.ReasoningTokens),
+				Text:        res.Text,
+				Engine:      e.name,
+				Model:       req.Model,
+				ActualModel: req.Model, // chatOnce 已把别名解析成上游真实模型
+				Usage:       engine.SubResultUsage(res.PromptTokens, res.CompletionTokens+res.ReasoningTokens, res.ReasoningTokens),
 			}
 			for _, call := range res.ToolCalls {
 				tc := model.ToolCall{
@@ -963,6 +965,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 			if len(result.ToolCalls) > 0 {
 				result.FinishReason = "tool_calls"
 			}
+			engine.NoteServedAccount(ctx, acc.id)
 			return result, nil
 		}
 		lastErr = err

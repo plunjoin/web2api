@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"web2api/internal/config"
 	"web2api/internal/engine"
 	"web2api/internal/model"
@@ -38,7 +40,13 @@ type Credentials struct {
 	// BaseURL 按账号覆盖上游地址（留空则按 Site / 引擎配置推导）。
 	BaseURL string `json:"base_url,omitempty"`
 	Proxy   string `json:"proxy,omitempty"`
+	// AutoCheckIn 是否每日自动签到（仅国服；国际服无签到活动）。nil 视为开启，
+	// 与桌面端每日签到一致。
+	AutoCheckIn *bool `json:"auto_checkin,omitempty"`
 }
+
+// AutoCheckInEnabled 报告该账号是否开启自动签到（缺省视为开启）。
+func (c Credentials) AutoCheckInEnabled() bool { return c.AutoCheckIn == nil || *c.AutoCheckIn }
 
 // workbuddyAccount 池内账号。
 type workbuddyAccount struct {
@@ -69,6 +77,10 @@ type workbuddyAccount struct {
 	// deepseek-v4.1-flash 专属 token 窗口：本账号的应答记录与仍在生效的拒绝重置时刻。
 	dsRows      []dsRow
 	dsRestUntil time.Time
+
+	// 每日签到（仅国服）：上次尝试时间与结果文案。
+	checkinAt  time.Time
+	checkinMsg string
 }
 
 func (a *workbuddyAccount) proxy(engineProxy string) string {
@@ -157,6 +169,7 @@ func New(cfg config.WorkBuddyConfig, st *store.Store) *Engine {
 		done:    make(chan struct{}),
 	}
 	go e.quotaLoop()
+	go e.checkinLoop()
 	return e
 }
 
@@ -215,6 +228,7 @@ func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	e.mu.Unlock()
 	go e.refreshQuota(acc)
 	go e.refreshConfig(acc)
+	go e.checkinAccount(acc)
 	return nil
 }
 
@@ -295,6 +309,11 @@ func (e *Engine) AccountStates() []engine.AccountState {
 			Quota:         acc.quota.Display(),
 			Service:       site.ID,
 			QuotaSnapshot: acc.quota.Snapshot(now),
+		}
+		if site.ID == SiteCN.ID {
+			v := acc.creds.AutoCheckInEnabled()
+			state.AutoCheckIn = &v
+			state.CheckIn = acc.checkinMsg
 		}
 		switch {
 		case !acc.enabled:
@@ -498,7 +517,15 @@ func (e *Engine) pickFor(modelName string) *workbuddyAccount {
 
 // pickForExcept 在一次请求内按序选号。配置了路由顺序时严格按管理台顺序，
 // 跳过本次请求已试过的账号；未配置时保持原来的智能选号（到期优先/轮询）。
-func (e *Engine) pickForExcept(modelName string, tried map[string]struct{}) *workbuddyAccount {
+func (e *Engine) pickForExcept(ctx context.Context, modelName string, tried map[string]struct{}) *workbuddyAccount {
+	// 会话粘性：上次接单的账号仍可用、支持该模型且本轮没试过时优先。
+	if preferred := engine.PreferredAccount(ctx); preferred != "" {
+		if _, skip := tried[preferred]; !skip {
+			if acc := e.pickPreferred(modelName, preferred); acc != nil {
+				return acc
+			}
+		}
+	}
 	if !e.order.Active() {
 		return e.pickFor(modelName)
 	}
@@ -587,6 +614,36 @@ func configDefaultEffort(models []ConfigModel, id string) string {
 		}
 	}
 	return ""
+}
+
+// pickPreferred 按 ID 取会话粘性指定的账号：必须当前可用且支持该模型，
+// 否则返回 nil 交给正常选号，粘性不阻断故障切换。
+func (e *Engine) pickPreferred(modelName, id string) *workbuddyAccount {
+	modelName = strings.TrimSpace(modelName)
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	now := time.Now()
+	for _, acc := range e.accounts {
+		if acc.id != id {
+			continue
+		}
+		acc.mu.Lock()
+		ok := acc.available(now)
+		if ok && dsModelName(modelName) && now.Before(acc.dsRestUntil) {
+			ok = false
+		}
+		supported := true
+		if ok && modelName != "" && modelName != "auto" {
+			endpoint, site := e.resolve(acc.creds)
+			supported = siteSupports(site, IsLegacyCodeBuddy(endpoint), modelName)
+		}
+		acc.mu.Unlock()
+		if ok && supported {
+			return acc
+		}
+		return nil
+	}
+	return nil
 }
 
 // pickWhere 按可选过滤条件选号（filter 在账号锁内调用，读到的 creds 是一致快照）。
@@ -770,6 +827,129 @@ func (e *Engine) setQuota(acc *workbuddyAccount, q *Quota) {
 	acc.mu.Unlock()
 }
 
+// CheckIn 立即签到一次，返回结果文案。幂等：今日已签到时直接返回已签到状态。
+// 国际服没有签到活动，直接返回说明。
+func (e *Engine) CheckIn(id string) (string, error) {
+	e.mu.RLock()
+	idx, ok := e.ids[id]
+	if !ok {
+		e.mu.RUnlock()
+		return "", fmt.Errorf("账号 %s 不在池中", id)
+	}
+	acc := e.accounts[idx]
+	e.mu.RUnlock()
+
+	acc.mu.Lock()
+	_, site := e.resolve(acc.creds)
+	acc.mu.Unlock()
+	if site.ID != SiteCN.ID {
+		return "国际服 WorkBuddy AI 没有签到活动", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	auth, err := e.freshAuth(ctx, acc)
+	if err != nil {
+		return "", err
+	}
+	acc.mu.Lock()
+	proxy := acc.proxy(e.proxy)
+	acc.mu.Unlock()
+	msg, err := checkin(ctx, proxy, auth)
+	if err != nil {
+		return "", err
+	}
+	e.setCheckin(acc, msg)
+	return msg, nil
+}
+
+// SetAutoCheckIn 开关自动签到（持久化到凭据，重启后保留）。仅国服有效。
+func (e *Engine) SetAutoCheckIn(id string, enabled bool) error {
+	e.mu.Lock()
+	idx, ok := e.ids[id]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("账号 %s 不在池中", id)
+	}
+	acc := e.accounts[idx]
+	e.mu.Unlock()
+	acc.mu.Lock()
+	acc.creds.AutoCheckIn = &enabled
+	acc.mu.Unlock()
+	e.persist(acc)
+	// 打开时立即补签今日；关闭时不补签。
+	if enabled {
+		go e.checkinAccount(acc)
+	}
+	return nil
+}
+
+// checkinLoop 每 30 分钟对全部国服账号尝试一次当日签到（每天每账号至多一次）。
+func (e *Engine) checkinLoop() {
+	t := time.NewTicker(30 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-e.done:
+			return
+		case <-t.C:
+			e.checkinAll()
+		}
+	}
+}
+
+func (e *Engine) checkinAll() {
+	e.mu.RLock()
+	accs := make([]*workbuddyAccount, len(e.accounts))
+	copy(accs, e.accounts)
+	e.mu.RUnlock()
+	now := time.Now()
+	for _, acc := range accs {
+		acc.mu.Lock()
+		ok := acc.enabled && acc.ready
+		sameDay := !acc.checkinAt.IsZero() && acc.checkinAt.Year() == now.Year() && acc.checkinAt.YearDay() == now.YearDay()
+		acc.mu.Unlock()
+		if !ok || sameDay {
+			continue
+		}
+		e.checkinAccount(acc)
+	}
+}
+
+// checkinAccount 对一个账号尝试签到：非国服或未开启自动签到则跳过；结果写入
+// 展示文案，失败不影响账号 ready/接单。
+func (e *Engine) checkinAccount(acc *workbuddyAccount) {
+	acc.mu.Lock()
+	_, site := e.resolve(acc.creds)
+	enabled := acc.creds.AutoCheckInEnabled()
+	acc.mu.Unlock()
+	if site.ID != SiteCN.ID || !enabled {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	auth, err := e.freshAuth(ctx, acc)
+	if err != nil {
+		e.setCheckin(acc, "签到失败: "+shortErr(err))
+		return
+	}
+	acc.mu.Lock()
+	proxy := acc.proxy(e.proxy)
+	acc.mu.Unlock()
+	msg, err := checkin(ctx, proxy, auth)
+	if err != nil {
+		msg = "签到失败: " + clipRunes(err.Error(), 80)
+	}
+	e.setCheckin(acc, msg)
+}
+
+func (e *Engine) setCheckin(acc *workbuddyAccount, msg string) {
+	acc.mu.Lock()
+	acc.checkinMsg = msg
+	acc.checkinAt = time.Now()
+	acc.mu.Unlock()
+}
+
 // refreshConfig 异步读取账号的 /v3/config 模型目录（含免费标识）。并发去重。
 func (e *Engine) refreshConfig(acc *workbuddyAccount) {
 	acc.mu.Lock()
@@ -826,6 +1006,11 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 		return nil, engine.UnavailableError(e)
 	}
 	cReq := toWorkBuddyRequest(req)
+	// 同一会话复用上游会话 ID：WorkBuddy 的 prompt cache 按会话归并，
+	// 每次新 ID 都会让前缀缓存无法命中（缓存字段始终为 0）。
+	if conv := engine.ConversationID(ctx); conv != "" {
+		cReq.ConversationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("web2api:"+conv)).String()
+	}
 	// 带默认推理档位（与 magpie 一致）：max_tokens ≤ 1024 的短答不思考
 	// （否则预算全花在推理上、正文空），其余按模型的 config 默认档位下发。
 	if cReq.ReasoningEffort == "" && (cReq.MaxTokens == 0 || cReq.MaxTokens > 1024) {
@@ -834,7 +1019,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 	var lastErr error
 	tried := map[string]struct{}{}
 	for attempt := 0; attempt < e.usableCount(); attempt++ {
-		acc := e.pickForExcept(req.Model, tried)
+		acc := e.pickForExcept(ctx, req.Model, tried)
 		if acc == nil {
 			break
 		}
@@ -859,12 +1044,14 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 			if acc.quotaStale(5 * time.Minute) {
 				go e.refreshQuota(acc)
 			}
+			engine.NoteServedAccount(ctx, acc.id)
 			return &model.ChatResult{
-				Text:      res.Text,
-				ToolCalls: res.ToolCalls,
-				Engine:    e.name,
-				Model:     req.Model,
-				Usage:     engine.SubResultUsage(res.PromptTokens, res.CompletionTokens, 0),
+				Text:        res.Text,
+				ToolCalls:   res.ToolCalls,
+				Engine:      e.name,
+				Model:       req.Model,
+				ActualModel: res.Model,
+				Usage:       engine.SubResultUsageCached(res.PromptTokens, res.CompletionTokens, 0, res.CachedTokens),
 			}, nil
 		}
 		lastErr = err

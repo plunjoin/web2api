@@ -505,3 +505,118 @@ func TestAlternateSkipsDisabledModel(t *testing.T) {
 		t.Fatalf("下架模型不应有备胎引擎, got %s", alt.Name())
 	}
 }
+
+// 上游把模型从 /v3/config 里摘掉（或账号全体重连中）时，实时目录不再声明它，
+// 第 2/3.5 步都会落空，模型掉进 auto 兜底被送去 AI Studio，检查结果变成毫不
+// 相干的「没有符合条件的 AI Studio 账户」。管理台「获取模型」保存的快照仍然
+// 记得归属：只要快照说它属于某订阅引擎，就留在那里报真实错误。
+func TestSnapshotOwnerKeepsModelOutOfAutoFallback(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.ReplaceEngineCatalog("workbuddy", []store.CatalogModel{
+		{Engine: "workbuddy", Model: "deepseek-v4.1-flash-sg", DisplayName: "Deepseek-V4.1-Flash"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 获取模型默认把新出现的模型下架；这里模拟已开放的模型。
+	if _, err := st.SetModelEnabled("deepseek-v4.1-flash-sg", true); err != nil {
+		t.Fatal(err)
+	}
+	// 实时目录里只有另外两个 deepseek 模型：上游这次刷新没带 -sg 变体。
+	m := newTestManager(
+		&staticEngine{name: "aistudio", ready: true, models: []string{"gemini-flash"}},
+		&staticEngine{name: "workbuddy", ready: true, models: []string{"deepseek-v4.1-flash", "deepseek-v4-pro"}},
+	)
+	m.st = st
+	eng, owned := m.pickEngine("deepseek-v4.1-flash-sg")
+	if eng == nil || eng.Name() != "workbuddy" || !owned {
+		t.Fatalf("快照归属应把 -sg 留在 workbuddy: eng=%v owned=%v", eng, owned)
+	}
+	if eng, _ := m.pickEngineForProbe("deepseek-v4.1-flash-sg"); eng == nil || eng.Name() != "workbuddy" {
+		t.Fatalf("管理台检查也应路由到 workbuddy, got %v", eng)
+	}
+}
+
+// 快照归属只认订阅/custom 引擎：引擎A/B 的快照行过期时不能把实时目录还
+// 承接着的同名模型钉死在过期归属上，auto 兜底与跨引擎备胎要照常工作。
+func TestSnapshotOwnerIgnoresABEngines(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.ReplaceEngineCatalog("geminiweb", []store.CatalogModel{
+		{Engine: "geminiweb", Model: "gemini-pro"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetModelEnabled("gemini-pro", true); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(
+		&staticEngine{name: "geminiweb", ready: false, models: []string{}},
+		&staticEngine{name: "aistudio", ready: true, models: []string{"gemini-flash"}},
+	)
+	m.st = st
+	// gemini-pro 不在任何实时目录里：过期快照归属（geminiweb，引擎A/B）不认领，
+	// 落入 auto 兜底交给就绪的 aistudio。
+	eng, owned := m.pickEngine("gemini-pro")
+	if eng == nil || eng.Name() != "aistudio" || owned {
+		t.Fatalf("过期 geminiweb 快照不应认领: eng=%v owned=%v", eng, owned)
+	}
+}
+
+// 零账号 codex 的静态目录里写死了 gpt-5.4：WorkBuddy 实时目录恰好丢了它时，
+// 「声明-不可用」启发式会按注册顺序把模型抢给 codex，报「引擎 codex 不可用」。
+// 快照归属（用户显式「获取模型」的记录）必须压过这个启发式。
+func TestSnapshotOwnerBeatsDeclaredUnavailableHeuristic(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.ReplaceEngineCatalog("workbuddy", []store.CatalogModel{
+		{Engine: "workbuddy", Model: "gpt-5.4", DisplayName: "GPT-5.4"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetModelEnabled("gpt-5.4", true); err != nil {
+		t.Fatal(err)
+	}
+	// codex 注册在 workbuddy 之前：启发式单走会先抢到它。WorkBuddy 实时目录
+	// 这次刷新没带 gpt-5.4（只剩国服模型）。
+	m := newTestManager(
+		&staticEngine{name: "codex", ready: false, models: []string{"gpt-5.4", "gpt-5.5"}},
+		&staticEngine{name: "workbuddy", ready: true, models: []string{"hy3", "glm-5.3"}},
+	)
+	m.st = st
+	eng, owned := m.pickEngine("gpt-5.4")
+	if eng == nil || eng.Name() != "workbuddy" || !owned {
+		t.Fatalf("gpt-5.4 应按快照归属 workbuddy: eng=%v owned=%v", eng, owned)
+	}
+	// 没有快照记录的模型才轮到「声明-不可用」启发式（保持既有行为）。
+	eng, owned = m.pickEngine("gpt-5.5")
+	if eng == nil || eng.Name() != "codex" || !owned {
+		t.Fatalf("无快照时 gpt-5.5 仍应按启发式归属 codex: eng=%v owned=%v", eng, owned)
+	}
+}
+
+// 上游把模型从目录摘掉、只剩 model_settings 里的孤儿记录时，管理台探测不该
+// 再掉进 auto 兜底甩给 aistudio（报「没有符合条件的 AI Studio 账户」），
+// 而应返回「没有引擎声明该模型」。
+func TestProbeOrphanModelIsNotFound(t *testing.T) {
+	m := newTestManager(
+		&staticEngine{name: "aistudio", ready: true, models: []string{"gemini-flash"}},
+		&staticEngine{name: "workbuddy", ready: true, models: []string{"deepseek-v4.1-flash", "deepseek-v4-pro"}},
+	)
+	if eng, owned := m.pickEngineForProbe("deepseek-v4.1-flash-sg"); eng != nil || owned {
+		t.Fatalf("孤儿模型探测应返回 not-found: eng=%v owned=%v", eng, owned)
+	}
+	// 多模态/声明模型仍照常归属（不被误伤）。
+	if eng, _ := m.pickEngineForProbe("gemini-flash"); eng == nil || eng.Name() != "aistudio" {
+		t.Fatalf("aistudio 声明模型仍应接单, got %v", eng)
+	}
+}

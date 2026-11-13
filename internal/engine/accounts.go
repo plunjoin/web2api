@@ -44,4 +44,8 @@ type AccountState struct {
 	Service       string            `json:"service,omitempty"` // 同引擎内的独立发行版
 	QuotaSnapshot *QuotaSnapshot    `json:"quota_snapshot,omitempty"`
 	Cooldowns     []AccountCooldown `json:"cooldowns,omitempty"`
+	// AutoCheckIn 自动签到开关（nil = 引擎不适用；teleagent 恒有值，workbuddy 仅国服）。
+	AutoCheckIn *bool `json:"auto_checkin,omitempty"`
+	// CheckIn 最近一次签到结果文案（teleagent / workbuddy 国服）。
+	CheckIn string `json:"check_in,omitempty"`
 }

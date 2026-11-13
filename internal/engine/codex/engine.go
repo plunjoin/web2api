@@ -329,7 +329,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 
 // candidates 返回本次请求可尝试的账号：配置了路由顺序时严格按顺序，
 // 否则保持原来的轮询起点。一次请求内按列表依次失败切换，不会重复打同一个账号。
-func (e *Engine) candidates() []*codexAccount {
+func (e *Engine) candidates(ctx context.Context) []*codexAccount {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	n := len(e.accounts)
@@ -352,7 +352,8 @@ func (e *Engine) candidates() []*codexAccount {
 		}
 	}
 	e.order.Sort(list, func(acc *codexAccount) string { return acc.id })
-	return list
+	// 会话粘性：上次接单的账号排到最前，失败时仍可换下一个。
+	return engine.PreferAccount(ctx, list, func(acc *codexAccount) string { return acc.id })
 }
 
 // pick 轮询选择可用账号。
@@ -472,7 +473,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 	}
 	cReq := toCodexRequest(req)
 	var lastErr error
-	for _, acc := range e.candidates() {
+	for _, acc := range e.candidates(ctx) {
 		res, err := e.chatOnce(ctx, acc, cReq, sink.Text, func(delta ToolCallDelta) error {
 			return sink.ToolCall(model.ToolCallDelta{
 				Index: delta.Index,
@@ -489,7 +490,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 				Text:   res.Text,
 				Engine: e.name,
 				Model:  req.Model,
-				Usage:  engine.SubResultUsage(res.PromptTokens, res.CompletionTokens, res.ReasoningTokens),
+				Usage:  engine.SubResultUsageCached(res.PromptTokens, res.CompletionTokens, res.ReasoningTokens, res.CachedTokens),
 			}
 			for _, call := range res.ToolCalls {
 				result.ToolCalls = append(result.ToolCalls, model.ToolCall{
@@ -504,6 +505,7 @@ func (e *Engine) chatLoop(ctx context.Context, req model.ChatRequest, sink model
 			if len(result.ToolCalls) > 0 {
 				result.FinishReason = "tool_calls"
 			}
+			engine.NoteServedAccount(ctx, acc.id)
 			return result, nil
 		}
 		lastErr = err

@@ -45,6 +45,9 @@ type ChatResult struct {
 	Text   string
 	Engine string
 	Model  string
+	// ActualModel 是上游真正承接的模型（请求 auto/别名时与请求模型不同）；
+	// 引擎没有更精确的信息时为空，用量明细回退展示请求模型。
+	ActualModel string
 	// Usage 是引擎拿到的 Token 用量；nil 表示引擎没有任何用量信息，
 	// 由网关按文本长度估算（见 TokenUsage.Estimated）。
 	Usage *TokenUsage
@@ -78,15 +81,44 @@ type TokenUsage struct {
 	TotalTokens      int64 `json:"total_tokens"`
 	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
 	Estimated        bool  `json:"estimated"`
+	// CachedTokens 是上游命中的前缀缓存 Token（OpenAI 语义下包含在
+	// PromptTokens 里）。只用于网关统计缓存命中率，不对外输出。
+	CachedTokens int64 `json:"-"`
 }
 
-// Normalize 补齐 TotalTokens，并保证三个计数非负。
+// UnmarshalJSON 兼容上游两种缓存用量写法：OpenAI 的
+// prompt_tokens_details.cached_tokens 与 Anthropic 风格的
+// cache_read_input_tokens。
+func (u *TokenUsage) UnmarshalJSON(data []byte) error {
+	type plain TokenUsage
+	var v struct {
+		plain
+		PromptTokensDetails *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		CacheReadInputTokens int64 `json:"cache_read_input_tokens"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*u = TokenUsage(v.plain)
+	u.CachedTokens = v.CacheReadInputTokens
+	if v.PromptTokensDetails != nil && v.PromptTokensDetails.CachedTokens > 0 {
+		u.CachedTokens = v.PromptTokensDetails.CachedTokens
+	}
+	return nil
+}
+
+// Normalize 补齐 TotalTokens，并保证计数非负。
 func (u TokenUsage) Normalize() TokenUsage {
 	if u.PromptTokens < 0 {
 		u.PromptTokens = 0
 	}
 	if u.CompletionTokens < 0 {
 		u.CompletionTokens = 0
+	}
+	if u.CachedTokens < 0 {
+		u.CachedTokens = 0
 	}
 	if u.TotalTokens < u.PromptTokens+u.CompletionTokens {
 		u.TotalTokens = u.PromptTokens + u.CompletionTokens
@@ -276,6 +308,13 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// PromptTokensDetails 携带缓存命中的 Prompt Token（OpenAI 语义）。
+	PromptTokensDetails *UsageDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// UsageDetails 是 usage 里的细分计数。
+type UsageDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
 }
 
 // Chunk 是 OpenAI 兼容的流式分片。

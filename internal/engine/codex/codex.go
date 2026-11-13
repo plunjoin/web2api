@@ -61,13 +61,13 @@ var DefaultModels = []string{
 
 // Token OAuth 令牌集合。
 type Token struct {
-	AccessToken  string
-	IDToken      string
-	RefreshToken string
-	ExpiresAt    time.Time
+	AccessToken    string
+	IDToken        string
+	RefreshToken   string
+	ExpiresAt      time.Time
 	ChatGPTAccount string // ID token 中的 chatgpt_account_id
-	Email        string    // ID token 中的 email
-	PlanType     string    // ID token 中的 chatgpt_plan_type
+	Email          string // ID token 中的 email
+	PlanType       string // ID token 中的 chatgpt_plan_type
 }
 
 // OAuthSession 一次授权会话（state + PKCE verifier）。
@@ -290,9 +290,11 @@ type Result struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	ReasoningTokens  int64
+	// CachedTokens 是上游命中的缓存输入 Token（含在 PromptTokens 内）。
+	CachedTokens int64
 	// PrimaryUsedPercent 上游响应头 x-codex-primary-used-percent（5 小时窗用量百分比）。
 	PrimaryUsedPercent float64
-	PrimaryResetAfter int64 // x-codex-primary-reset-after-seconds，0 表示未返回
+	PrimaryResetAfter  int64 // x-codex-primary-reset-after-seconds，0 表示未返回
 }
 
 type responsesItem struct {
@@ -629,9 +631,12 @@ func parseResponsesSSE(r io.Reader, onDelta func(string) error, onTool func(Tool
 			var ev struct {
 				Response struct {
 					Usage struct {
-						InputTokens  int64 `json:"input_tokens"`
-						OutputTokens int64 `json:"output_tokens"`
-						TotalTokens  int64 `json:"total_tokens"`
+						InputTokens        int64 `json:"input_tokens"`
+						OutputTokens       int64 `json:"output_tokens"`
+						TotalTokens        int64 `json:"total_tokens"`
+						InputTokensDetails struct {
+							CachedTokens int64 `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
 						OutputTokensDetails struct {
 							ReasoningTokens int64 `json:"reasoning_tokens"`
 						} `json:"output_tokens_details"`
@@ -642,6 +647,7 @@ func parseResponsesSSE(r io.Reader, onDelta func(string) error, onTool func(Tool
 				result.PromptTokens = ev.Response.Usage.InputTokens
 				result.CompletionTokens = ev.Response.Usage.OutputTokens
 				result.ReasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
+				result.CachedTokens = ev.Response.Usage.InputTokensDetails.CachedTokens
 			}
 		case "response.failed":
 			var ev struct {

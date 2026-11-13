@@ -75,6 +75,11 @@ func SubCooldownActive(until time.Time) bool {
 // SubResultUsage 组装 TokenUsage；reasoningTokens 计入 completion（上游口径已含），
 // Estimated=false 表示上游权威返回。
 func SubResultUsage(prompt, completion, reasoning int64) *model.TokenUsage {
+	return SubResultUsageCached(prompt, completion, reasoning, 0)
+}
+
+// SubResultUsageCached 在 SubResultUsage 的基础上带上缓存命中 Token。
+func SubResultUsageCached(prompt, completion, reasoning, cached int64) *model.TokenUsage {
 	if prompt <= 0 && completion <= 0 {
 		return nil // 上游无用量 → 网关按文本估算
 	}
@@ -83,6 +88,7 @@ func SubResultUsage(prompt, completion, reasoning int64) *model.TokenUsage {
 		CompletionTokens: completion,
 		TotalTokens:      prompt + completion,
 		ReasoningTokens:  reasoning,
+		CachedTokens:     cached,
 	}
 }
 

@@ -64,3 +64,19 @@ func TestClassifyKindCapabilitiesWin(t *testing.T) {
 		t.Fatalf("plain chat model misclassified: %q", got)
 	}
 }
+
+func TestPublicModelID(t *testing.T) {
+	cases := map[string]string{
+		"models/gemini-2.5-flash": "gemini-2.5-flash",
+		"Models/Gemini-2.5-Flash": "Gemini-2.5-Flash",
+		"gemini-2.5-flash":        "gemini-2.5-flash",
+		"  models/aqa ":           "aqa",
+		"":                        "",
+		"model/foo":               "model/foo", // 不误伤非 models/ 前缀
+	}
+	for in, want := range cases {
+		if got := PublicModelID(in); got != want {
+			t.Errorf("PublicModelID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

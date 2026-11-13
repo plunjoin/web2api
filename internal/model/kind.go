@@ -74,8 +74,18 @@ func kindRank(kind string) int {
 // Google 的 OpenAI 兼容端点目录带 models/ 前缀，调用方通常只写裸名；两边不归一的话，
 // 下架记的是带前缀的名字，请求写裸名就会绕过下架直接打到同名的第三方 Key。
 func CanonicalModelID(id string) string {
-	id = strings.ToLower(strings.TrimSpace(id))
-	return strings.TrimPrefix(id, "models/")
+	return strings.ToLower(PublicModelID(id))
+}
+
+// PublicModelID 去掉 Google OpenAI 兼容端点目录的 models/ 前缀（大小写不敏感），
+// 保留其余大小写。用于对外展示与快照存储：下游 /v1/models 与模型快照都不该把
+// models/ 前缀当成模型名的一部分。
+func PublicModelID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) >= len("models/") && strings.EqualFold(id[:len("models/")], "models/") {
+		id = id[len("models/"):]
+	}
+	return strings.TrimSpace(id)
 }
 
 func kindFromName(name string) string {

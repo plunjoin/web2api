@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"web2api/internal/engine/custom"
 	"web2api/internal/engine/geminiweb"
 	"web2api/internal/engine/kiro"
+	"web2api/internal/engine/teleagent"
 	"web2api/internal/engine/upstream"
 	"web2api/internal/engine/workbuddy"
 	"web2api/internal/model"
@@ -51,6 +53,17 @@ type Manager struct {
 	routeMu       sync.RWMutex
 	routeIDs      []string
 	routeSupplier map[string]int
+	// routeEngine 账号 ID → 引擎名，供会话粘性定位账号所属供应商。
+	routeEngine map[string]string
+
+	// 会话粘性（会话键 → 上次接单账号）。
+	affinity affinityCache
+
+	// 管理台「获取模型」保存的目录快照归属（canonical model → engine），带 TTL 缓存。
+	// 实时目录会随上游 /v3/config、账号重连等波动，快照是持久的归属记录。
+	snapMu       sync.RWMutex
+	snapOwner    map[string]string
+	snapLoadedAt time.Time
 }
 
 // accountPool 有账号池的引擎统一接口（引擎A/B 与订阅引擎都实现）。
@@ -205,6 +218,10 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		eb := workbuddy.New(cfg.Engines.WorkBuddy, st)
 		m.register(eb.Name(), eb, eb)
 	}
+	if cfg.Engines.TeleAgent.Enabled {
+		et := teleagent.New(cfg.Engines.TeleAgent, st)
+		m.register(et.Name(), et, et)
+	}
 	if cfg.Engines.Custom.Enabled {
 		ec := custom.New(cfg.Engines.Custom, st)
 		m.register(ec.Name(), ec, ec)
@@ -229,6 +246,7 @@ func (m *Manager) Init(ctx context.Context) error {
 	}
 	// 账号装配完成后再下发管理台保存的路由顺序，新增账号顺延到末尾。
 	m.ReloadRoutingOrder()
+	m.ReloadAffinity()
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
 	}
@@ -289,6 +307,16 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 				BaseURL: acc.BaseURL, Proxy: acc.Proxy,
 			})
 			_, _ = m.st.CreateAccount("workbuddy", seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
+		}
+		for _, acc := range m.cfg.Engines.TeleAgent.Accounts {
+			if strings.TrimSpace(acc.Token) == "" {
+				continue
+			}
+			creds := engine.MarshalCompact(teleagent.Credentials{
+				Token: acc.Token, DeviceID: acc.DeviceID, InstallID: acc.InstallID,
+				APIKey: acc.APIKey, AppVersion: acc.AppVersion, Scope: acc.Scope, Email: acc.Email, Proxy: acc.Proxy,
+			})
+			_, _ = m.st.CreateAccount("teleagent", seedLabel("teleagent", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.Custom.Accounts {
 			if strings.TrimSpace(acc.BaseURL) == "" || strings.TrimSpace(acc.APIKey) == "" {
@@ -395,6 +423,16 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 					}
 				}
 			}
+		case "teleagent":
+			if eng := m.teleagentEngine(); eng != nil {
+				var creds teleagent.Credentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.Token != "" {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
 		case "custom":
 			if eng := m.customEngine(); eng != nil {
 				var creds custom.Credentials
@@ -442,6 +480,15 @@ func (m *Manager) mWorkBuddyEngine() *workbuddy.Engine {
 	if eng, ok := m.engines["workbuddy"]; ok {
 		if w, ok := eng.(*workbuddy.Engine); ok {
 			return w
+		}
+	}
+	return nil
+}
+
+func (m *Manager) teleagentEngine() *teleagent.Engine {
+	if eng, ok := m.engines["teleagent"]; ok {
+		if t, ok := eng.(*teleagent.Engine); ok {
+			return t
 		}
 	}
 	return nil
@@ -801,8 +848,44 @@ func (m *Manager) addAccountFromStorageState(req AccountInput) (store.Account, e
 			label = "自定义供应商"
 		}
 		return m.addCustomAccount(label, creds)
+	case "teleagent":
+		var creds teleagent.Credentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if creds.Token == "" {
+			return store.Account{}, errors.New("token 不能为空")
+		}
+		// 浏览器登录导入没有 device/install 指纹：自动生成（与桌面端等价，服务端只校验一致性）。
+		if creds.DeviceID == "" {
+			creds.DeviceID = teleagent.NewDeviceID()
+		}
+		if creds.InstallID == "" {
+			creds.InstallID = teleagent.NewInstallID()
+		}
+		if creds.AppVersion == "" {
+			creds.AppVersion = teleagent.DefaultAppVersion
+		}
+		if creds.APIKey == "" {
+			creds.APIKey = teleagent.DefaultAPIKey
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = teleagent.AccountName(creds.Token) // JWT 里的脱敏手机号
+		}
+		if label == "" {
+			label = strings.TrimSpace(req.Email)
+		}
+		if label == "" {
+			// Web 端 Cookie 的 token 可能没有 accountName 声明，兜底用时间戳命名。
+			label = "TeleAgent " + time.Now().Format("2006-01-02 15:04")
+		}
+		return m.addTeleAgentAccount(label, creds)
 	default:
-		return store.Account{}, fmt.Errorf("未知引擎: %s（支持 a、b、codex、antigravity、kiro、workbuddy、custom）", req.Engine)
+		return store.Account{}, fmt.Errorf("未知引擎: %s（支持 a、b、codex、antigravity、kiro、workbuddy、teleagent、custom）", req.Engine)
 	}
 }
 
@@ -918,6 +1001,30 @@ func (m *Manager) addCustomAccount(label string, creds custom.Credentials) (stor
 	return acc, nil
 }
 
+// addTeleAgentAccount 添加 teleagent 账号（存储 + 入池）。
+func (m *Manager) addTeleAgentAccount(label string, creds teleagent.Credentials) (store.Account, error) {
+	eng := m.teleagentEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("teleagent 引擎未启用（engines.teleagent.enabled）")
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = teleagent.AccountName(creds.Token)
+	}
+	if label == "" {
+		return store.Account{}, errors.New("label 不能为空（且 token 里没有 accountName）")
+	}
+	acc, err := m.st.CreateAccount("teleagent", label, engine.MarshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
 // UpdateSubscriptionCredentials 更新订阅/第三方引擎账号凭据。
 func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMessage) error {
 	acc, err := m.st.GetAccount(id)
@@ -982,6 +1089,44 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 			return err
 		}
 		return m.customEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	case "teleagent":
+		var creds teleagent.Credentials
+		if err := json.Unmarshal(credentials, &creds); err != nil || creds.Token == "" {
+			return errors.New("credentials.token 不能为空")
+		}
+		// 「更新凭据」只提交 token：设备/安装指纹、apiKey、版本是入池时确定的，
+		// 换 token 不应把它们重置（否则签名会变、且浏览器导入时可能丢失 asar 读到的值）。
+		var old teleagent.Credentials
+		if json.Unmarshal([]byte(acc.Credentials), &old) == nil {
+			if creds.DeviceID == "" {
+				creds.DeviceID = old.DeviceID
+			}
+			if creds.InstallID == "" {
+				creds.InstallID = old.InstallID
+			}
+			if creds.APIKey == "" {
+				creds.APIKey = old.APIKey
+			}
+			if creds.AppVersion == "" {
+				creds.AppVersion = old.AppVersion
+			}
+			if creds.Scope == "" {
+				creds.Scope = old.Scope
+			}
+		}
+		if creds.DeviceID == "" {
+			creds.DeviceID = teleagent.NewDeviceID()
+		}
+		if creds.InstallID == "" {
+			creds.InstallID = teleagent.NewInstallID()
+		}
+		if creds.AppVersion == "" {
+			creds.AppVersion = teleagent.DefaultAppVersion
+		}
+		if err := m.st.UpdateAccountCredentials(id, engine.MarshalCompact(creds)); err != nil {
+			return err
+		}
+		return m.teleagentEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
 	}
 	return fmt.Errorf("引擎 %s 不支持凭据更新", acc.Engine)
 }
@@ -1163,6 +1308,54 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 	return fmt.Errorf("未知引擎: %s", acc.Engine)
 }
 
+// AccountCheckIn 立即触发一次账号签到（teleagent / workbuddy 国服），返回结果文案。
+func (m *Manager) AccountCheckIn(id int64) (string, error) {
+	acc, err := m.st.GetAccount(id)
+	if err != nil {
+		return "", err
+	}
+	switch acc.Engine {
+	case "teleagent":
+		eng := m.teleagentEngine()
+		if eng == nil {
+			return "", errors.New("teleagent 引擎未启用")
+		}
+		return eng.CheckIn(fmt.Sprintf("%d", id))
+	case "workbuddy":
+		eng := m.mWorkBuddyEngine()
+		if eng == nil {
+			return "", errors.New("workbuddy 引擎未启用")
+		}
+		return eng.CheckIn(fmt.Sprintf("%d", id))
+	default:
+		return "", fmt.Errorf("账号 %s 引擎不支持签到", acc.Engine)
+	}
+}
+
+// SetAccountAutoCheckIn 开关账号自动签到（teleagent / workbuddy 国服）。
+func (m *Manager) SetAccountAutoCheckIn(id int64, enabled bool) error {
+	acc, err := m.st.GetAccount(id)
+	if err != nil {
+		return err
+	}
+	switch acc.Engine {
+	case "teleagent":
+		eng := m.teleagentEngine()
+		if eng == nil {
+			return errors.New("teleagent 引擎未启用")
+		}
+		return eng.SetAutoCheckIn(fmt.Sprintf("%d", id), enabled)
+	case "workbuddy":
+		eng := m.mWorkBuddyEngine()
+		if eng == nil {
+			return errors.New("workbuddy 引擎未启用")
+		}
+		return eng.SetAutoCheckIn(fmt.Sprintf("%d", id), enabled)
+	default:
+		return fmt.Errorf("账号 %s 引擎不支持签到", acc.Engine)
+	}
+}
+
 // AccountOverview 号池总览（存储记录 + 引擎实时状态合并）。
 func (m *Manager) AccountOverview() []AccountOverview {
 	accounts, err := m.st.ListAccounts()
@@ -1211,6 +1404,24 @@ func (m *Manager) AccountOverview() []AccountOverview {
 	return out
 }
 
+// AccountRef 返回接单账号的展示元数据：所属引擎、显示名称与供应商。
+// 供应商只对第三方 Key 有值（归一化 base_url）；内置引擎返回空。
+// 账号已被删除或 ID 非法时 ok=false，调用方回退到引擎名。
+func (m *Manager) AccountRef(id string) (engineName, label, provider string, ok bool) {
+	n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+	if err != nil || n <= 0 || m.st == nil {
+		return "", "", "", false
+	}
+	acc, err := m.st.GetAccount(n)
+	if err != nil {
+		return "", "", "", false
+	}
+	if acc.Engine == "custom" {
+		provider = customProvider(acc.Credentials)
+	}
+	return acc.Engine, acc.Label, provider, true
+}
+
 // customProvider 从第三方 Key 的凭据里取出供应商身份：归一化后的 base_url。
 // 凭据缺失或没有地址时返回空，管理台会把这类账号归到「未识别地址」。
 func customProvider(credentials string) string {
@@ -1248,7 +1459,35 @@ func isProbeRequest(ctx context.Context) bool {
 
 // pickEngineForProbe 管理台探测专用：只看哪个引擎能接单，不看上下架开关。
 func (m *Manager) pickEngineForProbe(modelName string) (engine.Engine, bool) {
-	return m.matchEngine(model.CanonicalModelID(modelName))
+	name := model.CanonicalModelID(modelName)
+	eng, owned := m.matchEngine(name)
+	if eng == nil {
+		return nil, false
+	}
+	// 探测要回答「这个模型现在能不能接」，不是「丢给 auto 兜底试试」。owned=false
+	// 意味着 matchEngine 只走到 default_engine / auto 兜底（没被任何引擎目录认领）。
+	// 此时若真没有任何引擎声明该模型（如上游把 deepseek-v4.1-flash-sg 从目录摘掉，
+	// 只剩 model_settings 里一条孤儿记录），继续兜底只会落到 aistudio，报出
+	// 「没有符合条件的 AI Studio 账户」这种和真实归属无关的错误。这里拦下，
+	// 让上游返回 model_not_found 的准确提示。
+	if !owned && !m.anyEngineDeclares(name) {
+		return nil, false
+	}
+	return eng, owned
+}
+
+// anyEngineDeclares 是否有任何注册引擎的实时目录声明了该模型（大小写不敏感）。
+func (m *Manager) anyEngineDeclares(name string) bool {
+	name = model.CanonicalModelID(name)
+	if name == "" {
+		return false
+	}
+	for _, engName := range m.engineOrder {
+		if eng, ok := m.engines[engName]; ok && engineHasModel(eng, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchEngine 按模型名挑选承接引擎（不含上下架判断）。
@@ -1282,9 +1521,21 @@ func (m *Manager) matchEngine(name string) (engine.Engine, bool) {
 		return eng, true
 	}
 
-	// 3.5) 目录里有、但当前没有可用账号的模型（custom / 订阅引擎）：仍判给它（专属）。
+	// 3.5) 快照归属：实时目录随上游波动（WorkBuddy 的 /v3/config 一刷新，
+	//      deepseek-v4.1-flash-sg 这类模型就会暂时消失），模型会从第 2 步
+	//      落空、被 3.6 的「声明-不可用」启发式按引擎注册顺序抢给先声明的
+	//      引擎（如零账号的 codex 抢走 WorkBuddy 的 gpt-5.4），或掉进 auto
+	//      兜底被送去 AI Studio。管理台「获取模型」保存的快照是用户显式的
+	//      归属记录：快照说它属于哪个订阅/custom 引擎，就留在那里报真实
+	//      错误，绝不改投别的引擎兜底。
+	if eng, ok := m.matchSnapshotOwner(name); ok {
+		return eng, true
+	}
+
+	// 3.6) 目录里有、但当前没有可用账号的模型（custom / 订阅引擎）：仍判给它（专属）。
 	//      否则会落入 auto 兜底被送去根本不认识该模型的引擎，真实原因
-	//      「声明了模型的账号均不可用」反而看不到。
+	//      「声明了模型的账号均不可用」反而看不到。快照没记录时这是兜底启发式；
+	//      多个引擎都声明时按注册顺序取第一个。
 	if eng, ok := m.matchDeclaredUnavailable(name); ok {
 		return eng, true
 	}
@@ -1440,6 +1691,76 @@ func engineCanActuallyServe(eng engine.Engine, modelName string) bool {
 	return engineCanServeModel(eng, modelName)
 }
 
+// snapshotTTL 目录快照归属缓存的存活期。快照只在管理台点「获取模型」时整表
+// 替换，TTL 只影响上游摘掉/加回模型后路由感知快照的延迟。
+const snapshotTTL = 30 * time.Second
+
+// matchSnapshotOwner 按「获取模型」保存的目录快照判断模型归属。只认订阅/custom
+// 引擎（模型专属语义）：引擎A/B 的快照行交给实时目录与 auto 兜底，否则快照
+// 过期会把 A/B 还在实时承接的同名模型钉死在过期归属上、掐断跨引擎兜底。
+// 归属引擎已不再注册（配置里关掉了）时同样不认领。
+func (m *Manager) matchSnapshotOwner(modelName string) (engine.Engine, bool) {
+	if m.st == nil {
+		return nil, false
+	}
+	name := model.CanonicalModelID(modelName)
+	if name == "" {
+		return nil, false
+	}
+	engName, ok := m.snapshotOwner(name)
+	if !ok {
+		return nil, false
+	}
+	// 第三方 Key 的快照行按供应商分桶（custom|<base_url>），归属都落在 custom 引擎。
+	if strings.HasPrefix(engName, "custom|") {
+		engName = "custom"
+	}
+	if !isSubscriptionEngine(engName) {
+		return nil, false
+	}
+	eng, ok := m.engines[engName]
+	if !ok {
+		return nil, false
+	}
+	return eng, true
+}
+
+// snapshotOwner 读取快照归属（带 TTL 缓存；读失败时视为无快照，不拦截路由）。
+func (m *Manager) snapshotOwner(name string) (string, bool) {
+	m.snapMu.RLock()
+	if m.snapOwner != nil && time.Since(m.snapLoadedAt) < snapshotTTL {
+		eng, ok := m.snapOwner[name]
+		m.snapMu.RUnlock()
+		return eng, ok
+	}
+	m.snapMu.RUnlock()
+
+	m.snapMu.Lock()
+	defer m.snapMu.Unlock()
+	if m.snapOwner != nil && time.Since(m.snapLoadedAt) < snapshotTTL {
+		eng, ok := m.snapOwner[name]
+		return eng, ok
+	}
+	index := map[string]string{}
+	if rows, err := m.st.CatalogModels(); err == nil {
+		for _, row := range rows {
+			id := model.CanonicalModelID(row.Model)
+			if id == "" || row.Engine == "" {
+				continue
+			}
+			// 同名模型跨引擎重复时保留先到的一条；CatalogModels 按引擎名排序，
+			// 顺序稳定，重启间不会漂移。
+			if _, exists := index[id]; !exists {
+				index[id] = row.Engine
+			}
+		}
+	}
+	m.snapOwner = index
+	m.snapLoadedAt = time.Now()
+	eng, ok := index[name]
+	return eng, ok
+}
+
 // engineCanServeModel 引擎当前是否有可用账号能接这个模型。
 // 实现了 ModelAvailability 的引擎（custom）按模型级可用性判断；其余引擎的
 // 目录本身就是账号可用性的体现，按目录是否声明该模型判断即可。
@@ -1471,7 +1792,7 @@ func (m *Manager) modelDisabled(modelName string) bool {
 // 命中后引擎不可用时不做跨引擎切换，避免误导性错误。
 func isSubscriptionEngine(name string) bool {
 	switch name {
-	case "codex", "antigravity", "kiro", "workbuddy", "custom":
+	case "codex", "antigravity", "kiro", "workbuddy", "teleagent", "custom":
 		return true
 	}
 	return false
@@ -1676,10 +1997,12 @@ func (m *Manager) probeCatalogModelForTarget(modelID, kind string, eng engine.En
 
 // Chat 非流式对话。按供应商 / 账号顺序尝试，一个供应商不通再换下一个。
 func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
+	ctx, affinityKey, preferred := m.affinityContext(ctx, req)
 	engines, req, err := m.chatEnginePlan(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	engines = m.preferAffinityEngine(engines, preferred)
 	var (
 		lastRes *model.ChatResult
 		lastErr error
@@ -1695,6 +2018,7 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 		}
 		res, err := eng.Chat(ctx, req)
 		if err == nil {
+			m.noteAffinity(affinityKey, ctx)
 			return res, nil
 		}
 		// 失败也带回引擎名，用量明细才不会显示「—」。
@@ -1713,10 +2037,12 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 	if sink == nil {
 		sink = model.TextSink(nil)
 	}
+	ctx, affinityKey, preferred := m.affinityContext(ctx, req)
 	engines, req, err := m.chatEnginePlan(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	engines = m.preferAffinityEngine(engines, preferred)
 	var (
 		res     *model.ChatResult
 		lastErr error
@@ -1739,6 +2065,7 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 			res, err = eng.ChatStream(ctx, req, gate.Text)
 		}
 		if err == nil {
+			m.noteAffinity(affinityKey, ctx)
 			return res, nil
 		}
 		lastRes = &model.ChatResult{Engine: eng.Name(), Model: req.Model}
@@ -2070,6 +2397,7 @@ func (m *Manager) EngineMetaList() []EngineMeta {
 		{Name: "antigravity", Describe: "Antigravity（Google Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
 		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},
 		{Name: "workbuddy", Describe: "腾讯 WorkBuddy（国服/国际服号池，积分智能路由）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国服 copilot.tencent.com 或国际服 www.workbuddy.ai）"},
+		{Name: "teleagent", Describe: "TeleAgent（天翼 AI 星辰超级智能体，GLM 系列）", Enabled: m.engines["teleagent"] != nil, AccountPool: true, OAuth: "authorize", Credential: "token（浏览器登录授权，或本机导入 scripts/import-teleagent-accounts.go）"},
 		{Name: "custom", Describe: "第三方 OpenAI 兼容 Key（支持常见供应商余额查询）", Enabled: m.engines["custom"] != nil, AccountPool: true, Credential: "base_url + api_key；余额：MiniMax/OpenRouter/硅基流动/DeepSeek/Sub2API/NewAPI 等"},
 	}
 	return metas

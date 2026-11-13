@@ -348,14 +348,21 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 		result.FinishReason = resp.Choices[0].FinishReason
 	}
 	o.MarkReady()
+	if resp.Model != "" {
+		result.ActualModel = resp.Model
+	}
 	if resp.Usage.TotalTokens > 0 || resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
 		// 上游 OpenAI 兼容接口返回的权威 usage。
 		usage := model.TokenUsage{
 			PromptTokens:     int64(resp.Usage.PromptTokens),
 			CompletionTokens: int64(resp.Usage.CompletionTokens),
 			TotalTokens:      int64(resp.Usage.TotalTokens),
-		}.Normalize()
-		result.Usage = &usage
+		}
+		if d := resp.Usage.PromptTokensDetails; d != nil {
+			usage.CachedTokens = int64(d.CachedTokens)
+		}
+		normalized := usage.Normalize()
+		result.Usage = &normalized
 	}
 	return result, nil
 }
@@ -407,6 +414,7 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 	var full strings.Builder
 	var usage *model.TokenUsage
 	finishReason := ""
+	actualModel := ""
 	// 工具调用分块按 index 归并：上游会把 id/name 放在首块，
 	// 参数按 JSON 片段逐块下发，必须拼完才能得到完整 arguments。
 	accs := map[int]*model.ToolCall{}
@@ -426,6 +434,9 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 		var chunk model.Chunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		if chunk.Model != "" {
+			actualModel = chunk.Model
 		}
 		// 上游用量可能挂在结束分片上，也可能单独一个 choices 为空的分片
 		// （stream_options.include_usage）。两种都要收，否则网关只能估算。
@@ -473,7 +484,7 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 		return nil, err
 	}
 	o.MarkReady()
-	result := &model.ChatResult{Text: full.String(), Engine: o.name, Model: req.Model, Usage: usage, FinishReason: finishReason}
+	result := &model.ChatResult{Text: full.String(), Engine: o.name, Model: req.Model, ActualModel: actualModel, Usage: usage, FinishReason: finishReason}
 	sort.Ints(indices)
 	for _, index := range indices {
 		call := *accs[index]
