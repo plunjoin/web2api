@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Field } from '@/components/fields'
 import { api, ApiError } from '@/lib/api'
 
@@ -302,12 +301,12 @@ export function AddAntigravityDialog(props: Omit<Parameters<typeof AddOAuthEngin
 }
 
 /** WorkBuddy：设备授权轮询（扫码/浏览器登录后自动入池）。 */
-export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void }) {
+export function AddWorkBuddyDialog({ open, onOpenChange, onDone, edition = 'workbuddy' }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void; edition?: 'workbuddy' | 'workbuddy-ai' }) {
   const [session, setSession] = useState<OAuthStartResp | null>(null)
   const [pasteToken, setPasteToken] = useState('')
   const [label, setLabel] = useState('')
   // 发行版：两个 build 的登录入口、模型目录、计费都不同，入池前必须选对。
-  const [site, setSite] = useState('workbuddy')
+  const [site, setSite] = useState(edition)
   const [busy, setBusy] = useState(false)
   const [polling, setPolling] = useState(false)
   const [expired, setExpired] = useState(false)
@@ -330,24 +329,14 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
       setSession(null)
       setPasteToken('')
       setLabel('')
-      setSite('workbuddy')
+      setSite(edition)
       setPolling(false)
       setBusy(false)
       setExpired(false)
     }
     return cancelPoll
-  }, [open])
+  }, [open, edition])
 
-  // 切换发行版后取消在途请求，旧响应不能关闭新弹窗或停止新会话。
-  const changeSite = (v: string) => {
-    if (v === site) return
-    cancelPoll()
-    setPolling(false)
-    setBusy(false)
-    setExpired(false)
-    setSession(null)
-    setSite(v)
-  }
 
   const poll = (sessionID: string, current: number, deadline: number) => {
     let failures = 0
@@ -433,7 +422,7 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
     try {
       await api('/admin/api/accounts', {
         method: 'POST',
-        json: { engine: 'workbuddy', label: label.trim(), credentials: { token: pasteToken.trim(), site } },
+        json: { engine: site, label: label.trim(), credentials: { token: pasteToken.trim(), site } },
       })
       toast.success('账号已添加')
       onOpenChange(false)
@@ -450,20 +439,12 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone }: { open: boole
       <DialogContent className="sm:max-w-[520px]">
         <form onSubmit={pasteSubmit} className="space-y-4">
           <DialogHeader>
-            <DialogTitle className="text-[15px]">添加 WorkBuddy 账号</DialogTitle>
-            <DialogDescription className="text-[13px]">先选发行版，再扫码授权或粘贴 accessToken。国服与国际服的账号不能混用同一个登录入口。</DialogDescription>
+            <DialogTitle className="text-[15px]">{site === 'workbuddy-ai' ? '添加 WorkBuddy AI 账号' : '添加 WorkBuddy 账号'}</DialogTitle>
+            <DialogDescription className="text-[13px]">{site === 'workbuddy-ai' ? '国际服 www.workbuddy.ai。' : '国服 copilot.tencent.com。'}扫码授权或粘贴 accessToken，两个发行版的登录入口不能混用。</DialogDescription>
           </DialogHeader>
-          <Field label="发行版" htmlFor="wb-site">
-            <Select value={site} onValueChange={changeSite}>
-              <SelectTrigger id="wb-site" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="workbuddy">国服 · copilot.tencent.com</SelectItem>
-                <SelectItem value="workbuddy-ai">国际服 · www.workbuddy.ai</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
+          <div className="rounded-md border bg-muted/40 px-3 py-2 text-[13px]">
+            {site === 'workbuddy-ai' ? 'WorkBuddy AI · www.workbuddy.ai' : 'WorkBuddy · copilot.tencent.com'}
+          </div>
           {!session ? (
             <Button type="button" onClick={startAuth} disabled={busy} className="w-full">
               {busy ? <Loader2 className="animate-spin" /> : null} 开始扫码授权
@@ -650,7 +631,7 @@ export function SubCredsDialog({
   onOpenChange: (o: boolean) => void
   onDone: () => void
 }) {
-  const isTokenEngine = account?.engine === 'workbuddy' || account?.engine === 'teleagent'
+  const isTokenEngine = account?.engine === 'workbuddy' || account?.engine === 'workbuddy-ai' || account?.engine === 'teleagent'
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   useEffect(() => {

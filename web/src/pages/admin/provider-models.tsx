@@ -171,7 +171,7 @@ export function ProviderModelsDialog({
             {dialogTitle} 的模型
           </DialogTitle>
           <DialogDescription className="text-[13px]">
-            {engine === 'workbuddy' ? '此处管理 WorkBuddy 双发行版共享的引擎模型，测试可使用任一发行版的可用账号。' : '拉取与测试仅使用这个供应商，不转投其他来源。'}新模型默认未开放；开放开关对所有供应商的同名模型全局生效，测试不改变开放状态。
+            '拉取与测试仅使用这个供应商，不转投其他来源。'新模型默认未开放；开放开关对所有供应商的同名模型全局生效，测试不改变开放状态。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-2">

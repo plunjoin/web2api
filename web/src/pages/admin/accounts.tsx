@@ -30,7 +30,7 @@ export default function AdminAccounts() {
   // ?new=<engine> 来自命令面板或下拉菜单：直接打开对应的添加弹窗
   const [params, setParams] = useSearchParams()
   const newParam = canonicalEngine(params.get('new') || '')
-  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'teleagent', 'custom']
+  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'workbuddy-ai', 'teleagent', 'custom']
   const adding = ENGINE_KEYS.includes(newParam as EngineName) ? (newParam as EngineName) : null
   const setAdding = (v: EngineName | null) => {
     const next = new URLSearchParams(params)
@@ -91,7 +91,7 @@ export default function AdminAccounts() {
       ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }]
       : a.engine === 'custom'
         ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setCustomCreds(a) }]
-        : ['codex', 'antigravity', 'kiro', 'workbuddy', 'teleagent'].includes(a.engine)
+        : ['codex', 'antigravity', 'kiro', 'workbuddy', 'workbuddy-ai', 'teleagent'].includes(a.engine)
           ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setSubCreds(a) }]
           : []),
     a.enabled
@@ -155,7 +155,8 @@ export default function AdminAccounts() {
     { key: 'codex', title: 'GPT（ChatGPT 订阅）', hint: 'OAuth 授权或粘贴 refresh_token' },
     { key: 'antigravity', title: 'Antigravity（Google 订阅）', hint: 'Google OAuth 授权或粘贴 refresh_token' },
     { key: 'kiro', title: 'Kiro（AWS CodeWhisperer）', hint: '粘贴 Kiro IDE 的 refresh_token' },
-    { key: 'workbuddy', title: 'WorkBuddy / CodeBuddy（腾讯）', hint: '扫码授权或粘贴 accessToken' },
+    { key: 'workbuddy', title: 'WorkBuddy（国服）', hint: '扫码授权或粘贴 accessToken' },
+    { key: 'workbuddy-ai', title: 'WorkBuddy AI（国际服）', hint: '扫码授权或粘贴 accessToken' },
     { key: 'teleagent', title: 'TeleAgent（天翼 AI）', hint: '浏览器登录授权或粘贴 token' },
     { key: 'custom', title: '第三方 Key（OpenAI 兼容）', hint: '填 Base URL + API Key' },
   ]
@@ -228,7 +229,7 @@ export default function AdminAccounts() {
       <AddCodexDialog open={adding === 'codex'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddKiroDialog open={adding === 'kiro'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
-      <AddWorkBuddyDialog open={adding === 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddWorkBuddyDialog open={adding === 'workbuddy' || adding === 'workbuddy-ai'} edition={adding === 'workbuddy-ai' ? 'workbuddy-ai' : 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddTeleAgentDialog open={adding === 'teleagent'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddCustomKeyDialog open={adding === 'custom'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />

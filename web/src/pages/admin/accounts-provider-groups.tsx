@@ -11,14 +11,14 @@ import { resolveProvider } from '@/lib/provider-presets'
 import { aggregateQuota, freshQuota, knownWindow, quotaLabel } from '@/lib/account-quota'
 import { relative } from '@/lib/format'
 
-const ORDER = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'custom']
+const ORDER = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'kiro', 'workbuddy', 'workbuddy-ai', 'custom']
 const UNKNOWN = 'custom|unknown'
 const format = (v: number) => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(v)
 
 function groupKey(a: Account): string {
   const engine = canonicalEngine(a.engine)
   if (engine === 'custom') return a.provider || UNKNOWN
-  return engine === 'workbuddy' ? a.live?.service || engine : engine
+  return engine
 }
 
 // 第三方 Key 显示识别出的厂商名 + 图标，base_url 只留在 tooltip 里；
@@ -30,7 +30,7 @@ function groupMeta(key: string, engine: string) {
     return { name: p.name, icon: p.icon, note: p.note, subscription: !!p.subscription, title: p.host && p.host !== p.name ? key : undefined }
   }
   const p = resolveProvider(engine, key)
-  return { name: engine === 'workbuddy' ? engineLabel(key) : p.name, icon: p.icon, note: p.note, subscription: !!p.subscription, title: undefined }
+  return { name: engineLabel(key), icon: p.icon, note: p.note, subscription: !!p.subscription, title: undefined }
 }
 
 
@@ -153,7 +153,7 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
         const up = list.filter((a) => accountHealth(a) === 'up').length
         const broken = list.filter((a) => accountHealth(a) === 'down').length
         const cooling = list.filter((a) => a.live?.cooldowns?.length).length
-        const summary = engine === 'workbuddy' ? aggregateQuota(list) : null
+        const summary = engine === 'workbuddy' || engine === 'workbuddy-ai' ? aggregateQuota(list) : null
         const isCollapsed = collapsed.has(key)
         return (
           <section key={key} aria-label={meta.name} className="min-w-0 overflow-hidden rounded-xl border bg-card">
@@ -169,7 +169,7 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
                   <span className="mt-1 block text-xs font-normal text-muted-foreground">{list.length} 个账号 · 可用 {up}{cooling ? ` · 冷却 ${cooling}` : ''}{broken ? ` · 异常 ${broken}` : ''}</span>
                 </span>
               </button>
-              <Button size="sm" variant="outline" disabled={key === UNKNOWN} onClick={() => onOpen({ engine, provider: engine === 'custom' ? key : undefined })}>{engine === 'workbuddy' ? '引擎模型' : '模型'}</Button>
+              <Button size="sm" variant="outline" disabled={key === UNKNOWN} onClick={() => onOpen({ engine, provider: engine === 'custom' ? key : undefined })}>{engine === 'workbuddy' || engine === 'workbuddy-ai' ? '引擎模型' : '模型'}</Button>
             </header>
             {summary && (
               <div className="mx-4 mb-4 rounded-lg bg-muted/40 p-3">
