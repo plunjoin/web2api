@@ -645,6 +645,70 @@ func (e *Engine) candidatesCtx(ctx context.Context, modelName string) (usable []
 	return usable, declared, total
 }
 
+// HasEnabledModel 报告是否有未停用的账号声明该模型。与 HasAvailableModel 不同，
+// 它不看账号是否就绪或处于冷却：下游 /v1/models 只想排除「只属于已停用账号」的
+// 模型，而不该因为一次临时冷却就把模型从目录里拿掉。
+func (e *Engine) HasEnabledModel(modelName string) bool {
+	want := normalizeModelID(modelName)
+	if want == "" {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		ok := acc.enabled && acc.declaresLocked(want)
+		acc.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// HasEnabledModelForProvider 报告指定第三方供应商（custom|<base_url>）下是否
+// 还有未停用账号声明该模型。引擎尚未装配账号时返回 true，交给调用方按快照展示。
+func (e *Engine) HasEnabledModelForProvider(providerKey, modelName string) bool {
+	key := strings.TrimSpace(providerKey)
+	if !strings.HasPrefix(key, "custom|") {
+		key = catalogKey(key)
+	}
+	want := normalizeModelID(modelName)
+	if want == "" {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	// 账号目录是异步拉取的：还没拉到时不能据此判定模型不存在，
+	// 否则网关刚启动的几秒内管理台会把所有第三方模型误藏起来。
+	loaded := false
+	for _, acc := range e.accounts {
+		acc.mu.Lock()
+		if len(acc.models) > 0 {
+			loaded = true
+		}
+		acc.mu.Unlock()
+		if loaded {
+			break
+		}
+	}
+	if !loaded {
+		return true
+	}
+	for _, acc := range e.accounts {
+		if catalogKey(acc.creds.BaseURL) != key {
+			continue
+		}
+		acc.mu.Lock()
+		ok := acc.enabled && acc.declaresLocked(want)
+		acc.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // HasAvailableModel 实现 engine.ModelAvailability：当前是否有可用账号声明该模型。
 // ListModels 会保留停用/冷却账号的条目，路由层不能用它判断「现在能不能接单」。
 func (e *Engine) HasAvailableModel(modelName string) bool {

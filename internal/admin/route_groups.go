@@ -103,6 +103,10 @@ func (a *API) routeGroups() []routeGroupView {
 		if _, ok := active[key]; !ok {
 			continue
 		}
+		// 只由已停用账号声明的模型不进入路由组，重新启用后自动恢复。
+		if !a.mgr.ProviderServesModel(key, m.Model) {
+			continue
+		}
 		groupKey := model.CanonicalModelID(m.Model)
 		if groupKey == "" {
 			continue
@@ -229,9 +233,14 @@ func (a *API) routeGroupAccountStats() (map[string]routeGroupAccountStat, map[st
 		st.accounts++
 		if ov.Enabled {
 			st.enabled++
+			if ov.Live.Ready {
+				st.ready++
+			}
 		}
-		if ov.Live.Ready {
-			st.ready++
+		// 停用账号不参与就绪判断，也不该决定供应商在组内的优先级。
+		if !ov.Enabled {
+			stats[key] = st
+			continue
 		}
 		// 首选账号在位次里越靠前，供应商越优先；没有配置顺序时按引擎注册顺序。
 		pos := 1 << 30

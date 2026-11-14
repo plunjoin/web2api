@@ -135,3 +135,29 @@ func TestIsHTTPStatus(t *testing.T) {
 		t.Fatal("429 is not 400")
 	}
 }
+
+// 下游目录只排除「只有停用账号声明」的模型；账号装配尚未完成时按快照保留。
+func TestHasEnabledModelIgnoresDisabledAccounts(t *testing.T) {
+	e := New(config.CustomConfig{}, nil)
+	e.accounts = []*customAccount{
+		{creds: Credentials{BaseURL: "https://a.example"}, enabled: false, ready: true, models: []model.ModelInfo{{ID: "only-disabled"}}},
+		{creds: Credentials{BaseURL: "https://a.example"}, enabled: true, ready: true, models: []model.ModelInfo{{ID: "shared"}}},
+	}
+	if e.HasEnabledModel("only-disabled") {
+		t.Fatal("only-disabled model must be hidden from downstream list")
+	}
+	if !e.HasEnabledModel("shared") {
+		t.Fatal("model declared by an enabled account must stay")
+	}
+	if e.HasEnabledModelForProvider("custom|https://a.example", "only-disabled") {
+		t.Fatal("provider-level check must ignore the disabled account")
+	}
+	if !e.HasEnabledModelForProvider("custom|https://a.example", "shared") {
+		t.Fatal("provider-level check should keep the enabled account's model")
+	}
+
+	e.accounts = nil
+	if !e.HasEnabledModelForProvider("custom|https://a.example", "anything") {
+		t.Fatal("before accounts load, provider check should defer to the snapshot")
+	}
+}

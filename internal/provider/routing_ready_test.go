@@ -278,9 +278,12 @@ func TestNotReadyStaticSubscriptionClaimsItsOwnModel(t *testing.T) {
 }
 
 func newTestManager(engines ...engine.Engine) *Manager {
-	m := &Manager{engines: map[string]engine.Engine{}, defaultEngine: "auto"}
+	m := &Manager{engines: map[string]engine.Engine{}, pools: map[string]accountPool{}, defaultEngine: "auto"}
 	for _, e := range engines {
 		m.engines[e.Name()] = e
+		if pool, ok := e.(accountPool); ok {
+			m.pools[e.Name()] = pool
+		}
 		m.engineOrder = append(m.engineOrder, e.Name())
 	}
 	return m
@@ -618,5 +621,42 @@ func TestProbeOrphanModelIsNotFound(t *testing.T) {
 	// 多模态/声明模型仍照常归属（不被误伤）。
 	if eng, _ := m.pickEngineForProbe("gemini-flash"); eng == nil || eng.Name() != "aistudio" {
 		t.Fatalf("aistudio 声明模型仍应接单, got %v", eng)
+	}
+}
+
+// 账号全部停用的引擎（包括 Gemini Web / AI Studio）不进入下游目录；
+// 只要还有一个启用账号就保留，管理台始终能看到。
+func TestPublicModelsHideAllDisabledAccounts(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "models-disabled.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.CreateAccount("geminiweb", "off", "{}", false); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(&staticEngine{name: "geminiweb", ready: true, models: []string{"gemini-off"}})
+	m.st = st
+
+	for _, mi := range m.ListModels() {
+		if mi.ID == "gemini-off" {
+			t.Fatal("engine with every account disabled leaked into public models")
+		}
+	}
+	if len(m.ListAllModels()) != 1 {
+		t.Fatal("admin list should keep the catalog entry")
+	}
+
+	if _, err := st.CreateAccount("geminiweb", "on", "{}", true); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, mi := range m.ListModels() {
+		if mi.ID == "gemini-off" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("model should return once an account is enabled")
 	}
 }

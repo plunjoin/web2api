@@ -510,6 +510,11 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
+			// 第三方供应商的模型快照是账号并集：某个账号停用后，只由它声明的
+			// 模型也不该继续出现在路由页（重新启用账号后会自动回来）。
+			if a.mgr != nil && !a.mgr.ProviderServesModel(m.Engine, m.Model) {
+				continue
+			}
 			if m.FetchedAt > fetchedAt {
 				fetchedAt = m.FetchedAt
 			}
