@@ -76,6 +76,45 @@ var SiteIntl = Site{
 	Models:   intlModels,
 }
 
+// EngineFor reports which provider an account belongs to.
+// International accounts are workbuddy-ai; CN and legacy CodeBuddy accounts are workbuddy.
+func EngineFor(c Credentials) string {
+	endpoint, site := resolveSite(c)
+	if IsLegacyCodeBuddy(endpoint) {
+		return SiteCN.ID
+	}
+	return site.ID
+}
+
+// resolveSite reads only the site declared by the account, ignoring engine config.
+func resolveSite(c Credentials) (string, Site) {
+	if b := strings.TrimSpace(c.BaseURL); b != "" {
+		b = strings.TrimRight(b, "/")
+		switch {
+		case strings.Contains(strings.ToLower(b), "workbuddy.ai"):
+			return b, SiteIntl
+		case IsLegacyCodeBuddy(b):
+			return b, SiteCN
+		case strings.Contains(strings.ToLower(b), "copilot.tencent.com"):
+			return b, SiteCN
+		}
+	}
+	// 地址不是两个发行版之一（测试桩、或自建反代）时，以账号声明的站点为准。
+	if s := strings.TrimSpace(c.Site); s != "" {
+		return "", SiteFor(s)
+	}
+	if b := strings.TrimSpace(c.BaseURL); b != "" {
+		return strings.TrimRight(b, "/"), SiteForBaseURL(b)
+	}
+	return "", SiteCN
+}
+
+// knownEditionURL 报告地址是否明确指向两个发行版或旧 CodeBuddy 之一。
+func knownEditionURL(base string) bool {
+	b := strings.ToLower(strings.TrimSpace(base))
+	return strings.Contains(b, "workbuddy.ai") || strings.Contains(b, "copilot.tencent.com") || IsLegacyCodeBuddy(b)
+}
+
 // SiteFor 按站点标识/别名取 Site。空值与未知值都落到国服。
 func SiteFor(name string) Site {
 	switch strings.ToLower(strings.TrimSpace(name)) {

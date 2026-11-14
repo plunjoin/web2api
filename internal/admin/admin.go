@@ -600,7 +600,7 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	case "codex", "antigravity", "kiro", "workbuddy", "custom":
+	case "codex", "antigravity", "kiro", "workbuddy", "workbuddy-ai", "custom":
 		var req struct {
 			Credentials json.RawMessage `json:"credentials"`
 		}

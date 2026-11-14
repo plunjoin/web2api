@@ -81,6 +81,19 @@ func (s *Store) GetAccountByLabel(engine, label string) (Account, error) {
 	return scanAccount(row)
 }
 
+// SetAccountEngine moves an account to another provider, keeping its id and credentials.
+func (s *Store) SetAccountEngine(id int64, engineName string) error {
+	res, err := s.db.Exec(`UPDATE accounts SET engine = ?, updated_at = ? WHERE id = ?`, engineName, now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListAccounts 全部账号。
 func (s *Store) ListAccounts() ([]Account, error) {
 	rows, err := s.db.Query(`SELECT id, engine, label, credentials, enabled, status, detail, created_at, updated_at

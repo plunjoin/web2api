@@ -257,31 +257,53 @@ func TestPickPrefersEarliestRunsOut(t *testing.T) {
 	}
 }
 
-// TestPickForPrefersSiteSupportingModel 国服/国际服目录不同：请求要落到
-// 「目录里声明了该模型」的账号，哪怕另一个账号的积分更快作废。
-func TestPickForPrefersSiteSupportingModel(t *testing.T) {
-	e := New(config.WorkBuddyConfig{}, nil)
-	now := time.Now()
-	cn := &workbuddyAccount{id: "cn", enabled: true, ready: true, creds: Credentials{Site: "workbuddy"},
-		quota: &Quota{Windows: []Window{{Name: "Total credits", Limit: 100, RunsOutAt: now.Add(time.Hour).Format(time.RFC3339)}}}}
-	intl := &workbuddyAccount{id: "intl", enabled: true, ready: true, creds: Credentials{Site: "workbuddy-ai"},
-		quota: &Quota{Windows: []Window{{Name: "Total credits", Limit: 100, RunsOutAt: now.Add(72 * time.Hour).Format(time.RFC3339)}}}}
-	e.accounts = []*workbuddyAccount{cn, intl}
-	e.ids = map[string]int{"cn": 0, "intl": 1}
+// TestEditionsAreSeparateProviders 国服与国际服是两个供应商：账号只能进自己的池，
+// 每个引擎的目录也只报自己发行版的模型。
+func TestEditionsAreSeparateProviders(t *testing.T) {
+	cn := New(config.WorkBuddyConfig{}, nil)
+	defer cn.Close()
+	ai := NewAI(config.WorkBuddyConfig{}, nil)
+	defer ai.Close()
 
-	if got := e.pickFor("gpt-5.5"); got == nil || got.id != "intl" {
-		t.Fatalf("gpt-5.5 is intl-only, want intl account, got %+v", got)
+	if err := cn.AddAccount("1", "cn", Credentials{Token: "t", Site: "workbuddy"}); err != nil {
+		t.Fatal(err)
 	}
-	if got := e.pickFor("hy4-preview-f"); got == nil || got.id != "cn" {
-		t.Fatalf("hy4-preview-f is CN-only, want CN account, got %+v", got)
+	if err := cn.AddAccount("2", "intl", Credentials{Token: "t", Site: "workbuddy-ai"}); err == nil {
+		t.Fatal("CN provider must reject an international account")
 	}
-	// 目录里都没有：退回最快作废的账号，而不是直接失败。
-	if got := e.pickFor("some-new-model"); got == nil || got.id != "cn" {
-		t.Fatalf("unknown model should fall back to earliest-expiring account, got %+v", got)
+	if err := ai.AddAccount("3", "intl", Credentials{Token: "t", Site: "workbuddy-ai"}); err != nil {
+		t.Fatal(err)
 	}
-	// auto 不区分子目录。
-	if got := e.pickFor("auto"); got == nil || got.id != "cn" {
-		t.Fatalf("auto should use normal selection, got %+v", got)
+	if err := ai.AddAccount("4", "cn", Credentials{Token: "t", Site: "workbuddy"}); err == nil {
+		t.Fatal("international provider must reject a CN account")
+	}
+	// 旧 CodeBuddy 账号沿国服接纳。
+	if err := cn.AddAccount("5", "legacy", Credentials{Token: "t", BaseURL: "https://www.codebuddy.ai"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cnIDs := map[string]bool{}
+	for _, m := range cn.ListModels() {
+		cnIDs[m.ID] = true
+		if m.Engine != "workbuddy" {
+			t.Fatalf("CN catalog engine = %q", m.Engine)
+		}
+	}
+	aiIDs := map[string]bool{}
+	for _, m := range ai.ListModels() {
+		aiIDs[m.ID] = true
+		if m.Engine != "workbuddy-ai" {
+			t.Fatalf("AI catalog engine = %q", m.Engine)
+		}
+	}
+	if !cnIDs["hy4-preview-f"] || aiIDs["hy4-preview-f"] {
+		t.Fatal("hy4-preview-f must belong to the CN catalog only")
+	}
+	if cnIDs["gpt-5.5"] || !aiIDs["gpt-5.5"] {
+		t.Fatal("gpt-5.5 must belong to the international catalog only")
+	}
+	if !cnIDs["glm-5.3"] || !aiIDs["glm-5.3"] {
+		t.Fatal("shared model names must appear in both catalogs")
 	}
 }
 

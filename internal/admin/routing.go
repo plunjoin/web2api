@@ -10,7 +10,7 @@ import (
 )
 
 // 引擎在路由页的默认展示顺序（供应商添加顺序）。
-var routingEngineOrder = []string{"geminiweb", "aistudio", "codex", "antigravity", "kiro", "workbuddy", "custom"}
+var routingEngineOrder = []string{"geminiweb", "aistudio", "codex", "antigravity", "kiro", "workbuddy", "workbuddy-ai", "custom"}
 
 type routingAccountView struct {
 	ID       int64  `json:"id"`

@@ -1,7 +1,8 @@
 // engine workbuddy：腾讯 WorkBuddy 订阅号池。
 //
-// 支持国服（copilot.tencent.com）与国际服（www.workbuddy.ai）两个 build
-// 同池混跑，每个账号带自己的站点/域/企业身份；额度从上游实时读取，
+// 国服（copilot.tencent.com）与国际服（www.workbuddy.ai）是两个供应商：
+// workbuddy 只收国服账号，workbuddy-ai 只收国际服账号。两边各自选号、
+// 各自报目录，同名模型才能在路由组里分成两个成员。额度从上游实时读取，
 // 智能路由优先花掉「积分最快作废」的账号，遇错自动切下一个账号。
 package workbuddy
 
@@ -158,10 +159,20 @@ type Engine struct {
 	closeOnce sync.Once
 }
 
-// New 构建 workbuddy 引擎。
+// New 构建国服 workbuddy 引擎。
 func New(cfg config.WorkBuddyConfig, st *store.Store) *Engine {
+	return newEngine("workbuddy", cfg, st)
+}
+
+// NewAI 构建国际服 WorkBuddy AI 引擎。与国服共用代码，但是独立的供应商：
+// 只接国际服账号，目录也只报国际服的。
+func NewAI(cfg config.WorkBuddyConfig, st *store.Store) *Engine {
+	return newEngine("workbuddy-ai", cfg, st)
+}
+
+func newEngine(name string, cfg config.WorkBuddyConfig, st *store.Store) *Engine {
 	e := &Engine{
-		name:    "workbuddy",
+		name:    name,
 		proxy:   strings.TrimSpace(cfg.Proxy),
 		baseURL: strings.TrimSpace(cfg.BaseURL),
 		st:      st,
@@ -188,20 +199,44 @@ func (e *Engine) quotaLoop() {
 	}
 }
 
+// home 是该引擎的发行版。国服与国际服是两个供应商，账号没有显式站点时
+// 按引擎归属落地，而不是一律回国服。
+func (e *Engine) home() Site {
+	if e.name == SiteIntl.ID {
+		return SiteIntl
+	}
+	return SiteCN
+}
+
 // resolve 推导账号的上游地址与站点。
-// 优先级：账号 base_url > 账号 site > 引擎 base_url > 默认国服。
+// 优先级：账号 base_url > 账号 site > 引擎 base_url > 引擎自己的发行版。
 func (e *Engine) resolve(c Credentials) (string, Site) {
+	// 账号自己声明的站点优先于引擎级地址：引擎 base_url 只是给没写站点的旧账号兜底，
+	// 不能把国际服账号改判回国服（测试桩和自建反代的地址也不是发行版地址）。
+	if _, site := resolveSite(c); strings.TrimSpace(c.Site) != "" || knownEditionURL(c.BaseURL) {
+		if b := strings.TrimSpace(c.BaseURL); b != "" && knownEditionURL(b) {
+			return strings.TrimRight(b, "/"), site
+		}
+		return site.Endpoint, site
+	}
 	if b := strings.TrimSpace(c.BaseURL); b != "" {
 		return strings.TrimRight(b, "/"), SiteForBaseURL(b)
-	}
-	if s := strings.TrimSpace(c.Site); s != "" {
-		site := SiteFor(s)
-		return site.Endpoint, site
 	}
 	if b := strings.TrimSpace(e.baseURL); b != "" {
 		return strings.TrimRight(b, "/"), SiteForBaseURL(b)
 	}
-	return SiteCN.Endpoint, SiteCN
+	site := e.home()
+	return site.Endpoint, site
+}
+
+// accepts 报告账号是否属于这个供应商。旧 CodeBuddy 账号沿国服引擎接纳，
+// 避免升级后失去入口。
+func (e *Engine) accepts(c Credentials) bool {
+	endpoint, site := e.resolve(c)
+	if IsLegacyCodeBuddy(endpoint) {
+		return e.home().ID == SiteCN.ID
+	}
+	return site.ID == e.home().ID
 }
 
 func (e *Engine) authFrom(c Credentials) StreamAuth {
@@ -213,9 +248,15 @@ func (e *Engine) authFrom(c Credentials) StreamAuth {
 }
 
 // AddAccount 添加账号（token 即时校验延后到首次请求）。
+// 另一个发行版的账号不进这个池：国服与国际服是两个供应商，混进来会让
+// 同名模型无法在路由组里分开。
 func (e *Engine) AddAccount(id, label string, creds Credentials) error {
 	if strings.TrimSpace(creds.Token) == "" && strings.TrimSpace(creds.RefreshToken) == "" {
 		return errors.New("token 与 refresh_token 不能同时为空")
+	}
+	if !e.accepts(creds) {
+		_, site := e.resolve(creds)
+		return fmt.Errorf("账号属于 %s，不能加入 %s", site.Name, e.home().Name)
 	}
 	e.mu.Lock()
 	if _, exists := e.ids[id]; exists {
@@ -347,7 +388,10 @@ func (e *Engine) AccountStates() []engine.AccountState {
 func (e *Engine) Name() string { return e.name }
 
 func (e *Engine) Describe() string {
-	return "腾讯 WorkBuddy（国服/国际服 SaaS 订阅号池，积分智能路由）"
+	if e.home().ID == SiteIntl.ID {
+		return "WorkBuddy AI（国际服 www.workbuddy.ai，积分智能路由）"
+	}
+	return "腾讯 WorkBuddy（国服 copilot.tencent.com，积分智能路由）"
 }
 
 // Ready 至少一个账号可用。
@@ -398,9 +442,9 @@ func (e *Engine) hasEnabledAccount() bool {
 	return false
 }
 
-// ListModels 聚合各账号站点的模型目录（同名去重，/v3/config 优先于内置目录）。
-// 有账号读到真实 config 时用它的模型（含免费标识与积分倍率），否则退回内置
-// 兜底目录。没有账号时给国服目录。
+// ListModels 聚合本供应商账号的模型目录（同名去重，/v3/config 优先于内置目录）。
+// 有账号读到真实 config 时用它的模型（含免费标识与积分倍率），否则退回本
+// 发行版的内置兜底目录。没有账号时也只报本发行版的目录。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	sites := map[string]Site{}
@@ -437,7 +481,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 	}
 	e.mu.RUnlock()
 	if len(sites) == 0 && !legacy {
-		sites[SiteCN.ID] = SiteCN
+		sites[e.home().ID] = e.home()
 	}
 	seen := map[string]bool{}
 	out := make([]model.ModelInfo, 0, 40)
@@ -478,7 +522,8 @@ func (e *Engine) ListModels() []model.ModelInfo {
 		// 旧 CodeBuddy 账号优先展示它自己的目录（无免费标识）。
 		add(LegacyModels())
 	}
-	for _, sid := range []string{SiteCN.ID, SiteIntl.ID} {
+	// 只报本发行版的目录。另一个发行版是独立供应商，由它自己的引擎报。
+	for _, sid := range []string{e.home().ID} {
 		site, ok := sites[sid]
 		if !ok {
 			continue

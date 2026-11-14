@@ -200,7 +200,7 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | kiro | workbuddy | custom
+	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | kiro | workbuddy | workbuddy-ai | custom
 	GeminiWebModels []string `yaml:"engine_geminiweb_models"` // 强制走 Gemini Web 的模型名（前缀匹配）
 	AIStudioModels  []string `yaml:"engine_aistudio_models"`  // 强制走 AI Studio 的模型名（前缀匹配）
 	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），

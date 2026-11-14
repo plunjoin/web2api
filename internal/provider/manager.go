@@ -229,6 +229,9 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 	if cfg.Engines.WorkBuddy.Enabled {
 		eb := workbuddy.New(cfg.Engines.WorkBuddy, st)
 		m.register(eb.Name(), eb, eb)
+		// 国际服是独立供应商：同名模型才能在路由组里与国服分成两个成员。
+		ai := workbuddy.NewAI(cfg.Engines.WorkBuddy, st)
+		m.register(ai.Name(), ai, ai)
 	}
 	if cfg.Engines.TeleAgent.On() {
 		et := teleagent.New(cfg.Engines.TeleAgent, st)
@@ -271,6 +274,8 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 	// 先把历史引擎名（a/b）写回规范名并合并重复行，否则同一个账号会在管理台
 	// 出现两行，其中一行因为号池里没有对应 ID 而永远显示「未加载」。
 	_, _ = m.st.NormalizeLegacyEngines()
+
+	m.splitWorkBuddySites()
 
 	accounts, err := m.st.ListAccounts()
 	if err != nil {
@@ -319,7 +324,9 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 				Site: acc.Site, UID: acc.UID, Domain: acc.Domain, EnterpriseID: acc.EnterpriseID,
 				BaseURL: acc.BaseURL, Proxy: acc.Proxy,
 			})
-			_, _ = m.st.CreateAccount("workbuddy", seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
+			_, _ = m.st.CreateAccount(workbuddy.EngineFor(workbuddy.Credentials{
+				Site: acc.Site, BaseURL: acc.BaseURL,
+			}), seedLabel("workbuddy", firstNonEmpty(acc.Name, acc.Email)), creds, true)
 		}
 		for _, acc := range m.cfg.Engines.TeleAgent.Accounts {
 			if strings.TrimSpace(acc.Token) == "" {
@@ -426,8 +433,8 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 					}
 				}
 			}
-		case "workbuddy":
-			if eng := m.mWorkBuddyEngine(); eng != nil {
+		case "workbuddy", "workbuddy-ai":
+			if eng := m.workBuddyEngineFor(acc.Engine); eng != nil {
 				var creds workbuddy.Credentials
 				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil && creds.Token != "" {
 					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
@@ -490,7 +497,12 @@ func (m *Manager) kiroEngine() *kiro.Engine {
 }
 
 func (m *Manager) mWorkBuddyEngine() *workbuddy.Engine {
-	if eng, ok := m.engines["workbuddy"]; ok {
+	return m.workBuddyEngineFor("workbuddy")
+}
+
+// workBuddyEngineFor 按供应商名取 WorkBuddy 引擎（workbuddy 国服 / workbuddy-ai 国际服）。
+func (m *Manager) workBuddyEngineFor(name string) *workbuddy.Engine {
+	if eng, ok := m.engines[name]; ok {
 		if w, ok := eng.(*workbuddy.Engine); ok {
 			return w
 		}
@@ -514,6 +526,19 @@ func (m *Manager) customEngine() *custom.Engine {
 		}
 	}
 	return nil
+}
+
+// ProviderServesModel 报告目录快照里的这条模型是否仍由该供应商的未停用账号提供。
+// 非第三方供应商没有地址级账号，快照归属即可；custom 引擎还没装配账号时也按快照。
+func (m *Manager) ProviderServesModel(providerKey, modelName string) bool {
+	if !strings.HasPrefix(providerKey, "custom|") {
+		return true
+	}
+	c := m.customEngine()
+	if c == nil {
+		return true
+	}
+	return c.HasEnabledModelForProvider(providerKey, modelName)
 }
 
 func poolHas(native *aistudio.NativeEngine, accountID string) bool {
@@ -606,7 +631,7 @@ func (m *Manager) EngineProxy(name string) string {
 		return m.cfg.Engines.Antigravity.Proxy
 	case "kiro":
 		return m.cfg.Engines.Kiro.Proxy
-	case "workbuddy":
+	case "workbuddy", "workbuddy-ai":
 		return m.cfg.Engines.WorkBuddy.Proxy
 	case "custom":
 		return m.cfg.Engines.Custom.Proxy
@@ -817,7 +842,7 @@ func (m *Manager) addAccountFromStorageState(req AccountInput) (store.Account, e
 			label = strings.TrimSpace(creds.Email)
 		}
 		return m.addKiroAccount(label, creds)
-	case "workbuddy":
+	case "workbuddy", "workbuddy-ai":
 		var creds workbuddy.Credentials
 		if err := decodeEngineCredentials(req, &creds); err != nil {
 			return store.Account{}, err
@@ -838,7 +863,7 @@ func (m *Manager) addAccountFromStorageState(req AccountInput) (store.Account, e
 		if label == "" {
 			label = strings.TrimSpace(creds.Email)
 		}
-		return m.addWorkBuddyAccount(label, creds)
+		return m.addWorkBuddyAccount(engineName, label, creds)
 	case "custom":
 		var creds custom.Credentials
 		if err := decodeEngineCredentials(req, &creds); err != nil {
@@ -974,16 +999,19 @@ func (m *Manager) addKiroAccount(label string, creds kiro.Credentials) (store.Ac
 }
 
 // addWorkBuddyAccount 添加 workbuddy 账号（存储 + 入池）。
-func (m *Manager) addWorkBuddyAccount(label string, creds workbuddy.Credentials) (store.Account, error) {
-	eng := m.mWorkBuddyEngine()
+// 国际服账号存为 workbuddy-ai，国服与旧 CodeBuddy 账号存为 workbuddy，
+// 这样两个发行版在路由组里是两个供应商。
+func (m *Manager) addWorkBuddyAccount(engineName, label string, creds workbuddy.Credentials) (store.Account, error) {
+	engineName = workbuddy.EngineFor(creds)
+	eng := m.workBuddyEngineFor(engineName)
 	if eng == nil {
-		return store.Account{}, errors.New("workbuddy 引擎未启用")
+		return store.Account{}, errors.New(engineName + " 引擎未启用")
 	}
 	if strings.TrimSpace(label) == "" {
 		// 手填 opaque token 可能没有邮箱；自动名只含发行版与时间，绝不泄露 token。
 		label = fmt.Sprintf("%s-%d", workbuddy.SiteFor(creds.Site).Name, time.Now().UnixNano())
 	}
-	acc, err := m.st.CreateAccountWithUniqueLabel("workbuddy", label, engine.MarshalCompact(creds), true)
+	acc, err := m.st.CreateAccountWithUniqueLabel(engineName, label, engine.MarshalCompact(creds), true)
 	if err != nil {
 		return store.Account{}, err
 	}
@@ -1072,7 +1100,7 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 			return err
 		}
 		return m.kiroEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
-	case "workbuddy":
+	case "workbuddy", "workbuddy-ai":
 		var creds workbuddy.Credentials
 		if err := json.Unmarshal(credentials, &creds); err != nil || creds.Token == "" {
 			return errors.New("credentials.token 不能为空")
@@ -1086,7 +1114,7 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 		if err := m.st.UpdateAccountCredentials(id, engine.MarshalCompact(creds)); err != nil {
 			return err
 		}
-		return m.mWorkBuddyEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+		return m.workBuddyEngineFor(acc.Engine).ReplaceCredentials(fmt.Sprintf("%d", id), creds)
 	case "custom":
 		var creds custom.Credentials
 		if err := json.Unmarshal(credentials, &creds); err != nil {
@@ -1344,7 +1372,7 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 		}
 		_ = m.st.UpdateAccountStatus(id, "ok", "")
 		return nil
-	case "codex", "antigravity", "kiro", "workbuddy", "custom":
+	case "codex", "antigravity", "kiro", "workbuddy", "workbuddy-ai", "custom":
 		// 订阅/第三方引擎：重建账号（重新初始化 token / 探测模型）
 		if err := m.UpdateSubscriptionCredentials(id, json.RawMessage(acc.Credentials)); err != nil {
 			return err
@@ -1368,10 +1396,10 @@ func (m *Manager) AccountCheckIn(id int64) (string, error) {
 			return "", errors.New("teleagent 引擎未启用")
 		}
 		return eng.CheckIn(fmt.Sprintf("%d", id))
-	case "workbuddy":
-		eng := m.mWorkBuddyEngine()
+	case "workbuddy", "workbuddy-ai":
+		eng := m.workBuddyEngineFor(acc.Engine)
 		if eng == nil {
-			return "", errors.New("workbuddy 引擎未启用")
+			return "", errors.New(acc.Engine + " 引擎未启用")
 		}
 		return eng.CheckIn(fmt.Sprintf("%d", id))
 	default:
@@ -1392,10 +1420,10 @@ func (m *Manager) SetAccountAutoCheckIn(id int64, enabled bool) error {
 			return errors.New("teleagent 引擎未启用")
 		}
 		return eng.SetAutoCheckIn(fmt.Sprintf("%d", id), enabled)
-	case "workbuddy":
-		eng := m.mWorkBuddyEngine()
+	case "workbuddy", "workbuddy-ai":
+		eng := m.workBuddyEngineFor(acc.Engine)
 		if eng == nil {
-			return errors.New("workbuddy 引擎未启用")
+			return errors.New(acc.Engine + " 引擎未启用")
 		}
 		return eng.SetAutoCheckIn(fmt.Sprintf("%d", id), enabled)
 	default:
@@ -1436,7 +1464,7 @@ func (m *Manager) AccountOverview() []AccountOverview {
 			// 引擎未启用（无池）
 			ov.Live = engine.AccountState{ID: engineID, Label: acc.Label, Enabled: acc.Enabled, Status: "unloaded", Detail: "引擎未启用"}
 		}
-		if acc.Engine == "workbuddy" && ov.Live.Status == "unloaded" {
+		if (acc.Engine == "workbuddy" || acc.Engine == "workbuddy-ai") && ov.Live.Status == "unloaded" {
 			var creds workbuddy.Credentials
 			if json.Unmarshal([]byte(acc.Credentials), &creds) == nil {
 				site := workbuddy.SiteFor(creds.Site)
@@ -1839,7 +1867,7 @@ func (m *Manager) modelDisabled(modelName string) bool {
 // 命中后引擎不可用时不做跨引擎切换，避免误导性错误。
 func isSubscriptionEngine(name string) bool {
 	switch name {
-	case "codex", "antigravity", "kiro", "workbuddy", "teleagent", "custom":
+	case "codex", "antigravity", "kiro", "workbuddy", "workbuddy-ai", "teleagent", "custom":
 		return true
 	}
 	return false
@@ -2349,9 +2377,21 @@ func (m *Manager) ListAllModels() []model.ModelInfo {
 
 func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 	var disabled map[string]struct{}
+	// 账号全部停用的引擎不再出现在下游目录，Gemini Web / AI Studio 也不例外；
+	// 没有账号行的直连引擎不受影响。
+	totalAccounts, enabledAccounts := map[string]int{}, map[string]int{}
 	if publicOnly && m.st != nil {
 		if set, err := m.st.DisabledModels(); err == nil {
 			disabled = set
+		}
+		if accounts, err := m.st.ListAccounts(); err == nil {
+			for _, acc := range accounts {
+				name := config.NormalizeEngineName(acc.Engine)
+				totalAccounts[name]++
+				if acc.Enabled {
+					enabledAccounts[name]++
+				}
+			}
 		}
 	}
 	var out []model.ModelInfo
@@ -2359,6 +2399,9 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 	for _, name := range m.engineOrder {
 		eng, ok := m.engines[name]
 		if !ok {
+			continue
+		}
+		if publicOnly && totalAccounts[name] > 0 && enabledAccounts[name] == 0 {
 			continue
 		}
 		// 公开目录（/v1/models、Codex 目录）不展示没有可用账号的订阅/custom 引擎
@@ -2375,6 +2418,13 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 			}
 			if _, skip := disabled[model.CanonicalModelID(id)]; skip {
 				continue
+			}
+			// 第三方 Key 的目录会保留停用账号的模型（方便重新启用）；
+			// 下游目录只展示仍有未停用账号声明的模型。
+			if publicOnly {
+				if ae, ok := eng.(interface{ HasEnabledModel(string) bool }); ok && !ae.HasEnabledModel(id) {
+					continue
+				}
 			}
 			mi = withModelKind(mi)
 			mi.ID = id
@@ -2443,7 +2493,8 @@ func (m *Manager) EngineMetaList() []EngineMeta {
 		{Name: "codex", Describe: "GPT（ChatGPT 订阅号）", Enabled: m.engines["codex"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（OAuth 授权或 Codex CLI auth.json 导入）"},
 		{Name: "antigravity", Describe: "Antigravity（Google Cloud AI Companion）", Enabled: m.engines["antigravity"] != nil, AccountPool: true, OAuth: "authorize", Credential: "refresh_token（Google OAuth 授权）"},
 		{Name: "kiro", Describe: "AWS Kiro（CodeWhisperer，Claude 模型）", Enabled: m.engines["kiro"] != nil, AccountPool: true, Credential: "refresh_token（Kiro IDE ~/.aws/sso/cache/kiro-auth-token.json）"},
-		{Name: "workbuddy", Describe: "腾讯 WorkBuddy（国服/国际服号池，积分智能路由）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国服 copilot.tencent.com 或国际服 www.workbuddy.ai）"},
+		{Name: "workbuddy", Describe: "腾讯 WorkBuddy（国服 copilot.tencent.com，积分智能路由）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国服 copilot.tencent.com）"},
+		{Name: "workbuddy-ai", Describe: "WorkBuddy AI（国际服 www.workbuddy.ai，积分智能路由）", Enabled: m.engines["workbuddy-ai"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国际服 www.workbuddy.ai）"},
 		{Name: "teleagent", Describe: "TeleAgent（天翼 AI 星辰超级智能体，GLM 系列）", Enabled: m.engines["teleagent"] != nil, AccountPool: true, OAuth: "authorize", Credential: "token（浏览器登录授权，或本机导入 scripts/import-teleagent-accounts.go）"},
 		{Name: "custom", Describe: "第三方 OpenAI 兼容 Key（支持常见供应商余额查询）", Enabled: m.engines["custom"] != nil, AccountPool: true, Credential: "base_url + api_key；余额：MiniMax/OpenRouter/硅基流动/DeepSeek/Sub2API/NewAPI 等"},
 	}
@@ -2489,4 +2540,34 @@ func (m *Manager) ServeModelPassthrough(ctx context.Context, modelID, method, pa
 		return false, nil
 	}
 	return true, custom.ServeModelPassthrough(ctx, name, method, path, body, contentType, w)
+}
+
+// splitWorkBuddySites moves international accounts out of the CN provider.
+// Accounts added before the two editions were separate providers are stored as
+// engine workbuddy with a site field; route groups key on the engine name, so
+// they stay invisible until the row itself moves to workbuddy-ai.
+func (m *Manager) splitWorkBuddySites() {
+	if m.st == nil {
+		return
+	}
+	accounts, err := m.st.ListAccounts()
+	if err != nil {
+		return
+	}
+	for _, acc := range accounts {
+		if acc.Engine != "workbuddy" {
+			continue
+		}
+		var creds workbuddy.Credentials
+		if json.Unmarshal([]byte(acc.Credentials), &creds) != nil {
+			continue
+		}
+		want := workbuddy.EngineFor(creds)
+		if want == acc.Engine {
+			continue
+		}
+		if err := m.st.SetAccountEngine(acc.ID, want); err != nil {
+			continue
+		}
+	}
 }
