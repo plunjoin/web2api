@@ -216,7 +216,8 @@ func (m *Manager) explicitChatEngine(name string) (engine.Engine, bool) {
 }
 
 // chatEnginePlan 返回本次对话按顺序尝试的引擎列表。
-// 绝大多数模型可以跨供应商兜底；配置点名与多模态模型仍保持单一归属。
+// 绝大多数模型可以跨供应商兜底；配置点名的模型保持单一归属。
+// 多模态模型按同名路由组排序后同样保留全部候选，首选供应商失败可换下一位。
 func (m *Manager) chatEnginePlan(ctx context.Context, req model.ChatRequest) ([]engine.Engine, model.ChatRequest, error) {
 	name := model.CanonicalModelID(req.Model)
 	probe := isProbeRequest(ctx)
@@ -249,10 +250,12 @@ func (m *Manager) chatEnginePlan(ctx context.Context, req model.ChatRequest) ([]
 		return []engine.Engine{eng}, req, nil
 	}
 	if isMultimodalModel(name) {
-		// 目录里有承接方（如第三方 Key 的 gpt-image-1）就保持单一归属；
+		// 目录里有承接方（如第三方 Key 的 gpt-image-1）就按同名路由组排序，
+		// 并保留全部候选：首选供应商失败（账号掉线、额度用尽、上游 5xx）
+		// 时换下一位，而不是直接报错。
 		// 目录里没有时才回落到引擎B 的多模态通道。
 		if list := m.orderedServeEngines(name); len(list) > 0 {
-			return list[:1], req, nil
+			return m.applyGroupRouting(name, list), req, nil
 		}
 		if eng, ok := m.engines["aistudio"]; ok {
 			if !eng.Ready() {

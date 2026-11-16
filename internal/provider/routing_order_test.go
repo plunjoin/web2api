@@ -59,6 +59,28 @@ func TestChatFailsOverAcrossSuppliersInConfiguredOrder(t *testing.T) {
 	}
 }
 
+// 多模态（生图）模型也参与同名模型路由组：首选供应商失败后换下一位。
+func TestMultimodalModelFailsOverAcrossRouteGroup(t *testing.T) {
+	var calls []string
+	first := &recordingEngine{fakeEngine: fakeEngine{name: "aistudio", ready: true, models: []string{"gemini-nano-banana-2.1"}}, calls: &calls}
+	first.chatErr = errors.New("AI Studio 账号需要重新登录")
+	second := &recordingEngine{fakeEngine: fakeEngine{name: "custom", ready: true, models: []string{"gemini-nano-banana-2.1"}}, calls: &calls, text: "image"}
+	m := newTestManager(first, second)
+	m.routeIDs = []string{"1", "2"}
+	m.routeSupplier = map[string]int{"aistudio": 0, "custom": 1}
+
+	res, err := m.Chat(context.Background(), model.ChatRequest{Model: "gemini-nano-banana-2.1"})
+	if err != nil {
+		t.Fatalf("chat error: %v", err)
+	}
+	if res == nil || res.Text != "image" {
+		t.Fatalf("want second supplier response, got %+v", res)
+	}
+	if len(calls) != 2 || calls[0] != "aistudio" || calls[1] != "custom" {
+		t.Fatalf("want aistudio then custom, got %v", calls)
+	}
+}
+
 // 显式配置点名的引擎不跨供应商兜底，失败就是失败。
 func TestExplicitRouteDoesNotFailOver(t *testing.T) {
 	var calls []string
