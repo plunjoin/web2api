@@ -92,7 +92,7 @@ func (o *OpenAI) musicViaGeminiGenerateContent(ctx context.Context, req model.Ch
 		return nil, fmt.Errorf("model 不能为空")
 	}
 	url := geminiAPIBase(o.baseURL) + "/models/" + bareModel + ":generateContent"
-	contents, sysText := buildGeminiMusicContents(req.Messages)
+	contents, sysText := buildGeminiContents(req.Messages, "generate music")
 
 	modalitiesList := [][]string{
 		{"AUDIO", "TEXT"},
@@ -240,7 +240,10 @@ func (o *OpenAI) doGeminiJSON(ctx context.Context, url string, body any) ([]byte
 	return data, resp.StatusCode, resp.Header.Get("Content-Type"), nil
 }
 
-func buildGeminiMusicContents(messages []model.ChatMessage) ([]map[string]any, string) {
+// buildGeminiContents 把 OpenAI messages 转为 Gemini contents + systemInstruction 文本。
+// 音乐、图片等原生生成协议共用：文本与 data URI 图片都会转成 Gemini parts。
+// fallback 是 messages 为空时的占位提示（音乐与图片的提示词不同）。
+func buildGeminiContents(messages []model.ChatMessage, fallback string) ([]map[string]any, string) {
 	var sysParts []string
 	var contents []map[string]any
 	for _, m := range messages {
@@ -265,8 +268,11 @@ func buildGeminiMusicContents(messages []model.ChatMessage) ([]map[string]any, s
 		})
 	}
 	if len(contents) == 0 {
+		if strings.TrimSpace(fallback) == "" {
+			fallback = "generate content"
+		}
 		contents = []map[string]any{
-			{"role": "user", "parts": []map[string]any{{"text": "generate music"}}},
+			{"role": "user", "parts": []map[string]any{{"text": fallback}}},
 		}
 	}
 	return contents, strings.Join(sysParts, "\n")

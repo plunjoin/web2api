@@ -298,9 +298,24 @@ type Choice struct {
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// Images 是部分 OpenAI 兼容上游（Gemini 官方 OpenAI 层、OpenRouter 等）
+	// 在生图模型响应里返回的图片。网关会把它转成 Markdown data URI 放回
+	// content，保持下游只依赖纯文本协议。
+	Images []MessageImage `json:"images,omitempty"`
 	// ToolCalls 在模型要求调用工具时出现；此时 Content 通常为空串，
 	// FinishReason 为 tool_calls。
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// MessageImage 是 assistant 消息里的一张图片。
+// 兼容两种常见写法：image_url.url（data URI 或远程地址）与 b64_json。
+type MessageImage struct {
+	Type     string `json:"type,omitempty"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+	B64JSON  string `json:"b64_json,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
 }
 
 // Usage 统计。

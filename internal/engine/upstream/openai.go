@@ -321,6 +321,14 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 	if isMusicModel(req.Model) && isGeminiOpenAIBase(o.baseURL) {
 		return o.chatMusic(ctx, req, nil)
 	}
+	if isImageModel(req.Model) && isGeminiOpenAIBase(o.baseURL) {
+		return o.chatImage(ctx, req, nil)
+	}
+	return o.chatOpenAI(ctx, req)
+}
+
+// chatOpenAI 走标准 OpenAI 兼容 /v1/chat/completions。
+func (o *OpenAI) chatOpenAI(ctx context.Context, req model.ChatRequest) (*model.ChatResult, error) {
 	payload := o.chatPayload(req, false)
 	data, status, err := o.do(ctx, http.MethodPost, "/v1/chat/completions", payload)
 	if err != nil {
@@ -342,7 +350,7 @@ func (o *OpenAI) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatRe
 	}
 	result := &model.ChatResult{Engine: o.name, Model: req.Model}
 	if len(resp.Choices) > 0 {
-		result.Text = resp.Choices[0].Message.Content
+		result.Text = resp.Choices[0].Message.Content + messageImagesMarkdown(resp.Choices[0].Message.Images)
 		result.ToolCalls = resp.Choices[0].Message.ToolCalls
 		rememberToolCallExtras(result.ToolCalls)
 		result.FinishReason = resp.Choices[0].FinishReason
@@ -380,6 +388,14 @@ func (o *OpenAI) ChatStreamSink(ctx context.Context, req model.ChatRequest, sink
 	if isMusicModel(req.Model) && isGeminiOpenAIBase(o.baseURL) {
 		return o.chatMusic(ctx, req, sink)
 	}
+	if isImageModel(req.Model) && isGeminiOpenAIBase(o.baseURL) {
+		return o.chatImage(ctx, req, sink)
+	}
+	return o.chatStreamOpenAI(ctx, req, sink)
+}
+
+// chatStreamOpenAI 走标准 OpenAI 兼容 /v1/chat/completions 的 SSE。
+func (o *OpenAI) chatStreamOpenAI(ctx context.Context, req model.ChatRequest, sink model.StreamSink) (*model.ChatResult, error) {
 	data, err := json.Marshal(o.chatPayload(req, true))
 	if err != nil {
 		return nil, err
