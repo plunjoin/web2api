@@ -38,8 +38,18 @@ web2api-linux-*
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 
 # 系统
 Thumbs.db
 .DS_Store
+
+# 本地调试与账号数据
+*.log
+*.log.*
+.cachetest.json
+cursor.go.txt
+cursor.json
+envdump.txt
+workbuddy-cn-accounts.json

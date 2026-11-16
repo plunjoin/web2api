@@ -1,12 +1,11 @@
-v0.3.17 WorkBuddy 双发行版供应商拆分：国服与国际服不再混池；停用账号会从模型目录和路由组中即时移除；后台为 WorkBuddy 与 WorkBuddy AI 提供独立添加入口。
+v0.3.18 原生图片生成与多模态路由兜底：Gemini 生图模型改走原生 generateContent，兼容上游返回的 message.images；生图模型也可按路由组跨供应商失败切换。
 
-- **WorkBuddy AI 独立供应商**：`workbuddy` 只承接国服和旧 CodeBuddy 账号，`workbuddy-ai` 只承接国际服账号。启动时会自动把国际服账号迁移到独立供应商；两个发行版各自维护账号池、模型目录与额度数据。同名模型（如 `glm-5.3`）可自动组成两个成员的路由组。
-- **独立添加入口**：后台「添加账号」菜单区分「WorkBuddy（国服）」与「WorkBuddy AI（国际服）」，授权弹窗固定发行版，不再允许中途切换；粘贴 token 时会按声明站点写入对应供应商。
-- **停用账号即时过滤**：第三方供应商停用最后一个支持某模型的账号后，该模型不再出现在下游模型列表和路由组；所有账号停用后，对应供应商也从管理台隐藏。重新启用账号会自动恢复展示与路由。
-- **路由组健康度修正**：路由组账号就绪数只统计已启用账号；停用账号不再影响供应商优先级，避免切换到不可承接请求的来源。
+- **Gemini 原生生图**：`chat/completions` 中的 Gemini 生图模型会优先调用 `generateContent`，支持文本、Data URI 图片输入与 `image_size` 参数，并把生成的图片转成 Markdown Data URI 返回。
+- **OpenAI 兼容生图响应**：解析上游 `message.images` 中的 `image_url.url` 与 `b64_json` 图片，追加到回复文本中，下游仍只需按纯文本协议消费。
+- **多模态路由组兜底**：生图模型不再固定只试第一个供应商；同名模型路由组中的首选供应商登录失效、额度不足或上游出错时，可继续切换到下一个供应商。
 
-升级说明：拉取 `v0.3.17` 镜像或二进制后重启即可，无需数据库迁移；升级前建议照常备份数据库。旧 WorkBuddy 国际服账号会自动迁移为 `workbuddy-ai` 供应商；国服与旧 CodeBuddy 账号保持不变。第三方 Key 的 `custom|<base_url>` 目录和已有路由组配置会继续沿用。
+升级说明：拉取 `v0.3.18` 镜像或二进制后重启即可，无需数据库迁移；升级前建议照常备份数据库。已有供应商、模型目录和路由组配置保持不变。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.3.17、ghcr.io/plunjoin/web2api:0.3.17、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.3.18、ghcr.io/plunjoin/web2api:0.3.18、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
