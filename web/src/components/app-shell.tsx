@@ -187,7 +187,7 @@ export function AppShell({ groups, area, children }: { groups: NavGroup[]; area:
           </div>
         </header>
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[1240px] px-4 py-5 md:px-6 md:py-6">{children ?? <Outlet />}</div>
+          <div className="mx-auto w-full max-w-[1600px] px-4 py-5 md:px-6 md:py-6">{children ?? <Outlet />}</div>
         </main>
       </div>
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} groups={groups} area={area} />

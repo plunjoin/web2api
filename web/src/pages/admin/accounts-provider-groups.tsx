@@ -138,15 +138,18 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
     const key = groupKey(a)
     groups.set(key, [...(groups.get(key) || []), a])
   }
-  const keys = [...groups.keys()].sort((x, y) => {
-    const rank = (key: string) => { const i = ORDER.indexOf(canonicalEngine(groups.get(key)![0].engine)); return i < 0 ? 99 : i }
-    return rank(x) - rank(y) || x.localeCompare(y)
-  })
+  const rank = (key: string) => { const i = ORDER.indexOf(canonicalEngine(groups.get(key)![0].engine)); return i < 0 ? 99 : i }
+  // 预计越高的组越靠前：多栏按顺序流入时，高卡片排在栏首才不会在栏尾留下大片空白。
+  const weight = (key: string) => {
+    const list = groups.get(key)!
+    const engine = canonicalEngine(list[0].engine)
+    return list.length + (engine === 'workbuddy' || engine === 'workbuddy-ai' ? 1 : 0)
+  }
+  const keys = [...groups.keys()].sort((x, y) => weight(y) - weight(x) || rank(x) - rank(y) || x.localeCompare(y))
+  // 多栏流式排布：卡片自上而下流入第一栏，栏满后继续第二栏，并随展开/折叠动态重新平衡。
   return (
-    <div className="grid items-start gap-4 xl:grid-cols-2">
-      {[0, 1].map((column) => (
-        <div key={column} className="min-w-0 space-y-4">
-      {keys.filter((_, i) => i % 2 === column).map((key) => {
+    <div className="columns-1 gap-4 xl:columns-2">
+      {keys.map((key) => {
         const list = groups.get(key)!
         const engine = canonicalEngine(list[0].engine)
         const meta = groupMeta(key, engine)
@@ -156,7 +159,7 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
         const summary = engine === 'workbuddy' || engine === 'workbuddy-ai' ? aggregateQuota(list) : null
         const isCollapsed = collapsed.has(key)
         return (
-          <section key={key} aria-label={meta.name} className="min-w-0 overflow-hidden rounded-xl border bg-card">
+          <section key={key} aria-label={meta.name} className="mb-4 min-w-0 break-inside-avoid overflow-hidden rounded-xl border bg-card">
             <header className="flex items-start gap-2 px-4 pt-4 pb-3">
               <button type="button" className="flex min-h-8 min-w-0 flex-1 items-start gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-ring" onClick={() => onToggle(key)} aria-expanded={!isCollapsed}>
                 {isCollapsed ? <ChevronRight aria-hidden="true" className="mt-1 size-4 shrink-0 text-muted-foreground" /> : <ChevronDown aria-hidden="true" className="mt-1 size-4 shrink-0 text-muted-foreground" />}
@@ -182,8 +185,6 @@ export function ProviderGroups({ accounts, checking, collapsed, onToggle, onOpen
           </section>
         )
       })}
-        </div>
-      ))}
     </div>
   )
 }
