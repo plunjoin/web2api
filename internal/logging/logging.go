@@ -63,7 +63,7 @@ func (l Level) String() string {
 // Options 日志系统参数。零值可用：info、仅 stdout。
 type Options struct {
 	Level     string // debug | info | warn | error
-	Dir       string // 日志目录；空 = 不写文件
+	Dir       string // 日志目录；空或 "-" = 不写文件
 	MaxDays   int    // 文件保留天数；<=0 用 7
 	MaxSizeMB int    // 单文件大小上限；<=0 用 50
 	Console   bool   // 是否写 stdout
@@ -88,7 +88,7 @@ func New(opts Options) *Logger {
 		console: os.Stdout,
 	}
 	l.level.Store(int32(ParseLevel(opts.Level)))
-	if opts.Dir != "" {
+	if opts.Dir != "" && opts.Dir != "-" {
 		if w, err := newFileWriter(opts.Dir, opts.MaxDays, opts.MaxSizeMB); err != nil {
 			fmt.Fprintf(os.Stderr, "[web2api] 日志文件不可用，仅输出到 stdout: %v\n", err)
 		} else {

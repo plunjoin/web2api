@@ -76,6 +76,27 @@ func TestFileWriterRotatesAndPrunes(t *testing.T) {
 	}
 }
 
+func TestDirDashDisablesFileLogging(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+
+	l := New(Options{Level: "info", Dir: "-", Console: false})
+	defer l.Close()
+	if l.file != nil {
+		t.Fatal(`Dir="-" 不应启用文件日志`)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "-")); !os.IsNotExist(err) {
+		t.Fatalf(`Dir="-" 不应创建名为 "-" 的目录: %v`, err)
+	}
+}
+
 func TestSlogBridge(t *testing.T) {
 	var buf bytes.Buffer
 	l := NewTest(&buf)
