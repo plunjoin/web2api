@@ -25,6 +25,7 @@ const AdminUsage = lazy(() => import('@/pages/admin/usage'))
 const AdminRouteGroups = lazy(() => import('@/pages/admin/route-groups'))
 const AdminPricing = lazy(() => import('@/pages/admin/pricing'))
 const AdminSettings = lazy(() => import('@/pages/admin/settings'))
+const AdminAudit = lazy(() => import('@/pages/admin/audit'))
 const AdminDocs = lazy(() => import('@/pages/admin/docs'))
 
 function PageFallback() {
@@ -118,6 +119,7 @@ export const router = createBrowserRouter([
       { path: 'routes', element: page(<AdminRouteGroups />) },
       { path: 'pricing', element: page(<AdminPricing />) },
       { path: 'settings', element: page(<AdminSettings />) },
+      { path: 'audit', element: page(<AdminAudit />) },
       { path: 'docs', element: page(<AdminDocs />) },
       { path: '*', element: <Navigate to="/admin" replace /> },
     ],

@@ -16,6 +16,7 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/engine/custom"
 	"web2api/internal/model"
+	providerpkg "web2api/internal/provider"
 	"web2api/internal/store"
 	"web2api/internal/version"
 )
@@ -216,6 +217,7 @@ func (a *API) handleRegenerateKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(id, 10)+" "+key.Name, "重新生成 API Key（旧密钥已失效）")
 	writeJSON(w, http.StatusOK, map[string]any{"key": key})
 }
 
@@ -246,7 +248,7 @@ func (a *API) handleUsageExport(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("\xEF\xBB\xBF")) // UTF-8 BOM，便于 Excel 正确识别中文
 	out := csv.NewWriter(w)
 	_ = out.Write([]string{"id", "time", "key_id", "key_name", "key_masked", "engine", "model", "actual_model", "endpoint", "stream", "success",
-		"status_code", "client", "account_id", "account_label", "provider",
+		"status_code", "client", "client_ip", "account_id", "account_label", "provider",
 		"prompt_tokens", "cached_tokens", "completion_tokens", "total_tokens", "usage_source", "model_multiplier", "key_multiplier", "multiplier",
 		"cost_micros", "ttft_ms", "latency_ms", "error"})
 	const pageSize = 500
@@ -264,7 +266,7 @@ func (a *API) handleUsageExport(w http.ResponseWriter, r *http.Request) {
 			_ = out.Write([]string{
 				strconv.FormatInt(rec.ID, 10), time.Unix(rec.TS, 0).Format(time.RFC3339), strconv.FormatInt(rec.KeyID, 10), rec.KeyName,
 				rec.KeyMasked, rec.Engine, rec.Model, rec.ActualModel, rec.Endpoint, strconv.FormatBool(rec.Stream), strconv.FormatBool(rec.Success),
-				strconv.FormatInt(rec.StatusCode, 10), rec.Client, strconv.FormatInt(rec.AccountID, 10), rec.AccountLabel, rec.Provider,
+				strconv.FormatInt(rec.StatusCode, 10), rec.Client, rec.ClientIP, strconv.FormatInt(rec.AccountID, 10), rec.AccountLabel, rec.Provider,
 				strconv.FormatInt(rec.PromptTokens, 10), strconv.FormatInt(rec.CachedTokens, 10), strconv.FormatInt(rec.CompletionTokens, 10), strconv.FormatInt(rec.TotalTokens, 10),
 				source, strconv.FormatFloat(rec.ModelMultiplier, 'f', -1, 64), strconv.FormatFloat(rec.KeyMultiplier, 'f', -1, 64),
 				strconv.FormatFloat(rec.Multiplier, 'f', -1, 64), strconv.FormatInt(rec.CostMicros, 10),
@@ -715,6 +717,14 @@ func (a *API) handleCheckModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// displayTarget 把空的 engine/provider 显示成 auto，避免日志里出现空引号。
+func displayTarget(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "auto"
+	}
+	return v
+}
+
 type modelCheckResult struct {
 	Model   string             `json:"model"`
 	OK      bool               `json:"ok"`
@@ -731,6 +741,10 @@ func (a *API) probeModel(parent context.Context, modelID string, syncStatus bool
 	ok := err == nil
 	if err != nil {
 		detail = err.Error()
+		// 上游模型测试失败必须留痕：批量检查时管理台只看到总失败数，
+		// 具体是模型未声明、账号未就绪还是上游报错，需要日志里能查到。
+		a.logger.Warnf("[models] 上游模型测试失败 model=%q engine=%q provider=%q kind=%s: %v",
+			modelID, displayTarget(engineName), displayTarget(provider), providerpkg.ErrorKind(err), err)
 	} else if strings.TrimSpace(detail) == "" {
 		detail = "响应正常"
 	}

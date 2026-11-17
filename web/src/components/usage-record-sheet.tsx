@@ -20,6 +20,34 @@ function cacheRate(record: UsageRecord) {
   return `${pct >= 99.95 ? 100 : Number(pct.toFixed(1))}%`
 }
 
+const errorKindLabels: Record<string, string> = {
+  model_not_found: '模型未声明',
+  model_unavailable: '模型已下架',
+  unsupported_endpoint: '端点不匹配',
+  tools_not_supported: '不支持工具调用',
+  upstream_timeout: '上游超时',
+  upstream_rate_limited: '上游限流',
+  upstream_auth: '上游鉴权失败',
+  engine_unavailable: '引擎不可用',
+  upstream_error: '上游错误',
+}
+
+interface RouteAttempt {
+  engine: string
+  error?: string
+  duration_ms?: number
+}
+
+function parseAttempts(raw?: string): RouteAttempt[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+}
+
 function genSpeed(record: UsageRecord) {
   if (!record.success || record.completion_tokens <= 0 || record.latency_ms <= 0) return '—'
   const genMs = Math.max(1, record.latency_ms - (record.ttft_ms || 0))
@@ -29,6 +57,7 @@ function genSpeed(record: UsageRecord) {
 /** 单条请求详情：把扣费公式拆开展示，用户能看懂每个 Token 怎么来的。 */
 export function UsageRecordSheet({ record, onOpenChange, admin, footer }: { record: UsageRecord | null; onOpenChange: (open: boolean) => void; admin?: boolean; footer?: ReactNode }) {
   const rate = useCNYPerUSD()
+  const attempts = parseAttempts(record?.attempts)
   return (
     <Sheet open={!!record} onOpenChange={onOpenChange}>
       <SheetContent className="w-full gap-0 sm:max-w-[440px]">
@@ -50,6 +79,7 @@ export function UsageRecordSheet({ record, onOpenChange, admin, footer }: { reco
                     ? ([['实际模型', <span className="font-mono text-xs">{record.actual_model}</span>]] as [ReactNode, ReactNode][])
                     : []),
                   ['客户端', record.client || '—'],
+                  ['来源 IP', <span className="font-mono text-xs">{record.client_ip || '—'}</span>],
                   ['接口', <span className="font-mono text-xs">{record.endpoint}</span>],
                   ['密钥', record.key_name ? `${record.key_name} · ${record.key_masked}` : record.key_masked || '—'],
                   ...(admin ? ([['用户', record.user_email || (record.user_id ? `#${record.user_id}` : '无归属')]] as [ReactNode, ReactNode][]) : []),
@@ -58,6 +88,9 @@ export function UsageRecordSheet({ record, onOpenChange, admin, footer }: { reco
                     ? ([['供应商 · 账号', [record.provider, record.account_label].filter(Boolean).join(' · ')]] as [ReactNode, ReactNode][])
                     : []),
                   ['状态码', record.status_code || '—'],
+                  ...(record.error_kind
+                    ? ([['错误类别', <span className="font-mono text-xs">{errorKindLabels[record.error_kind] || record.error_kind}</span>]] as [ReactNode, ReactNode][])
+                    : []),
                   ['流式', record.stream ? '是' : '否'],
                   ['首字耗时', elapsed(record.ttft_ms)],
                   ['耗时', elapsed(record.latency_ms)],
@@ -94,6 +127,26 @@ export function UsageRecordSheet({ record, onOpenChange, admin, footer }: { reco
                 <div>
                   <div className="mb-1.5 text-xs font-medium">错误信息</div>
                   <pre className="max-h-48 overflow-auto rounded-md border border-destructive/20 bg-destructive/5 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[#ff9a9d]">{record.error}</pre>
+                </div>
+              )}
+              {attempts.length > 0 && (
+                <div>
+                  <div className="mb-1.5 text-xs font-medium">路由尝试轨迹</div>
+                  <ol className="space-y-2 rounded-md border p-2.5">
+                    {attempts.map((a, i) => (
+                      <li key={i} className="text-[12px]">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-muted-foreground tabular-nums">{i + 1}.</span>
+                          <span className="font-mono">{a.engine || '未知引擎'}</span>
+                          {a.error ? <Pill tone="danger">失败</Pill> : <Pill tone="success">成功</Pill>}
+                          {typeof a.duration_ms === 'number' && a.duration_ms > 0 && (
+                            <span className="ml-auto text-muted-foreground tabular-nums">{a.duration_ms} ms</span>
+                          )}
+                        </div>
+                        {a.error && <div className="mt-1 pl-5 font-mono text-[11px] break-words text-muted-foreground">{a.error}</div>}
+                      </li>
+                    ))}
+                  </ol>
                 </div>
               )}
               {footer}

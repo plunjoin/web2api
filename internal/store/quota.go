@@ -478,9 +478,16 @@ type UsageRecord struct {
 	// CostMicros 本次请求金额（微元，1 元 = 1000000 微元）。
 	CostMicros int64  `json:"cost_micros"`
 	Error      string `json:"error,omitempty"`
-	LatencyMs  int64  `json:"latency_ms"`
+	// ErrorKind 失败类别（model_not_found / upstream_auth / upstream_timeout 等），
+	// 便于按原因聚合；成功请求为空。
+	ErrorKind string `json:"error_kind,omitempty"`
+	// Attempts 路由尝试轨迹（JSON 数组：引擎、错误、耗时），记录换号/换供应商路径。
+	Attempts  string `json:"attempts,omitempty"`
+	LatencyMs int64  `json:"latency_ms"`
 	// Client 是调用方客户端（由 User-Agent 识别的友好名称，如 Claude Code）。
 	Client string `json:"client,omitempty"`
+	// ClientIP 是调用方来源 IP（反向代理头优先，其次 TCP 对端）。
+	ClientIP string `json:"client_ip,omitempty"`
 	// ActualModel 是上游实际承接的模型；与 Model（请求模型）不同时展示。
 	ActualModel string `json:"actual_model,omitempty"`
 	// AccountID / AccountLabel / Provider 是实际接单账号的快照，账号删除后仍可追溯。
@@ -568,13 +575,13 @@ func (s *Store) RecordRequest(rec UsageRecord) (UsageRecord, error) {
 		}
 	}
 	res, err := tx.Exec(`INSERT INTO usage_records (ts, key_id, api_key, engine, model, endpoint, stream, success,
-		prompt_tokens, completion_tokens, total_tokens, estimated, model_multiplier, key_multiplier, multiplier, cost_micros, error, latency_ms,
-		user_id, user_multiplier, client, actual_model, account_id, account_label, provider, status_code, ttft_ms, cached_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		prompt_tokens, completion_tokens, total_tokens, estimated, model_multiplier, key_multiplier, multiplier, cost_micros, error, error_kind, attempts, latency_ms,
+		user_id, user_multiplier, client, client_ip, actual_model, account_id, account_label, provider, status_code, ttft_ms, cached_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.TS, rec.KeyID, rec.APIKey, rec.Engine, rec.Model, rec.Endpoint, boolToInt(rec.Stream), boolToInt(rec.Success),
 		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens, boolToInt(rec.Estimated),
-		rec.ModelMultiplier, rec.KeyMultiplier, rec.Multiplier, rec.CostMicros, rec.Error, rec.LatencyMs,
-		rec.UserID, rec.UserMultiplier, rec.Client, rec.ActualModel, rec.AccountID, rec.AccountLabel, rec.Provider,
+		rec.ModelMultiplier, rec.KeyMultiplier, rec.Multiplier, rec.CostMicros, rec.Error, rec.ErrorKind, rec.Attempts, rec.LatencyMs,
+		rec.UserID, rec.UserMultiplier, rec.Client, rec.ClientIP, rec.ActualModel, rec.AccountID, rec.AccountLabel, rec.Provider,
 		rec.StatusCode, rec.TTFTMs, rec.CachedTokens)
 	if err != nil {
 		return rec, err
@@ -643,8 +650,8 @@ func (s *Store) ListUsageRecords(filter UsageFilter) ([]UsageRecord, int64, erro
 	}
 	rows, err := s.db.Query(`SELECT r.id, r.ts, r.key_id, r.api_key, COALESCE(k.name, ''), r.engine, r.model, r.endpoint, r.stream, r.success,
 		r.prompt_tokens, r.completion_tokens, r.total_tokens, r.estimated, r.model_multiplier, r.key_multiplier, r.multiplier,
-		r.cost_micros, r.error, r.latency_ms, r.user_id, COALESCE(u.email, ''), r.user_multiplier, r.refunded_micros,
-		r.client, r.actual_model, r.account_id, r.account_label, r.provider, r.status_code, r.ttft_ms, r.cached_tokens
+		r.cost_micros, r.error, r.error_kind, r.attempts, r.latency_ms, r.user_id, COALESCE(u.email, ''), r.user_multiplier, r.refunded_micros,
+		r.client, r.client_ip, r.actual_model, r.account_id, r.account_label, r.provider, r.status_code, r.ttft_ms, r.cached_tokens
 		FROM usage_records r LEFT JOIN api_keys k ON k.id = r.key_id LEFT JOIN users u ON u.id = r.user_id AND r.user_id > 0`+where+` ORDER BY r.id DESC LIMIT ? OFFSET ?`,
 		append(args, filter.Limit, filter.Offset)...)
 	if err != nil {
@@ -657,8 +664,8 @@ func (s *Store) ListUsageRecords(filter UsageFilter) ([]UsageRecord, int64, erro
 		var stream, success, estimated int
 		if err := rows.Scan(&r.ID, &r.TS, &r.KeyID, &r.APIKey, &r.KeyName, &r.Engine, &r.Model, &r.Endpoint, &stream, &success,
 			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &estimated, &r.ModelMultiplier, &r.KeyMultiplier, &r.Multiplier,
-			&r.CostMicros, &r.Error, &r.LatencyMs, &r.UserID, &r.UserEmail, &r.UserMultiplier, &r.RefundedMicros,
-			&r.Client, &r.ActualModel, &r.AccountID, &r.AccountLabel, &r.Provider, &r.StatusCode, &r.TTFTMs, &r.CachedTokens); err != nil {
+			&r.CostMicros, &r.Error, &r.ErrorKind, &r.Attempts, &r.LatencyMs, &r.UserID, &r.UserEmail, &r.UserMultiplier, &r.RefundedMicros,
+			&r.Client, &r.ClientIP, &r.ActualModel, &r.AccountID, &r.AccountLabel, &r.Provider, &r.StatusCode, &r.TTFTMs, &r.CachedTokens); err != nil {
 			return nil, 0, err
 		}
 		r.Engine = legacyEngineName(r.Engine)

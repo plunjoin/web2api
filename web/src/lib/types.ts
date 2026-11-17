@@ -73,9 +73,15 @@ export interface UsageRecord {
   multiplier: number
   cost_micros: number
   error?: string
+  /** 失败类别：model_not_found / upstream_auth / upstream_timeout 等 */
+  error_kind?: string
+  /** 路由尝试轨迹（JSON 数组字符串），记录换号/换供应商路径 */
+  attempts?: string
   latency_ms: number
   /** 调用方客户端（由 User-Agent 识别，如 Claude Code） */
   client?: string
+  /** 调用方来源 IP */
+  client_ip?: string
   /** 上游实际承接的模型；与 model（请求模型）不同时单独展示 */
   actual_model?: string
   account_id: number
@@ -336,4 +342,18 @@ export interface UpgradeState {
   target_version?: string
   error?: string
   [k: string]: unknown
+}
+
+/** 管理操作审计记录：谁在什么时候做了什么，成功还是失败。 */
+export interface AuditEntry {
+  id: number
+  ts: number
+  actor: string
+  actor_kind: 'root' | 'admin' | 'user' | 'system' | 'anonymous' | string
+  ip?: string
+  action: string
+  target?: string
+  detail?: string
+  result: 'ok' | 'fail'
+  error?: string
 }

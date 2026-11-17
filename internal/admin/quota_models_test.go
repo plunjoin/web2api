@@ -3,12 +3,12 @@ package admin
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
+	"web2api/internal/logging"
 	"web2api/internal/store"
 )
 
@@ -31,7 +31,7 @@ func TestHandleModelsHidesDeadOrphanSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &API{st: st, logger: log.New(io.Discard, "", 0)}
+	a := &API{st: st, logger: logging.NewTest(io.Discard)}
 	r := httptest.NewRequest(http.MethodGet, "/admin/api/models", nil)
 	w := httptest.NewRecorder()
 	a.handleModels(w, r)

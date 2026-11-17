@@ -73,8 +73,9 @@ export function UsageTable({ records, onSelect, showUser }: { records: UsageReco
                     <TooltipContent>{dateTime(r.ts)}</TooltipContent>
                   </Tooltip>
                 </TableCell>
-                <TableCell className="hidden max-w-[120px] truncate text-[13px] md:table-cell" title={r.client}>
-                  {r.client || '—'}
+                <TableCell className="hidden max-w-[140px] md:table-cell">
+                  <div className="truncate text-[13px]" title={r.client}>{r.client || '—'}</div>
+                  {r.client_ip && <div className="truncate font-mono text-[11px] text-muted-foreground" title={r.client_ip}>{r.client_ip}</div>}
                 </TableCell>
                 <TableCell className="max-w-[160px] truncate font-mono text-xs" title={r.model}>
                   {r.model || '—'}

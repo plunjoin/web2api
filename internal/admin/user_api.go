@@ -28,10 +28,11 @@ func userSafeRecord(rec store.UsageRecord) store.UsageRecord {
 		}
 	}
 	rec.UserEmail = ""
-	// 接单账号是运维内部信息，终端用户只看引擎与模型。
+	// 接单账号与换号轨迹是运维内部信息，终端用户只看引擎与模型。
 	rec.AccountID = 0
 	rec.AccountLabel = ""
 	rec.Provider = ""
+	rec.Attempts = ""
 	return rec
 }
 

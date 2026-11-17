@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   ReceiptText,
   Route,
+  ScrollText,
   Server,
   Settings,
   Ticket,
@@ -54,6 +55,7 @@ export const adminNav: NavGroup[] = [
     label: '系统',
     items: [
       { to: '/admin/settings', label: '设置', icon: Settings, keywords: 'settings shezhi upgrade version registration' },
+      { to: '/admin/audit', label: '审计日志', icon: ScrollText, keywords: 'audit logs shenji rizhi operations' },
       { to: '/admin/docs', label: '接口文档', icon: BookOpen, keywords: 'docs api openapi wendang' },
     ],
   },

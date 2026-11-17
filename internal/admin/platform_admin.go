@@ -73,6 +73,7 @@ func (a *API) handleAdminCreateUser(w http.ResponseWriter, r *http.Request, p *P
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "user:"+strconv.FormatInt(user.ID, 10)+" "+user.Email, "创建用户，角色 "+user.Role)
 	writeJSON(w, 201, map[string]any{"user": user})
 }
 
@@ -129,6 +130,21 @@ func (a *API) handleAdminPatchUser(w http.ResponseWriter, r *http.Request, p *Pr
 		storeError(w, err)
 		return
 	}
+	changes := make([]string, 0, 3)
+	if req.Role != nil {
+		changes = append(changes, "角色="+*req.Role)
+	}
+	if req.Enabled != nil {
+		changes = append(changes, "启用="+strconv.FormatBool(*req.Enabled))
+	}
+	if req.Multiplier != nil {
+		changes = append(changes, "倍率="+strconv.FormatFloat(*req.Multiplier, 'f', -1, 64))
+	}
+	detail := "更新用户资料"
+	if len(changes) > 0 {
+		detail += "：" + strings.Join(changes, "，")
+	}
+	setAudit(r, "user:"+strconv.FormatInt(u.ID, 10)+" "+u.Email, detail)
 	writeJSON(w, 200, map[string]any{"user": updated})
 }
 
@@ -142,6 +158,7 @@ func (a *API) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request, p *P
 		writeJSON(w, 400, map[string]any{"error": "不能删除自己"})
 		return
 	}
+	setAudit(r, "user:"+strconv.FormatInt(u.ID, 10)+" "+u.Email, "删除用户")
 	if err := a.st.DeleteUser(u.ID); err != nil {
 		storeError(w, err)
 		return
@@ -176,6 +193,7 @@ func (a *API) handleAdminUserPassword(w http.ResponseWriter, r *http.Request, p 
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "user:"+strconv.FormatInt(u.ID, 10)+" "+u.Email, "重置用户密码（旧登录态已失效）")
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -202,6 +220,8 @@ func (a *API) handleAdminAdjustBalance(w http.ResponseWriter, r *http.Request, p
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "user:"+strconv.FormatInt(u.ID, 10)+" "+u.Email,
+		fmt.Sprintf("调整余额 %+.2f 元，备注：%s", float64(req.Amount)/1e6, req.Note))
 	writeJSON(w, 200, map[string]any{"entry": entry, "balance": entry.BalanceAfter})
 }
 
@@ -237,6 +257,7 @@ func (a *API) handleAdminRefund(w http.ResponseWriter, r *http.Request, p *Princ
 		writeJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "usage:"+strconv.FormatInt(id, 10), "退款，备注："+req.Note)
 	writeJSON(w, 200, map[string]any{"entry": entry})
 }
 
@@ -285,6 +306,7 @@ func (a *API) handleAdminCreateCodes(w http.ResponseWriter, r *http.Request, p *
 	if len(codes) > 0 {
 		batch = codes[0].Batch
 	}
+	setAudit(r, "batch:"+batch, fmt.Sprintf("生成 %d 张兑换码，单张 %.2f 元", len(codes), float64(req.Amount)/1e6))
 	writeJSON(w, 201, map[string]any{"codes": codes, "batch": batch})
 }
 
@@ -313,6 +335,7 @@ func (a *API) handleAdminPatchCode(w http.ResponseWriter, r *http.Request, p *Pr
 		writeJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "code:"+strconv.FormatInt(id, 10), "修改兑换码启用状态="+strconv.FormatBool(*req.Enabled))
 	writeJSON(w, 200, map[string]any{"code": c})
 }
 
@@ -327,16 +350,19 @@ func (a *API) handleAdminDeleteCode(w http.ResponseWriter, r *http.Request, p *P
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "code:"+strconv.FormatInt(id, 10), "删除未使用的兑换码")
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // handleAdminDisableBatch POST /admin/api/redeem-codes/batches/{batch}/disable
 func (a *API) handleAdminDisableBatch(w http.ResponseWriter, r *http.Request, p *Principal) {
-	n, err := a.st.DisableRedeemBatch(r.PathValue("batch"))
+	batch := r.PathValue("batch")
+	n, err := a.st.DisableRedeemBatch(batch)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "batch:"+batch, fmt.Sprintf("整批停用 %d 张兑换码", n))
 	writeJSON(w, 200, map[string]any{"disabled": n})
 }
 
@@ -438,5 +464,6 @@ func (a *API) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, p *
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "settings:platform", "更新平台设置")
 	writeJSON(w, 200, map[string]any{"settings": saved})
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -40,7 +41,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// 账号跟踪必须在进入 manager 前挂到调用方 ctx 上：manager 会基于它派生
 	// 选路的 ctx，引擎把实际接单账号写回同一份跟踪状态，落库时才能读到。
-	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
+	ctx := engine.WithAccountTracking(provider.WithAttemptTrace(provider.WithSessionHint(r.Context(), sessionHintFrom(r))))
 	start := time.Now()
 
 	// 流式 SSE
@@ -52,8 +53,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// 非流式
 	res, err := s.mgr.Chat(ctx, req)
 	if err != nil {
-		s.logger.Printf("[chat] 请求失败 model=%q: %v", req.Model, err)
 		status := upstreamErrorStatus(err)
+		s.logRequestFailure(ctx, r, req.Model, "/v1/chat/completions", false, res, status, err)
 		s.recordChat(ctx, r, req, res, false, err, start, "/v1/chat/completions", status, 0)
 		switch {
 		case provider.IsModelDisabled(err):
@@ -101,13 +102,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request, req mo
 	}
 	defer sse.Close()
 
-	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
+	ctx := engine.WithAccountTracking(provider.WithAttemptTrace(provider.WithSessionHint(r.Context(), sessionHintFrom(r))))
 	enc := chat.NewStreamEncoder(req, sse)
 	sink := newTimedSink(enc.Sink(), start)
 	res, runErr := s.mgr.ChatStream(ctx, req, sink)
 	// 流式响应头已经发出，错误也以 200 + 流内错误提示交付。
 	if runErr != nil {
-		s.logger.Printf("[chat] 流式请求失败 model=%q: %v", req.Model, runErr)
+		s.logRequestFailure(ctx, r, req.Model, "/v1/chat/completions", true, res, http.StatusOK, runErr)
 		s.recordChat(ctx, r, req, res, true, runErr, start, "/v1/chat/completions", http.StatusOK, sink.TTFT())
 		stop := "stop"
 		_ = enc.WriteRaw(model.Delta{Content: "[Error] " + runErr.Error()}, &stop, nil)
@@ -169,6 +170,38 @@ func messagesText(messages []model.ChatMessage) string {
 	return sb.String()
 }
 
+// logRequestFailure 输出可排查的请求失败日志：模型、实际引擎、接单账号、
+// 客户端、状态码与路由尝试轨迹，全部在一行内，便于 grep 和日志系统聚合。
+func (s *Server) logRequestFailure(ctx context.Context, r *http.Request, modelName, endpoint string, stream bool, res *model.ChatResult, status int, err error) {
+	engineName := ""
+	if res != nil {
+		engineName = res.Engine
+	}
+	account := ""
+	if id, ok := engine.ServedAccount(ctx); ok {
+		account = id
+	}
+	path := ""
+	if attempts := provider.AttemptTrace(ctx); len(attempts) > 0 {
+		parts := make([]string, 0, len(attempts))
+		for _, a := range attempts {
+			if a.Error == "" {
+				parts = append(parts, a.Engine)
+				continue
+			}
+			parts = append(parts, a.Engine+"(失败)")
+		}
+		path = strings.Join(parts, " -> ")
+	}
+	kind := provider.ErrorKind(err)
+	streamLabel := ""
+	if stream {
+		streamLabel = " (stream)"
+	}
+	s.logger.Warnf("[request] %s%s 失败 model=%q engine=%q account=%q client=%q ip=%q status=%d kind=%s path=%q: %v",
+		endpoint, streamLabel, modelName, engineName, account, clientName(r), requestIP(r), status, kind, path, err)
+}
+
 // recordChat 写入逐请求用量并按倍率扣减 Key 额度。失败请求只记录、不扣额度。
 // endpoint 为调用入口（/v1/chat/completions 或 /v1/responses），用于用量归因。
 // ctx 必须是实际调用引擎的那一个：引擎把「真实接单账号」写在它的 context 里。
@@ -182,6 +215,7 @@ func (s *Server) recordChat(ctx context.Context, r *http.Request, req model.Chat
 		Success:    runErr == nil,
 		LatencyMs:  time.Since(start).Milliseconds(),
 		Client:     clientName(r),
+		ClientIP:   requestIP(r),
 		StatusCode: int64(status),
 		TTFTMs:     ttft.Milliseconds(),
 	}
@@ -209,11 +243,18 @@ func (s *Server) recordChat(ctx context.Context, r *http.Request, req model.Chat
 	}
 	if runErr != nil {
 		rec.Error = runErr.Error()
+		rec.ErrorKind = provider.ErrorKind(runErr)
 	} else {
 		usage := resolveUsage(req, res)
 		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens = usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
 		rec.Estimated = usage.Estimated
 		rec.CachedTokens = usage.CachedTokens
+	}
+	// 换号/换供应商轨迹：只有发生多次尝试时才值得落库，成功单次不写。
+	if attempts := provider.AttemptTrace(ctx); len(attempts) > 1 || (len(attempts) == 1 && attempts[0].Error != "") {
+		if b, err := json.Marshal(attempts); err == nil {
+			rec.Attempts = string(b)
+		}
 	}
 	saved, err := s.st.RecordRequest(rec)
 	if err != nil {

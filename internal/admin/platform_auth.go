@@ -123,6 +123,7 @@ func (a *API) loginPlatformUser(w http.ResponseWriter, r *http.Request, v *store
 	if byEmail > 10 || byIP > 60 {
 		w.Header().Set("Retry-After", "900")
 		writeJSON(w, 429, map[string]any{"error": "登录尝试过多，请 15 分钟后重试"})
+		a.auditLogin(r, email, "user", errAuditTooManyAttempts)
 		return
 	}
 	user, err := a.st.GetUserByEmail(email)
@@ -137,10 +138,12 @@ func (a *API) loginPlatformUser(w http.ResponseWriter, r *http.Request, v *store
 	passwordOK := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 	if err != nil || !passwordOK {
 		writeJSON(w, 401, map[string]any{"error": "邮箱或密码错误"})
+		a.auditLogin(r, email, "user", errAuditBadPassword)
 		return
 	}
 	if !user.Enabled {
 		writeJSON(w, 403, map[string]any{"error": "账号已停用，请联系管理员"})
+		a.auditLogin(r, email, principalKind(&Principal{User: &user}), errAuditDisabled)
 		return
 	}
 	token, err := issueSession(r, v, redis, "u:"+strconv.FormatInt(user.ID, 10), user.TokenVersion)
@@ -150,6 +153,8 @@ func (a *API) loginPlatformUser(w http.ResponseWriter, r *http.Request, v *store
 	}
 	_, _ = redis.Command(r.Context(), "DEL", emailKey)
 	a.st.TouchUserLogin(user.ID)
+	kind := principalKind(&Principal{User: &user})
+	a.auditLogin(r, user.Email, kind, nil)
 	writeJSON(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int64(sessionLifetime.Seconds()),
 		"user": (&Principal{User: &user}).view()})
 }
@@ -244,6 +249,7 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.st.TouchUserLogin(user.ID)
+	a.recordAudit(r, user.Email, "user", "user.register", "user:"+strconv.FormatInt(user.ID, 10), "自助注册", "ok", "")
 	writeJSON(w, 201, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int64(sessionLifetime.Seconds()),
 		"user": (&Principal{User: &user}).view()})
 }
@@ -274,7 +280,7 @@ func (a *API) userAuth(next func(http.ResponseWriter, *http.Request, *Principal)
 			writeJSON(w, 403, map[string]any{"error": "初始化管理员没有个人余额，请使用普通用户账号登录控制台"})
 			return
 		}
-		next(w, r, p)
+		next(w, r.WithContext(withPrincipal(r.Context(), p)), p)
 	}
 }
 
@@ -290,6 +296,6 @@ func (a *API) adminAuth(next func(http.ResponseWriter, *http.Request, *Principal
 			writeJSON(w, 403, map[string]any{"error": "需要管理员权限"})
 			return
 		}
-		next(w, r, p)
+		next(w, r.WithContext(withPrincipal(r.Context(), p)), p)
 	}
 }

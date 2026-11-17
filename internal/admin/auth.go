@@ -219,6 +219,7 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if readJSON(r, &input) != nil || len(input.Password) > 72 || len(input.Email) > 254 {
 		writeJSON(w, 400, map[string]any{"error": "登录参数无效"})
+		a.auditLogin(r, strings.TrimSpace(input.Email), "root", errAuditInvalidLogin)
 		return
 	}
 	v, err := a.st.AdminSettings()
@@ -255,11 +256,13 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if count > 10 {
 		w.Header().Set("Retry-After", "900")
 		writeJSON(w, 429, map[string]any{"error": "登录尝试过多，请 15 分钟后重试"})
+		a.auditLogin(r, strings.ToLower(strings.TrimSpace(input.Email)), "root", errAuditTooManyAttempts)
 		return
 	}
 	passwordOK := bcrypt.CompareHashAndPassword([]byte(v.PasswordHash), []byte(input.Password)) == nil
 	if !passwordOK || strings.ToLower(strings.TrimSpace(input.Email)) != v.Email {
 		writeJSON(w, 401, map[string]any{"error": "邮箱或密码错误"})
+		a.auditLogin(r, strings.ToLower(strings.TrimSpace(input.Email)), "root", errAuditBadPassword)
 		return
 	}
 	id, err := randomSecret()
@@ -279,7 +282,25 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = redis.Command(r.Context(), "DEL", limitKey)
+	a.auditLogin(r, v.Email, "root", nil)
 	writeJSON(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": int64(sessionLifetime.Seconds()), "user": rootPrincipal(v).view()})
+}
+
+// actorForSubject 按 JWT subject 反查操作人邮箱与类型（用于退出登录等无 Principal 的场景）。
+func (a *API) actorForSubject(subject string) (string, string) {
+	if subject == rootSubject {
+		if v, err := a.st.AdminSettings(); err == nil && v != nil {
+			return v.Email, "root"
+		}
+		return "root", "root"
+	}
+	if id, err := strconv.ParseInt(strings.TrimPrefix(subject, "u:"), 10, 64); err == nil {
+		if u, err := a.st.GetUser(id); err == nil {
+			return u.Email, principalKind(&Principal{User: &u})
+		}
+		return subject, "user"
+	}
+	return subject, "user"
 }
 
 // authenticate 管理接口鉴权：根管理员或 role=admin 的平台用户。

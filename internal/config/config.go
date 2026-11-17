@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -196,6 +197,12 @@ type ServerConfig struct {
 	APIKeys  []string `yaml:"api_keys"` // 种子 Key（启动时导入 Key 库，可空）
 	DBPath   string   `yaml:"db_path"`  // SQLite 路径（号池/Key/用量）
 	LogLevel string   `yaml:"log_level"`
+	// 运行日志文件：默认写入 db_path 同级的 logs/ 目录，按天/大小轮转并保留 N 天。
+	// LogDir 显式设为 "-" 可关闭文件日志，只保留 stdout。
+	LogDir       string `yaml:"log_dir"`
+	LogMaxDays   int    `yaml:"log_max_days"`
+	LogMaxSizeMB int    `yaml:"log_max_size_mb"`
+	LogConsole   *bool  `yaml:"log_console"` // 是否同时写 stdout，默认 true
 }
 
 // RoutingConfig 模型路由配置。
@@ -399,6 +406,18 @@ func applyEnv(cfg *Config) {
 	}
 	if cfg.Server.DBPath == "" {
 		cfg.Server.DBPath = "data/web2api.db"
+	}
+	if cfg.Server.LogLevel == "" {
+		cfg.Server.LogLevel = "info"
+	}
+	if cfg.Server.LogDir == "" {
+		cfg.Server.LogDir = filepath.Join(filepath.Dir(cfg.Server.DBPath), "logs")
+	}
+	if cfg.Server.LogMaxDays <= 0 {
+		cfg.Server.LogMaxDays = 7
+	}
+	if cfg.Server.LogMaxSizeMB <= 0 {
+		cfg.Server.LogMaxSizeMB = 50
 	}
 	if cfg.Routing.DefaultEngine == "" {
 		cfg.Routing.DefaultEngine = "auto"

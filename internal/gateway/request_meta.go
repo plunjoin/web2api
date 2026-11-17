@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,6 +11,24 @@ import (
 	"web2api/internal/model"
 	"web2api/internal/provider"
 )
+
+// requestIP 提取调用方来源 IP。反向代理头优先（部署在 Nginx/CDN 后时
+// RemoteAddr 只会是代理地址），其次退回 TCP 对端。
+func requestIP(r *http.Request) string {
+	for _, h := range []string{"CF-Connecting-IP", "True-Client-IP", "X-Real-IP"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			return v
+		}
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		return strings.TrimSpace(strings.Split(v, ",")[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
 
 // clientName 从 User-Agent 识别调用方客户端，供用量明细的「AGENT」列展示。
 // 识别不出来时退回 UA 的首个产品名，而不是丢掉这条信息。

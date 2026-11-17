@@ -100,11 +100,12 @@ func (s *Server) handleMusicGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	ctx := engine.WithAccountTracking(r.Context())
+	ctx := engine.WithAccountTracking(provider.WithAttemptTrace(r.Context()))
 	res, chatErr := s.mgr.Chat(ctx, chatReq)
 	if chatErr != nil {
-		s.logger.Printf("[music] 请求失败 model=%q: %v", chatReq.Model, chatErr)
-		s.recordChat(ctx, r, chatReq, res, false, chatErr, start, path, upstreamErrorStatus(chatErr), 0)
+		status := upstreamErrorStatus(chatErr)
+		s.logRequestFailure(ctx, r, chatReq.Model, path, false, res, status, chatErr)
+		s.recordChat(ctx, r, chatReq, res, false, chatErr, start, path, status, 0)
 		if provider.IsModelDisabled(chatErr) {
 			writeError(w, http.StatusNotFound, chatErr.Error(), "invalid_request_error", "model_unavailable")
 			return

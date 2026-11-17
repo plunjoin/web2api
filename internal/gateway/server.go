@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -27,6 +26,7 @@ import (
 	"web2api/internal/admin"
 	"web2api/internal/geminiapi"
 	"web2api/internal/limiter"
+	"web2api/internal/logging"
 	"web2api/internal/model"
 	"web2api/internal/provider"
 	"web2api/internal/store"
@@ -42,7 +42,7 @@ type Server struct {
 	limiter *limiter.Limiter
 	httpSrv *http.Server
 	startAt time.Time
-	logger  *log.Logger
+	logger  *logging.Logger
 	updater *upgrade.Manager
 	gemini  *geminiapi.Backend
 	rpm     *rpmLimiter
@@ -50,9 +50,9 @@ type Server struct {
 }
 
 // NewServer 创建网关服务。
-func NewServer(mgr *provider.Manager, st *store.Store, seedKeys []string, rate, capacity float64, logger *log.Logger) (*Server, error) {
+func NewServer(mgr *provider.Manager, st *store.Store, seedKeys []string, rate, capacity float64, logger *logging.Logger) (*Server, error) {
 	if logger == nil {
-		logger = log.Default()
+		logger = logging.Default()
 	}
 	// 种子 Key 导入（config 里的 api_keys 持久化为可管理 Key）
 	for _, key := range seedKeys {
@@ -179,7 +179,7 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		// 管理台静态资源不打日志
 		if !strings.HasPrefix(r.URL.Path, "/admin") {
-			s.logger.Printf("[http] %s %s %d %s", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+			s.logger.Printf("[http] %s %s %d %s ip=%s", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond), requestIP(r))
 		}
 	})
 }

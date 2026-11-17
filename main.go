@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,9 +21,11 @@ import (
 
 	"web2api/internal/config"
 	"web2api/internal/gateway"
+	"web2api/internal/logging"
 	"web2api/internal/provider"
 	"web2api/internal/store"
 	"web2api/internal/upgrade"
+	"web2api/internal/version"
 )
 
 func main() {
@@ -47,18 +50,29 @@ func main() {
 		return
 	}
 
-	logger := log.New(os.Stdout, "[web2api] ", log.LstdFlags|log.Lmsgprefix)
-	if !*verbose {
-		logger.SetFlags(0)
-	}
-
 	// 1. 加载配置
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		logger.Fatalf("加载配置失败: %v", err)
+		log.Fatalf("加载配置失败: %v", err)
 	}
 
-	// 2. 打开号池存储
+	// 2. 初始化日志系统（级别 / stdout / 文件轮转）
+	logger := logging.New(logging.Options{
+		Level:     cfg.Server.LogLevel,
+		Dir:       cfg.Server.LogDir,
+		MaxDays:   cfg.Server.LogMaxDays,
+		MaxSizeMB: cfg.Server.LogMaxSizeMB,
+		Console:   cfg.Server.LogConsole == nil || *cfg.Server.LogConsole,
+	})
+	defer logger.Close()
+	if *verbose {
+		logger.SetLevel(logging.LevelDebug)
+	}
+	logging.SetDefault(logger)
+	slog.SetDefault(slog.New(logging.SlogHandler(logger)))
+	logger.Printf("启动 web2api %s（日志级别 %s，目录 %s）", version.Get().Version, logger.Level(), cfg.Server.LogDir)
+
+	// 3. 打开号池存储
 	st, err := store.Open(cfg.Server.DBPath)
 	if err != nil {
 		logger.Fatalf("打开数据库失败: %v", err)
@@ -73,7 +87,7 @@ func main() {
 		return
 	}
 
-	// 3. 构建引擎管理器并初始化
+	// 4. 构建引擎管理器并初始化
 	mgr, err := provider.NewManager(cfg, st)
 	if err != nil {
 		logger.Fatalf("初始化引擎失败: %v", err)
@@ -85,7 +99,7 @@ func main() {
 		logger.Printf("[warn] 引擎/号池部分初始化失败（可在管理台补配）: %v", err)
 	}
 
-	// 4. 启动网关（含管理台）
+	// 5. 启动网关（含管理台）
 	srv, err := gateway.NewServer(mgr, st, cfg.Server.APIKeys, 0, 0, logger)
 	if err != nil {
 		logger.Fatalf("创建网关失败: %v", err)

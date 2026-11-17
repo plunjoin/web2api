@@ -226,8 +226,11 @@ func (s *Store) migrate() error {
 			multiplier REAL NOT NULL DEFAULT 1,
 			cost_micros INTEGER NOT NULL DEFAULT 0,
 			error TEXT NOT NULL DEFAULT '',
+			error_kind TEXT NOT NULL DEFAULT '',
+			attempts TEXT NOT NULL DEFAULT '',
 			latency_ms INTEGER NOT NULL DEFAULT 0,
 			client TEXT NOT NULL DEFAULT '',
+			client_ip TEXT NOT NULL DEFAULT '',
 			actual_model TEXT NOT NULL DEFAULT '',
 			account_id INTEGER NOT NULL DEFAULT 0,
 			account_label TEXT NOT NULL DEFAULT '',
@@ -289,6 +292,9 @@ func (s *Store) migrate() error {
 		{"usage_records", "status_code", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_records", "ttft_ms", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_records", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_records", "client_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_records", "error_kind", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_records", "attempts", "TEXT NOT NULL DEFAULT ''"},
 		{"model_catalog", "free", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.ddl); err != nil {

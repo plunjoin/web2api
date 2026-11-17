@@ -2113,7 +2113,9 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 		lastErr error
 	)
 	for i, eng := range engines {
+		attemptStart := time.Now()
 		if err := m.requireToolSupport(eng, req); err != nil {
+			RecordAttempt(ctx, eng.Name(), attemptStart, err)
 			lastErr = err
 			// 有工具支持的下家就继续试，全部不支持时把明确的错误返回给调用方。
 			if i < len(engines)-1 {
@@ -2122,6 +2124,7 @@ func (m *Manager) Chat(ctx context.Context, req model.ChatRequest) (*model.ChatR
 			break
 		}
 		res, err := eng.Chat(ctx, req)
+		RecordAttempt(ctx, eng.Name(), attemptStart, err)
 		if err == nil {
 			m.noteAffinity(affinityKey, ctx)
 			return res, nil
@@ -2154,7 +2157,9 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 		lastRes *model.ChatResult
 	)
 	for i, eng := range engines {
+		attemptStart := time.Now()
 		if err := m.requireToolSupport(eng, req); err != nil {
+			RecordAttempt(ctx, eng.Name(), attemptStart, err)
 			lastErr = err
 			if i < len(engines)-1 {
 				continue
@@ -2169,6 +2174,7 @@ func (m *Manager) ChatStream(ctx context.Context, req model.ChatRequest, sink mo
 		} else {
 			res, err = eng.ChatStream(ctx, req, gate.Text)
 		}
+		RecordAttempt(ctx, eng.Name(), attemptStart, err)
 		if err == nil {
 			m.noteAffinity(affinityKey, ctx)
 			return res, nil

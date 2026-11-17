@@ -8,7 +8,11 @@ server:
   api_keys:
     - "sk-web2api"                    # 种子 Key（启动后自动导入，管理台可改）
   db_path: "/opt/web2api/data/web2api.db"
-  log_level: "info"
+  log_level: "info"                   # debug | info | warn | error
+  log_dir: "/opt/web2api/data/logs"   # 运行日志目录（按天/大小轮转）
+  log_max_days: 7
+  log_max_size_mb: 50
+  log_console: true
 
 routing:
   default_engine: "auto"              # auto | a | b

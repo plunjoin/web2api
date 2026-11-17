@@ -41,11 +41,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
+	ctx := engine.WithAccountTracking(provider.WithAttemptTrace(provider.WithSessionHint(r.Context(), sessionHintFrom(r))))
 	res, err := s.mgr.Chat(ctx, chatReq)
 	if err != nil {
-		s.logger.Printf("[responses] 请求失败 model=%q: %v", chatReq.Model, err)
-		s.recordChat(ctx, r, chatReq, res, false, err, start, "/v1/responses", upstreamErrorStatus(err), 0)
+		status := upstreamErrorStatus(err)
+		s.logRequestFailure(ctx, r, chatReq.Model, "/v1/responses", false, res, status, err)
+		s.recordChat(ctx, r, chatReq, res, false, err, start, "/v1/responses", status, 0)
 		s.writeResponsesError(w, err)
 		return
 	}
@@ -63,13 +64,13 @@ func (s *Server) handleResponsesStream(w http.ResponseWriter, r *http.Request, r
 	}
 	defer sse.Close()
 
-	ctx := engine.WithAccountTracking(provider.WithSessionHint(r.Context(), sessionHintFrom(r)))
+	ctx := engine.WithAccountTracking(provider.WithAttemptTrace(provider.WithSessionHint(r.Context(), sessionHintFrom(r))))
 	enc := responses.NewStreamEncoder(sse, req.Model)
 	enc.Open()
 	sink := newTimedSink(enc.Sink(), start)
 	res, runErr := s.mgr.ChatStream(ctx, req, sink)
 	if runErr != nil {
-		s.logger.Printf("[responses] 流式请求失败 model=%q: %v", req.Model, runErr)
+		s.logRequestFailure(ctx, r, req.Model, "/v1/responses", true, res, http.StatusOK, runErr)
 		s.recordChat(ctx, r, req, res, true, runErr, start, "/v1/responses", http.StatusOK, sink.TTFT())
 		enc.EmitFailed(runErr)
 		return

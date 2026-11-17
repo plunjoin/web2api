@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"web2api/internal/engine/custom"
 	"web2api/internal/engine/teleagent"
 	"web2api/internal/engine/workbuddy"
+	"web2api/internal/logging"
 	"web2api/internal/provider"
 	"web2api/internal/store"
 	"web2api/internal/upgrade"
@@ -30,7 +30,7 @@ import (
 type API struct {
 	mgr     *provider.Manager
 	st      *store.Store
-	logger  *log.Logger
+	logger  *logging.Logger
 	updater *upgrade.Manager
 
 	workBuddyMu       sync.Mutex
@@ -62,9 +62,9 @@ func (a *API) saveWorkBuddySession(id, base, proxy string) {
 }
 
 // New 创建管理 API。
-func New(mgr *provider.Manager, st *store.Store, logger *log.Logger, updaters ...*upgrade.Manager) *API {
+func New(mgr *provider.Manager, st *store.Store, logger *logging.Logger, updaters ...*upgrade.Manager) *API {
 	if logger == nil {
-		logger = log.Default()
+		logger = logging.Default()
 	}
 	updater := upgrade.Disabled()
 	if len(updaters) > 0 && updaters[0] != nil {
@@ -83,72 +83,73 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/overview", a.auth(a.handleOverview))
 	mux.HandleFunc("GET /admin/api/docs", a.auth(a.handleDocs))
 	mux.HandleFunc("GET /admin/api/accounts", a.auth(a.handleListAccounts))
-	mux.HandleFunc("POST /admin/api/accounts", a.auth(a.handleAddAccount))
-	mux.HandleFunc("POST /admin/api/accounts/gemini", a.auth(a.handleAddGemini))
-	mux.HandleFunc("POST /admin/api/accounts/aistudio", a.auth(a.handleAddAIStudio))
-	mux.HandleFunc("PATCH /admin/api/accounts/{id}", a.auth(a.handlePatchAccount))
-	mux.HandleFunc("PUT /admin/api/accounts/{id}/credentials", a.auth(a.handleUpdateCredentials))
-	mux.HandleFunc("POST /admin/api/accounts/{id}/check", a.auth(a.handleCheckAccount))
-	mux.HandleFunc("POST /admin/api/accounts/{id}/checkin", a.auth(a.handleAccountCheckIn))
-	mux.HandleFunc("PATCH /admin/api/accounts/{id}/auto-checkin", a.auth(a.handleAccountAutoCheckIn))
-	mux.HandleFunc("DELETE /admin/api/accounts/{id}", a.auth(a.handleDeleteAccount))
+	mux.HandleFunc("POST /admin/api/accounts", a.auth(a.audited("account.add", a.handleAddAccount)))
+	mux.HandleFunc("POST /admin/api/accounts/gemini", a.auth(a.audited("account.add", a.handleAddGemini)))
+	mux.HandleFunc("POST /admin/api/accounts/aistudio", a.auth(a.audited("account.add", a.handleAddAIStudio)))
+	mux.HandleFunc("PATCH /admin/api/accounts/{id}", a.auth(a.audited("account.update", a.handlePatchAccount)))
+	mux.HandleFunc("PUT /admin/api/accounts/{id}/credentials", a.auth(a.audited("account.credentials", a.handleUpdateCredentials)))
+	mux.HandleFunc("POST /admin/api/accounts/{id}/check", a.auth(a.audited("account.check", a.handleCheckAccount)))
+	mux.HandleFunc("POST /admin/api/accounts/{id}/checkin", a.auth(a.audited("account.checkin", a.handleAccountCheckIn)))
+	mux.HandleFunc("PATCH /admin/api/accounts/{id}/auto-checkin", a.auth(a.audited("account.auto_checkin", a.handleAccountAutoCheckIn)))
+	mux.HandleFunc("DELETE /admin/api/accounts/{id}", a.auth(a.audited("account.delete", a.handleDeleteAccount)))
 	// 引擎元数据与订阅引擎 OAuth 授权
 	mux.HandleFunc("GET /admin/api/routing", a.auth(a.handleRouting))
-	mux.HandleFunc("PUT /admin/api/routing", a.auth(a.handlePutRouting))
+	mux.HandleFunc("PUT /admin/api/routing", a.auth(a.audited("routing.update", a.handlePutRouting)))
 	mux.HandleFunc("GET /admin/api/route-groups", a.auth(a.handleRouteGroups))
-	mux.HandleFunc("PUT /admin/api/route-groups", a.auth(a.handlePutRouteGroup))
+	mux.HandleFunc("PUT /admin/api/route-groups", a.auth(a.audited("routing.group_update", a.handlePutRouteGroup)))
 	mux.HandleFunc("GET /admin/api/engines", a.auth(a.handleEngineMeta))
 	mux.HandleFunc("POST /admin/api/custom/models", a.auth(a.handleProbeCustomModels))
-	mux.HandleFunc("POST /admin/api/oauth/{engine}/authorize", a.auth(a.handleOAuthAuthorize))
-	mux.HandleFunc("POST /admin/api/oauth/{engine}/exchange", a.auth(a.handleOAuthExchange))
+	mux.HandleFunc("POST /admin/api/oauth/{engine}/authorize", a.auth(a.audited("account.oauth", a.handleOAuthAuthorize)))
+	mux.HandleFunc("POST /admin/api/oauth/{engine}/exchange", a.auth(a.audited("account.oauth", a.handleOAuthExchange)))
 	mux.HandleFunc("POST /admin/api/oauth/{engine}/poll", a.auth(a.handleOAuthPoll))
 	mux.HandleFunc("GET /admin/api/keys", a.auth(a.handleListKeys))
-	mux.HandleFunc("POST /admin/api/keys", a.auth(a.handleCreateKey))
-	mux.HandleFunc("PATCH /admin/api/keys/{id}", a.auth(a.handlePatchKey))
-	mux.HandleFunc("DELETE /admin/api/keys/{id}", a.auth(a.handleDeleteKey))
+	mux.HandleFunc("POST /admin/api/keys", a.auth(a.audited("key.create", a.handleCreateKey)))
+	mux.HandleFunc("PATCH /admin/api/keys/{id}", a.auth(a.audited("key.update", a.handlePatchKey)))
+	mux.HandleFunc("DELETE /admin/api/keys/{id}", a.auth(a.audited("key.delete", a.handleDeleteKey)))
 	mux.HandleFunc("GET /admin/api/usage", a.auth(a.handleUsage))
 	mux.HandleFunc("GET /admin/api/usage/records", a.auth(a.handleUsageRecords))
 	mux.HandleFunc("GET /admin/api/usage/timeseries", a.auth(a.handleUsageTimeseries))
 	mux.HandleFunc("GET /admin/api/usage/export.csv", a.auth(a.handleUsageExport))
-	mux.HandleFunc("POST /admin/api/keys/{id}/regenerate", a.auth(a.handleRegenerateKey))
+	mux.HandleFunc("POST /admin/api/keys/{id}/regenerate", a.auth(a.audited("key.regenerate", a.handleRegenerateKey)))
 	mux.HandleFunc("GET /admin/api/models", a.auth(a.handleModels))
-	mux.HandleFunc("POST /admin/api/models/refresh", a.auth(a.handleRefreshModels))
-	mux.HandleFunc("POST /admin/api/engines/{engine}/models/refresh", a.auth(a.handleRefreshEngineModels))
-	mux.HandleFunc("PATCH /admin/api/models/{model...}", a.auth(a.handlePatchModel))
-	mux.HandleFunc("POST /admin/api/models/check", a.auth(a.handleCheckModel))
-	mux.HandleFunc("POST /admin/api/models/batch", a.auth(a.handleBatchModels))
+	mux.HandleFunc("POST /admin/api/models/refresh", a.auth(a.audited("model.refresh", a.handleRefreshModels)))
+	mux.HandleFunc("POST /admin/api/engines/{engine}/models/refresh", a.auth(a.audited("model.refresh", a.handleRefreshEngineModels)))
+	mux.HandleFunc("PATCH /admin/api/models/{model...}", a.auth(a.audited("model.update", a.handlePatchModel)))
+	mux.HandleFunc("POST /admin/api/models/check", a.auth(a.audited("model.check", a.handleCheckModel)))
+	mux.HandleFunc("POST /admin/api/models/batch", a.auth(a.audited("model.batch", a.handleBatchModels)))
 	mux.HandleFunc("GET /admin/api/version", a.auth(a.handleVersion))
 	mux.HandleFunc("GET /admin/api/multipliers", a.auth(a.handleListMultipliers))
-	mux.HandleFunc("PUT /admin/api/multipliers", a.auth(a.handlePutMultiplier))
-	mux.HandleFunc("PUT /admin/api/multipliers/group", a.auth(a.handlePutGroupMultiplier))
-	mux.HandleFunc("DELETE /admin/api/multipliers/group/{group...}", a.auth(a.handleDeleteGroupMultiplier))
-	mux.HandleFunc("DELETE /admin/api/multipliers/{model...}", a.auth(a.handleDeleteMultiplier))
+	mux.HandleFunc("PUT /admin/api/multipliers", a.auth(a.audited("multiplier.update", a.handlePutMultiplier)))
+	mux.HandleFunc("PUT /admin/api/multipliers/group", a.auth(a.audited("multiplier.update", a.handlePutGroupMultiplier)))
+	mux.HandleFunc("DELETE /admin/api/multipliers/group/{group...}", a.auth(a.audited("multiplier.delete", a.handleDeleteGroupMultiplier)))
+	mux.HandleFunc("DELETE /admin/api/multipliers/{model...}", a.auth(a.audited("multiplier.delete", a.handleDeleteMultiplier)))
 	mux.HandleFunc("GET /admin/api/prices", a.adminAuth(a.handleListPrices))
-	mux.HandleFunc("PUT /admin/api/prices", a.adminAuth(a.handlePutPrice))
-	mux.HandleFunc("DELETE /admin/api/prices/{model...}", a.adminAuth(a.handleDeletePrice))
+	mux.HandleFunc("PUT /admin/api/prices", a.adminAuth(a.auditedAP("price.update", a.handlePutPrice)))
+	mux.HandleFunc("DELETE /admin/api/prices/{model...}", a.adminAuth(a.auditedAP("price.delete", a.handleDeletePrice)))
 	mux.HandleFunc("GET /admin/api/status", a.auth(a.handleStatus))
 	mux.HandleFunc("GET /admin/api/upgrade", a.auth(a.handleUpgradeStatus))
 	mux.HandleFunc("POST /admin/api/upgrade/check", a.auth(a.handleUpgradeCheck))
-	mux.HandleFunc("POST /admin/api/upgrade", a.auth(a.handleUpgradeStart))
+	mux.HandleFunc("POST /admin/api/upgrade", a.auth(a.audited("upgrade.start", a.handleUpgradeStart)))
 
 	// 平台：用户、余额、兑换码、账单流水、设置
 	mux.HandleFunc("GET /admin/api/users", a.adminAuth(a.handleAdminUsers))
-	mux.HandleFunc("POST /admin/api/users", a.adminAuth(a.handleAdminCreateUser))
+	mux.HandleFunc("POST /admin/api/users", a.adminAuth(a.auditedAP("user.create", a.handleAdminCreateUser)))
 	mux.HandleFunc("GET /admin/api/users/{id}", a.adminAuth(a.handleAdminUser))
-	mux.HandleFunc("PATCH /admin/api/users/{id}", a.adminAuth(a.handleAdminPatchUser))
-	mux.HandleFunc("DELETE /admin/api/users/{id}", a.adminAuth(a.handleAdminDeleteUser))
-	mux.HandleFunc("POST /admin/api/users/{id}/password", a.adminAuth(a.handleAdminUserPassword))
-	mux.HandleFunc("POST /admin/api/users/{id}/balance", a.adminAuth(a.handleAdminAdjustBalance))
+	mux.HandleFunc("PATCH /admin/api/users/{id}", a.adminAuth(a.auditedAP("user.update", a.handleAdminPatchUser)))
+	mux.HandleFunc("DELETE /admin/api/users/{id}", a.adminAuth(a.auditedAP("user.delete", a.handleAdminDeleteUser)))
+	mux.HandleFunc("POST /admin/api/users/{id}/password", a.adminAuth(a.auditedAP("user.password", a.handleAdminUserPassword)))
+	mux.HandleFunc("POST /admin/api/users/{id}/balance", a.adminAuth(a.auditedAP("user.balance", a.handleAdminAdjustBalance)))
 	mux.HandleFunc("GET /admin/api/ledger", a.adminAuth(a.handleAdminLedger))
-	mux.HandleFunc("POST /admin/api/usage/records/{id}/refund", a.adminAuth(a.handleAdminRefund))
+	mux.HandleFunc("POST /admin/api/usage/records/{id}/refund", a.adminAuth(a.auditedAP("usage.refund", a.handleAdminRefund)))
 	mux.HandleFunc("GET /admin/api/redeem-codes", a.adminAuth(a.handleAdminCodes))
-	mux.HandleFunc("POST /admin/api/redeem-codes", a.adminAuth(a.handleAdminCreateCodes))
+	mux.HandleFunc("POST /admin/api/redeem-codes", a.adminAuth(a.auditedAP("code.create", a.handleAdminCreateCodes)))
 	mux.HandleFunc("GET /admin/api/redeem-codes/export.csv", a.adminAuth(a.handleAdminExportCodes))
-	mux.HandleFunc("PATCH /admin/api/redeem-codes/{id}", a.adminAuth(a.handleAdminPatchCode))
-	mux.HandleFunc("DELETE /admin/api/redeem-codes/{id}", a.adminAuth(a.handleAdminDeleteCode))
-	mux.HandleFunc("POST /admin/api/redeem-codes/batches/{batch}/disable", a.adminAuth(a.handleAdminDisableBatch))
+	mux.HandleFunc("PATCH /admin/api/redeem-codes/{id}", a.adminAuth(a.auditedAP("code.update", a.handleAdminPatchCode)))
+	mux.HandleFunc("DELETE /admin/api/redeem-codes/{id}", a.adminAuth(a.auditedAP("code.delete", a.handleAdminDeleteCode)))
+	mux.HandleFunc("POST /admin/api/redeem-codes/batches/{batch}/disable", a.adminAuth(a.auditedAP("code.batch_disable", a.handleAdminDisableBatch)))
 	mux.HandleFunc("GET /admin/api/settings", a.adminAuth(a.handleAdminSettings))
-	mux.HandleFunc("PUT /admin/api/settings", a.adminAuth(a.handleAdminPutSettings))
+	mux.HandleFunc("GET /admin/api/audit-logs", a.adminAuth(a.handleAuditLogs))
+	mux.HandleFunc("PUT /admin/api/settings", a.adminAuth(a.auditedAP("settings.update", a.handleAdminPutSettings)))
 
 	// 公开与平台用户接口（同一套 JWT + Redis 会话）
 	mux.HandleFunc("GET /api/public/config", a.handlePublicConfig)
@@ -286,6 +287,15 @@ func openAPISpec() map[string]any {
 			"/admin/api/keys/{id}/regenerate": map[string]any{"post": map[string]any{"tags": []string{"API Key"}, "summary": "重新生成密钥", "description": "换发新的 sk- 密钥，旧密钥立即失效；额度、倍率、白名单等设置保留。", "parameters": []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "integer", "format": "int64"}}}, "responses": map[string]any{"200": response("key"), "404": response("Key 不存在")}}},
 			"/admin/api/usage/timeseries":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "用量时间序列", "description": "days=1 按小时，其余按本地自然日分桶；空桶补零。每点含 requests、success_requests、total_tokens、cost_micros、avg_latency_ms。", "parameters": usageParams(false), "responses": map[string]any{"200": response("bucket、points")}}},
 			"/admin/api/usage/export.csv":     map[string]any{"get": map[string]any{"tags": []string{"用量"}, "summary": "导出逐请求明细 CSV", "description": "UTF-8（带 BOM），最多 100000 行，Key 脱敏。", "parameters": usageParams(false), "responses": map[string]any{"200": map[string]any{"description": "CSV 文件", "content": map[string]any{"text/csv": map[string]any{}}}}}},
+			"/admin/api/audit-logs": map[string]any{"get": map[string]any{"tags": []string{"系统"}, "summary": "管理操作审计日志", "description": "登录、调整余额、删除账号、Key 变更、设置修改等关键操作的留痕。action 以 . 结尾时按前缀匹配（如 user.）；q 匹配操作人、对象、说明与错误。不包含密码或凭据明文。", "parameters": []any{
+				map[string]any{"name": "days", "in": "query", "description": "统计天数，1-90，默认 7", "schema": map[string]any{"type": "integer", "default": 7, "minimum": 1, "maximum": 90}},
+				map[string]any{"name": "actor", "in": "query", "description": "操作人模糊匹配", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "action", "in": "query", "description": "动作；以 . 结尾时按前缀匹配", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "result", "in": "query", "description": "ok 或 fail", "schema": map[string]any{"type": "string", "enum": []string{"ok", "fail"}}},
+				map[string]any{"name": "q", "in": "query", "description": "关键词", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "limit", "in": "query", "description": "每页条数，默认 50，最大 500", "schema": map[string]any{"type": "integer", "default": 50, "maximum": 500}},
+				map[string]any{"name": "offset", "in": "query", "description": "偏移量", "schema": map[string]any{"type": "integer", "default": 0}},
+			}, "responses": map[string]any{"200": response("total、records、days")}}},
 			"/admin/api/models": map[string]any{
 				"get": map[string]any{"tags": []string{"概览"}, "summary": "模型目录（含用途分类、生效倍率、上下架与检查状态）", "description": "读的是上次「获取模型」保存的快照，不是引擎写死的默认目录。kind 为 chat、image、video、music、speech、embedding。enabled=false 的模型不会出现在下游 /v1/models。", "responses": map[string]any{"200": response("models、fetched_at、engines")}},
 			},
@@ -345,11 +355,16 @@ func openAPISpec() map[string]any {
 // auth 管理鉴权中间件。
 func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, _, code, err := a.authenticate(r); err != nil {
+		_, _, p, code, err := a.authenticateAny(r)
+		if err != nil {
 			writeJSON(w, code, map[string]any{"error": err.Error()})
 			return
 		}
-		next(w, r)
+		if !p.IsAdmin() {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "需要管理员权限"})
+			return
+		}
+		next(w, r.WithContext(withPrincipal(r.Context(), p)))
 	}
 }
 
@@ -477,6 +492,7 @@ func (a *API) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "account:"+strconv.FormatInt(acc.ID, 10)+" "+acc.Label, "新增账号，引擎 "+acc.Engine)
 	writeJSON(w, http.StatusOK, map[string]any{"account": acc})
 }
 
@@ -511,6 +527,7 @@ func (a *API) handleAddGemini(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "account:"+strconv.FormatInt(acc.ID, 10)+" "+acc.Label, "新增 Gemini 网页账号")
 	writeJSON(w, http.StatusOK, map[string]any{"account": acc})
 }
 
@@ -539,6 +556,7 @@ func (a *API) handleAddAIStudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "account:"+strconv.FormatInt(acc.ID, 10)+" "+acc.Label, "新增 AI Studio 账号")
 	writeJSON(w, http.StatusOK, map[string]any{"account": acc})
 }
 
@@ -564,6 +582,11 @@ func (a *API) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	state := "停用"
+	if *req.Enabled {
+		state = "启用"
+	}
+	setAudit(r, "account:"+strconv.FormatInt(id, 10), state+"账号")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -599,6 +622,7 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		setAudit(r, "account:"+strconv.FormatInt(id, 10)+" "+acc.Label, "更新 Gemini Cookie")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "codex", "antigravity", "kiro", "workbuddy", "workbuddy-ai", "custom":
 		var req struct {
@@ -616,6 +640,7 @@ func (a *API) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		setAudit(r, "account:"+strconv.FormatInt(id, 10)+" "+acc.Label, "更新账号凭据")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "引擎 " + acc.Engine + " 不支持凭据更新"})
@@ -949,6 +974,11 @@ func (a *API) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效 ID"})
 		return
 	}
+	if acc, getErr := a.st.GetAccount(id); getErr == nil {
+		setAudit(r, "account:"+strconv.FormatInt(id, 10)+" "+acc.Label, "删除账号")
+	} else {
+		setAudit(r, "account:"+strconv.FormatInt(id, 10), "删除账号")
+	}
 	if err := a.mgr.RemoveAccount(id); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -1019,6 +1049,7 @@ func (a *API) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	setAudit(r, "key:"+strconv.FormatInt(key.ID, 10)+" "+name, "创建 API Key")
 	writeJSON(w, http.StatusOK, map[string]any{"key": key})
 }
 
@@ -1047,6 +1078,7 @@ func (a *API) handlePatchKey(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(id, 10)+" "+key.Name, "修改 API Key 设置")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": key})
 }
 
@@ -1060,6 +1092,7 @@ func (a *API) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(id, 10), "删除 API Key")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

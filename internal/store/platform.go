@@ -101,6 +101,21 @@ var platformSchema = []string{
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+	// 管理操作审计：登录、改余额、删账号、发 Key、改设置等关键动作留痕。
+	`CREATE TABLE IF NOT EXISTS audit_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts INTEGER NOT NULL,
+		actor TEXT NOT NULL DEFAULT '',
+		actor_kind TEXT NOT NULL DEFAULT 'system',
+		ip TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT '',
+		result TEXT NOT NULL DEFAULT 'ok',
+		error TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts)`,
+	`CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action, ts)`,
 }
 
 // ---------- 用户 ----------
