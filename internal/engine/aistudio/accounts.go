@@ -59,6 +59,9 @@ var (
 	ErrNoEligibleAccount = errors.New("没有符合条件的 AI Studio 账户")
 	// ErrAccountNotFound 表示稳定账户 ID 不存在
 	ErrAccountNotFound = errors.New("账户不存在")
+	// ErrAccountNotManaged 表示管理 ID 不在引擎的映射里（账号未能装配进池或已出池）。
+	// 管理台删除/启停遇到它时应当降级为只改存储记录，否则这类残留账号永远删不掉。
+	ErrAccountNotManaged = errors.New("不在管理范围")
 	// ErrAccountLeased 表示账户当前存在进程内或跨进程租约
 	ErrAccountLeased = errors.New("账户正在使用")
 	// ErrAccountCoolingDown 表示租约账户在请求发出前进入冷却

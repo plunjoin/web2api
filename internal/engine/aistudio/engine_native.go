@@ -731,6 +731,30 @@ func (e *NativeEngine) RegisterAccountID(managedID, aistudioID string) {
 	e.idMu.Unlock()
 }
 
+// EnsureManaged 保证管理 ID 有映射：若尚未登记而池中已有同名（邮箱）账号，
+// 则补登记映射。启动装配不完整（凭据损坏、目录冲突、反向导入残留）时，
+// 管理台仍能对该账号执行删除 / 启停，而不是报「不在管理范围」。
+func (e *NativeEngine) EnsureManaged(managedID, poolID string) bool {
+	managedID = strings.TrimSpace(managedID)
+	poolID = strings.TrimSpace(poolID)
+	if managedID == "" || poolID == "" || e.pool == nil {
+		return false
+	}
+	e.idMu.RLock()
+	_, ok := e.idMap[managedID]
+	e.idMu.RUnlock()
+	if ok {
+		return true
+	}
+	for _, id := range e.PoolAccountIDs() {
+		if strings.EqualFold(id, poolID) {
+			e.RegisterAccountID(managedID, id)
+			return true
+		}
+	}
+	return false
+}
+
 // poolAccountID 管理 ID → 池内账号 ID（邮箱）；没有映射时返回空。
 func (e *NativeEngine) poolAccountID(managedID string) string {
 	e.idMu.RLock()
@@ -872,7 +896,7 @@ func (e *NativeEngine) RemoveAccount(id string) error {
 	}
 	e.idMu.Unlock()
 	if !ok {
-		return fmt.Errorf("账号 %s 不在管理范围", id)
+		return fmt.Errorf("账号 %s %w", id, ErrAccountNotManaged)
 	}
 
 	acc, removeErr := e.removeWithRetry(accountID, 30*time.Second)
@@ -928,7 +952,7 @@ func (e *NativeEngine) SetEnabled(id string, enabled bool) error {
 	accountID, ok := e.idMap[id]
 	e.idMu.RUnlock()
 	if !ok {
-		return fmt.Errorf("账号 %s 不在管理范围", id)
+		return fmt.Errorf("账号 %s %w", id, ErrAccountNotManaged)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

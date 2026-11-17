@@ -371,16 +371,17 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 				continue
 			}
 			var creds aistudio.Credentials
-			if err := json.Unmarshal([]byte(acc.Credentials), &creds); err != nil {
-				continue
-			}
+			// 凭据损坏也要继续：至少按显示名补登记映射，别让记录变成删不掉的孤儿。
+			_ = json.Unmarshal([]byte(acc.Credentials), &creds)
 			id := fmt.Sprintf("%d", acc.ID)
-			if len(creds.StorageState) > 0 {
+			// 池里已有同邮箱（反向导入的空壳记录、装配失败的历史记录）时优先补登记映射，
+			// 无论凭据是否完好——否则管理台对这条记录只能看、不能删。
+			if poolHas(native, acc.Label) {
+				native.RegisterAccountID(id, acc.Label)
+			} else if len(creds.StorageState) > 0 {
 				if err := native.AttachOrAdd(id, acc.Label, string(creds.StorageState), creds.Locale, creds.Timezone, creds.Proxy); err != nil {
 					_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
 				}
-			} else if poolHas(native, acc.Label) {
-				native.RegisterAccountID(id, acc.Label)
 			}
 			if !acc.Enabled {
 				_ = native.SetEnabled(id, false)
@@ -390,14 +391,7 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 
 	// 反向导入：auth 目录已存在但存储没有的账号（已有的 auth 目录直接复用）
 	if native, ok := m.engineB.(*aistudio.NativeEngine); ok && native != nil {
-		for _, poolID := range native.PoolAccountIDs() {
-			if _, err := m.st.GetAccountByLabel("aistudio", poolID); err == nil {
-				continue
-			}
-			if _, err := m.st.CreateAccount("aistudio", poolID, "{}", true); err == nil {
-				native.RegisterAccountID(fmt.Sprintf("%d", lastAccountID(m.st)), poolID)
-			}
-		}
+		m.importPoolAccounts(native)
 	}
 
 	// 订阅引擎账号装配（codex / antigravity / kiro / workbuddy）
@@ -466,6 +460,29 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// poolAccountImporter 反向导入所需的号池能力（AI Studio 原生引擎实现）。
+type poolAccountImporter interface {
+	PoolAccountIDs() []string
+	RegisterAccountID(managedID, aistudioID string)
+}
+
+// importPoolAccounts 把 auth 目录里已有、存储里没有的 AI Studio 账号补建进库并登记映射。
+func (m *Manager) importPoolAccounts(pool poolAccountImporter) {
+	for _, poolID := range pool.PoolAccountIDs() {
+		if _, err := m.st.GetAccountByLabel("aistudio", poolID); err == nil {
+			continue
+		}
+		// 必须用刚创建的那一行 ID 登记映射。按 ListAccounts 末尾取 ID 会在
+		// 多引擎混排时拿到别的引擎的记录（排序键是 engine,id），
+		// 导致导入的 AI Studio 账号全部没映射，管理台报「不在管理范围」。
+		created, err := m.st.CreateAccount("aistudio", poolID, "{}", true)
+		if err != nil {
+			continue
+		}
+		pool.RegisterAccountID(fmt.Sprintf("%d", created.ID), poolID)
+	}
 }
 
 // codexEngine / antigravityEngine / kiroEngine / mWorkBuddyEngine 返回订阅引擎实例。
@@ -550,12 +567,22 @@ func poolHas(native *aistudio.NativeEngine, accountID string) bool {
 	return false
 }
 
-func lastAccountID(st *store.Store) int64 {
-	accounts, _ := st.ListAccounts()
-	if len(accounts) == 0 {
-		return 0
+// ensurePoolMapping 在号池里按显示名（AI Studio 即邮箱）补登记管理 ID 映射。
+// 启动装配失败（凭据损坏、目录冲突）后库里仍会留下账号记录，补映射后才能正常
+// 删除 / 启停；没有对应池账号时什么也不做。
+func ensurePoolMapping(pool accountPool, engineID, label string) {
+	if attacher, ok := pool.(interface{ EnsureManaged(string, string) bool }); ok {
+		attacher.EnsureManaged(engineID, label)
 	}
-	return accounts[len(accounts)-1].ID
+}
+
+// poolAccountMissing 判断错误是否表示「账号已不在引擎掌握中」。
+// AI Studio 原生引擎用 ErrAccountNotManaged，其余订阅引擎用「不在池中」文案。
+func poolAccountMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, aistudio.ErrAccountNotManaged) || strings.Contains(err.Error(), "不在池中")
 }
 
 func seedLabel(engine, name string) string {
@@ -1274,10 +1301,12 @@ func (m *Manager) RemoveAccount(id int64) error {
 		return err
 	}
 	engineID := fmt.Sprintf("%d", id)
-	if pool, ok := m.pools[acc.Engine]; ok {
+	if pool, ok := m.pools[config.NormalizeEngineName(acc.Engine)]; ok {
+		ensurePoolMapping(pool, engineID, acc.Label)
 		if err := pool.RemoveAccount(engineID); err != nil {
-			// 账号不在池中（引擎未启用/已出池）时跳过，仅删除存储记录
-			if !strings.Contains(err.Error(), "不在池中") {
+			// 账号不在池中（引擎未启用/已出池/装配失败）时跳过，仅删除存储记录；
+			// 否则这类残留账号会永远卡在管理台删不掉。
+			if !poolAccountMissing(err) {
 				return err
 			}
 		}
@@ -1330,10 +1359,11 @@ func (m *Manager) SetAccountEnabled(id int64, enabled bool) error {
 		return err
 	}
 	engineID := fmt.Sprintf("%d", id)
-	if pool, ok := m.pools[acc.Engine]; ok {
+	if pool, ok := m.pools[config.NormalizeEngineName(acc.Engine)]; ok {
+		ensurePoolMapping(pool, engineID, acc.Label)
 		if err := pool.SetEnabled(engineID, enabled); err != nil {
-			// 账号不在池中（引擎未启用）时仅更新存储记录
-			if !strings.Contains(err.Error(), "不在池中") {
+			// 账号不在池中（引擎未启用/装配失败）时仅更新存储记录
+			if !poolAccountMissing(err) {
 				return err
 			}
 		}
