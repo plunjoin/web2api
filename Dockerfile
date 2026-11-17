@@ -10,8 +10,9 @@
 # ---------- Go 构建阶段（含前端） ----------
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
-# 安装编译所需工具（git 用于 go mod 下载公开依赖）
-RUN apk add --no-cache git ca-certificates
+# 安装编译所需工具（git 用于 go mod 下载公开依赖；
+# Tailwind standalone 是动态链接的，需要 C++/GCC 运行库）
+RUN apk add --no-cache git ca-certificates libstdc++ libgcc
 
 WORKDIR /build
 
