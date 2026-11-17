@@ -8,7 +8,10 @@ import { ConfirmProvider } from '@/components/confirm'
 import { AuthProvider } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
 import { router } from './router'
-import './index.css'
+import './index.gen.css'
+
+// 外壳 HTML 由 webfront 生成，不保证带 .dark；主题只有暗色一套，这里补上。
+document.documentElement.classList.add('dark')
 
 const queryClient = new QueryClient({
   defaultOptions: {

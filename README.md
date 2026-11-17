@@ -2,7 +2,7 @@
 
 > 📚 **在线文档**：[项目介绍与 v1 API 文档](https://plunjoin.github.io/web2api/)
 
-文档站点使用 [VitePress](https://vitepress.dev/) 构建，推送 `main` 分支后由 GitHub Pages 自动部署。想在本地预览：
+`docs/` 文档站点使用 [VitePress](https://vitepress.dev/) 构建（只有文档站需要 Node，与 `web/` 前端构建无关），推送 `main` 分支后由 GitHub Pages 自动部署。想在本地预览：
 
 ```bash
 cd docs
@@ -83,7 +83,7 @@ function calling 在 chat 与 responses 两个端点都可用：`tools` 与 `too
 ## 启动
 
 ```powershell
-cd F:\project\john\web2api
+cd web2api   # 进入仓库根目录（按实际克隆路径调整）
 # 1. 启动 Redis，按需编辑 config.yaml（监听地址、引擎等）
 # 2. 直接运行源码（main.go 位于根目录）
 go run . -config config.yaml
@@ -237,20 +237,27 @@ GET/PUT             /admin/api/settings                  平台设置（开放�
 
 ### 前端构建
 
-前端源码在 `web/`（Vite + React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui），`npm run build` 输出到
-`internal/webui/dist/`，由 `//go:embed` 内嵌进二进制，不访问任何 CDN。**构建产物已提交到仓库，只运行 `go build` 即可，无需 Node。**
-修改前端后：
+前端源码在 `web/`（React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui），构建链完全不用 Node：
+[webfront](https://github.com/plunjoin/webfront) 的 `wf build` 负责打包，Tailwind 官方 standalone
+可执行文件负责生成 CSS。产物输出到 `internal/webui/dist/`，由 `//go:embed` 内嵌进二进制，不访问任何 CDN。
+**构建产物已提交到仓库，只运行 `go build` 即可，无需任何前端工具链。** `web/` 根目录只保留
+`package.json`（依赖声明）、`package-lock.json`（`wf install` 的输入）和 `tsconfig.json`
+（JSX / `@/` 别名，webfront 直接读取）；Vite 时代的配置已全部删除，不要在这里跑 npm。修改前端后：
 
 ```bash
-cd web
-npm ci
-npm run dev        # 本地开发：http://localhost:5173/login，接口代理到 127.0.0.1:8800
-npm run typecheck
-npm run build      # 输出到 ../internal/webui/dist，然后提交 dist 的变化
+go run ./tools/web build   # wf install + Tailwind + wf build → internal/webui/dist
+go build -o web2api.exe .  # 重新内嵌前端并启动
 ```
 
-Docker 镜像构建时会在 Node 阶段重新执行 `npm ci && npm run build`，再由 Go 阶段内嵌，所以镜像总是使用与源码一致的前端。
-构建产物文件名带内容哈希（如 `index-DTrA9p-0.js`），网关对其返回 `immutable` 长缓存；入口页面 `no-store`，升级后不会混用旧资源。
+第一次构建会按需做两件事（都已 gitignore）：
+- 按 `web/package-lock.json` 把前端依赖拉到 `web/wf_modules/`（纯 Go 安装器，不跑 npm）；
+- 从 GitHub release 下载与 `tailwindcss` 同版本的 standalone CLI 到 `web/.tools/`（约 100MB）。
+
+构建完成后把 `internal/webui/dist/` 的变化一并提交：发布脚本只执行 `go build`，不会重建前端。
+Docker 镜像构建时也在 Go 阶段执行 `go run ./tools/web build`，所以镜像总是使用与源码一致的前端。
+入口文件 `assets/client.js` / `client.css` 使用固定文件名，页面里的引用会追加 `?v=<内容哈希>`；
+分包文件名自带哈希（如 `assets/chunks/chunk-4FVB6RQZ.js`），网关对它们返回 `immutable` 长缓存；
+入口页面 `no-store`，升级后不会混用旧资源。
 
 管理台的「接口文档」页会读取同一份 OpenAPI 文档，也可以直接下载
 `/admin/api/docs` 的 JSON 文件。管理接口统一返回 JSON，失败响应示例：
@@ -403,14 +410,15 @@ chmod +x deploy/build.sh
 
 前端已构建并内嵌在程序中，运行时不需要访问 CDN，普通 Go 构建不需要 Node.js。修改 Go 或前端源码后，
 先停止正在运行的旧程序，再执行下面的构建命令并重新启动。修改 `web/` 下的前端时，先执行
-`npm ci --prefix web && npm run typecheck --prefix web && npm run build --prefix web` 更新 `internal/webui/dist`。
+`go run ./tools/web build` 更新 `internal/webui/dist`。
 
 ```powershell
 go vet ./...
+go test ./...
 go build -o web2api.exe .
 ```
 
-测试用例不随仓库分发，本地开发时自建 `test/` 目录跑 `go test ./...` 即可（该目录已在 `.gitignore` 中）。
+各包的单元测试随仓库分发，`go test ./...` 直接运行；根目录 `test/` 仅用于本地集成测试，已在 `.gitignore` 中。
 
 ## 目录结构
 
@@ -428,7 +436,8 @@ internal/gateway/            OpenAI 网关（动态 Key 鉴权 + 用量埋点）
 internal/session/            Redis 会话通信（支持 ACL、数据库和 TLS）
 internal/admin/              JWT 登录、管理 REST API（/admin/api/*）与用户 API（/api/*）
 internal/webui/              内嵌前端（/admin、/console、/login、/register）
-web/                         前端源码（React + shadcn/ui，构建到 internal/webui/dist）
+tools/web/                   前端构建入口（go run ./tools/web build；webfront + Tailwind standalone）
+web/                         前端源码（React + shadcn/ui；package.json / package-lock.json / tsconfig.json + src）
 internal/limiter/           令牌桶限流
 internal/aistudio/          AI Studio 协议内核（AI Studio 私有协议 + 纯 Go Worker，MIT）
 internal/aistudio/waa/      BotGuard（WAA）纯 Go VM，内嵌 goja 执行官方解释器

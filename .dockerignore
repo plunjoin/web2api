@@ -3,6 +3,10 @@
 *.log
 web/node_modules/
 node_modules/
+web/wf_modules/
+web/.tools/
+web/src/index.gen.css
+web/src/assets/providers.gen.ts
 web2api.exe
 web2api.exe~
 *.exe

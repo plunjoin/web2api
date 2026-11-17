@@ -1,6 +1,7 @@
 // Package webui 内嵌 React 单页应用（/admin 管理台、/console 用户控制台、/login、/register）。
 //
-// 前端源码在 web/，由 `npm run build` 输出到 dist/（已提交到仓库，go build 不需要 Node）。
+// 前端源码在 web/，由 `go run ./tools/web build`（webfront + Tailwind，零 Node）输出到 dist/
+// （已提交到仓库，go build 不需要前端工具链）。
 package webui
 
 import (
@@ -22,16 +23,17 @@ const assetPrefix = "/admin/assets/"
 
 var (
 	assetsOnce   sync.Once
-	assetHashes  map[string]string // 文件名 -> 内容哈希（前 12 位十六进制）
+	assetHashes  map[string]string // 相对 dist/assets 的路径 -> 内容哈希（前 12 位十六进制）
 	indexHTML    []byte            // 已为资源地址追加 ?v=<哈希> 的页面
 	indexErr     error
 	assetRefExpr = regexp.MustCompile(`(["'])/admin/assets/([A-Za-z0-9._-]+)(["'])`)
-	// Vite 产物文件名自带 8 位内容哈希（如 index-DTrA9p-0.js），内容变化文件名就变化。
+	// wf build 的分包文件名自带 8 位内容哈希（如 chunk-4FVB6RQZ.js、accounts-XHTSWLOW.js），
+	// 内容变化文件名就变化。
 	hashedNameExpr = regexp.MustCompile(`^[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8}\.(js|css|woff2?|svg|png|webp)$`)
 )
 
 // isContentHashed 文件名本身已含内容哈希，可以永久缓存，也不能再追加 ?v=
-// （分包之间用 ./index-xxx.js 相对引用，多一个查询参数就会被当成另一个模块再执行一次）。
+// （分包之间用 ./chunks/chunk-xxx.js 相对引用，多一个查询参数就会被当成另一个模块再执行一次）。
 func isContentHashed(name string) bool { return hashedNameExpr.MatchString(name) }
 
 // loadAssets 计算内嵌资源的内容哈希，并改写页面里的资源地址。
@@ -41,22 +43,25 @@ func isContentHashed(name string) bool { return hashedNameExpr.MatchString(name)
 func loadAssets() {
 	assetsOnce.Do(func() {
 		assetHashes = map[string]string{}
-		entries, err := fs.ReadDir(distFS, "dist/assets")
+		// 递归统计：webfront 把懒加载分包放在 assets/chunks/，供应商图标放在 assets/providers/。
+		err := fs.WalkDir(distFS, "dist/assets", func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			data, err := distFS.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(data)
+			assetHashes[strings.TrimPrefix(p, "dist/assets/")] = hex.EncodeToString(sum[:])[:12]
+			return nil
+		})
 		if err != nil {
 			indexErr = err
 			return
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			data, err := distFS.ReadFile("dist/assets/" + entry.Name())
-			if err != nil {
-				indexErr = err
-				return
-			}
-			sum := sha256.Sum256(data)
-			assetHashes[entry.Name()] = hex.EncodeToString(sum[:])[:12]
 		}
 		data, err := distFS.ReadFile("dist/index.html")
 		if err != nil {
@@ -96,10 +101,10 @@ func Assets() http.Handler {
 	}
 	files := http.FileServer(http.FS(assets))
 	return http.StripPrefix(strings.TrimSuffix(assetPrefix, "/"), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := path.Base(r.URL.Path)
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if hash, ok := assetHashes[name]; ok {
 			w.Header().Set("ETag", `"`+hash+`"`)
-			if isContentHashed(name) || r.URL.Query().Get("v") == hash {
+			if isContentHashed(path.Base(name)) || r.URL.Query().Get("v") == hash {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			} else {
 				w.Header().Set("Cache-Control", "no-cache")
@@ -113,7 +118,7 @@ func Assets() http.Handler {
 func ServeIndex(w http.ResponseWriter, r *http.Request) {
 	loadAssets()
 	if indexErr != nil || indexHTML == nil {
-		http.Error(w, "前端资源缺失，请先在 web/ 目录执行 npm run build", http.StatusInternalServerError)
+		http.Error(w, "前端资源缺失，请先在仓库根目录执行 go run ./tools/web build", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

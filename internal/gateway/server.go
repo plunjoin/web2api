@@ -13,10 +13,12 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,6 +46,7 @@ type Server struct {
 	updater *upgrade.Manager
 	gemini  *geminiapi.Backend
 	rpm     *rpmLimiter
+	devUI   http.Handler // 非 nil 时前端走 webfront dev server（仅 -tags dev 构建）
 }
 
 // NewServer 创建网关服务。
@@ -114,9 +117,19 @@ func (s *Server) Handler() http.Handler {
 	adminAPI := admin.New(s.mgr, s.st, s.logger, s.updater)
 	adminAPI.Mount(mux)
 	mux.Handle("GET /admin/assets/", webui.Assets())
+	// 开发态（wf dev）：前端模块与 HMR 由 webfront 的 dev server 提供。
+	// 生产构建里 newDevUI 返回 nil，这段整体不生效。
+	if s.devUI = newDevUI(); s.devUI != nil {
+		for _, p := range []string{"/src/", "/@deps/", "/@fs/"} {
+			mux.Handle(p, s.devUI)
+		}
+		for _, p := range []string{"/__wf_hmr", "/__wf_ping", "/__wf_error"} {
+			mux.HandleFunc(p, s.devUI.ServeHTTP)
+		}
+	}
 	// 单页应用：管理台、用户控制台、登录与注册共用同一个入口页面。
 	for _, p := range []string{"/admin", "/admin/", "/console", "/console/", "/login", "/register"} {
-		mux.HandleFunc("GET "+p, webui.ServeIndex)
+		mux.HandleFunc("GET "+p, s.serveIndex)
 	}
 	// 未知的 API 路径返回 JSON 404，而不是落到单页应用的 HTML 上。
 	// （按方法逐个注册，避免与 "GET /admin/" 冲突。）
@@ -196,6 +209,16 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 // Unwrap/Flush 让 http.ResponseController 穿透访问日志包装器，保证 SSE
 // 分片能及时发送到客户端，而不是等整个响应结束后才一次性写出。
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Hijack 让 WebSocket 升级（如 webfront dev 的 /__wf_hmr）能拿到原始连接。
+// gorilla/websocket 只认 http.Hijacker，不会走 Unwrap。
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("底层 ResponseWriter 不支持 Hijack")
+	}
+	return h.Hijack()
+}
 
 func (w *statusWriter) Flush() {
 	if !w.wroteHeader {
@@ -324,6 +347,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// serveIndex 输出单页应用入口：开发态交给 webfront dev server（模块转译 + HMR），
+// 生产态发内嵌的 dist/index.html。
+func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	if s.devUI != nil {
+		s.devUI.ServeHTTP(w, r)
+		return
+	}
+	webui.ServeIndex(w, r)
+}
+
 func apiNotFound(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, map[string]any{"error": "接口不存在: " + r.Method + " " + r.URL.Path})
 }
@@ -332,7 +365,7 @@ func apiNotFound(w http.ResponseWriter, r *http.Request) {
 // 其他客户端（curl、健康探测等）仍得到原来的 JSON 服务说明。
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" && r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
-		webui.ServeIndex(w, r)
+		s.serveIndex(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

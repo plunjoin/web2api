@@ -1,17 +1,12 @@
+import { PROVIDER_ICONS } from '@/assets/providers.gen'
 import { cn } from '@/lib/utils'
 
 // 供应商图标全部来自 magpie 的 icons 目录（已拷进 src/assets/providers）。
-// Vite 构建时把每个图标变成带哈希的资源 URL；没有图标时退回文字头像。
-const ICONS = import.meta.glob('../assets/providers/*.{svg,png}', {
-  eager: true,
-  query: '?url',
-  import: 'default',
-}) as Record<string, string>
-
+// 图标清单由 `go run ./tools/web` 生成，构建时原样拷到 dist/assets/providers/，
+// 由 Go 服务的 /admin/assets/ 直接提供；没有图标时退回文字头像。
 const URLS: Record<string, string> = {}
-for (const [path, url] of Object.entries(ICONS)) {
-  const file = path.slice(path.lastIndexOf('/') + 1).replace(/\.(svg|png)$/i, '')
-  URLS[file] = url
+for (const [name, file] of Object.entries(PROVIDER_ICONS)) {
+  URLS[name] = `/admin/assets/providers/${file}`
 }
 
 const SIZES = { xs: 'size-4', sm: 'size-5', md: 'size-6', lg: 'size-7' } as const

@@ -21,7 +21,13 @@ node_modules/
 docs/.vitepress/cache/
 .temp/
 
-# 测试用例仅本地保留，不随仓库分发
+# 前端依赖（wf install 生成）与本地工具（Tailwind standalone）、生成文件
+web/wf_modules/
+web/.tools/
+web/src/index.gen.css
+web/src/assets/providers.gen.ts
+
+# 本地集成测试目录（各包单元测试随仓库分发）
 /test/
 
 # 本地工具脚本不入库
