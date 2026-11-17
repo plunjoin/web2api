@@ -34,7 +34,7 @@ var (
 
 // isContentHashed 文件名本身已含内容哈希，可以永久缓存，也不能再追加 ?v=
 // （分包之间用 ./chunks/chunk-xxx.js 相对引用，多一个查询参数就会被当成另一个模块再执行一次）。
-func isContentHashed(name string) bool { return hashedNameExpr.MatchString(name) }
+func isContentHashed(name string) bool { return hashedNameExpr.MatchString(path.Base(name)) }
 
 // loadAssets 计算内嵌资源的内容哈希，并改写页面里的资源地址。
 //
