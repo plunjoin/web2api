@@ -1,14 +1,12 @@
-v0.3.19 可观测性与前端构建升级：新增分级文件日志、管理操作审计和请求路由诊断；管理台前端改为纯 Go 构建，不再依赖 Node；修复 AI Studio 残留账号无法删除或启停。
+v0.3.20 品牌设置：站点名称会同步到浏览器标题，新增可配置站点 Logo；Logo 统一用于侧边栏、登录/注册页和 favicon。
 
-- **分级运行日志**：`server.log_level` 支持 `debug | info | warn | error`，日志同时输出到 stdout 与 `log_dir`（默认数据库同级的 `logs/`），按天和大小轮转并自动清理旧文件。`log_dir: "-"` 可关闭文件日志，文件不可写时自动降级为只写 stdout。
-- **管理操作审计**：登录、用户与余额、账号、Key、模型、兑换码、路由、单价、设置和升级等关键操作写入 SQLite `audit_logs`。管理台新增「系统 → 审计日志」页，支持按时间、操作人、动作、结果和关键词筛选；不记录密码或凭据明文。
-- **请求诊断**：用量明细新增来源 IP、失败类别和跨引擎尝试轨迹；请求失败日志会带模型、实际引擎、接单账号、客户端、状态码与切换路径，管理台请求详情可直接查看。
-- **AI Studio 残留账号修复**：装配失败、凭据损坏或反向导入时仍会补登记号池映射；管理台删除或启停这类记录不再报「不在管理范围」，避免出现永远删不掉的孤儿账号。
-- **零 Node 前端构建**：`web/` 改由 webfront + Tailwind standalone 构建，新增 `go run ./tools/web build`，Docker 与本地构建均不再需要 Node。内嵌资源改为分包和独立供应商图标目录，入口资源继续使用内容哈希避免升级混用缓存。
-- **管理台布局**：内容区最大宽度放宽到 1600px，供应商账号卡片改为多栏流式排布，展开或折叠后自动重新平衡栏高。
+- **动态标题**：保存站点名称后，管理台、控制台、登录/注册页的浏览器标签页立即更新；服务端输出入口 HTML 时也会写入站点名，首次加载不再固定显示 `web2api`。
+- **站点 Logo**：管理台「系统 → 设置 → 平台设置」新增 Logo 配置，支持 `http(s)` 图片地址或直接上传 PNG/JPG/WebP/GIF/ICO（≤ 100 KB）；留空回退到内置 W 图标。
+- **统一品牌**：Logo 同时用于侧边栏、登录/注册页和浏览器图标；图片加载失败时自动回退，不影响页面使用。
+- **接口**：`/api/public/config` 与 `PUT /admin/api/settings` 新增 `site_logo`，原有 `site_name` 行为不变。
 
-升级说明：拉取 `v0.3.19` 镜像或二进制后重启即可。SQLite 会自动新增 `audit_logs` 表及用量字段，无需手工迁移；升级前建议照常备份数据库。原有配置可继续使用，新增日志配置均有默认值。
+升级说明：拉取 `v0.3.20` 镜像或二进制后重启即可，无需数据库迁移；原有站点名、公告与其他设置保持不变。升级前建议照常备份数据库。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.3.19、ghcr.io/plunjoin/web2api:0.3.19、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.3.20、ghcr.io/plunjoin/web2api:0.3.20、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
