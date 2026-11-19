@@ -1,4 +1,0 @@
-import{b as i}from"./chunk-EL37N4EH.js";import{c as n,f as a}from"./chunk-6S3QBSY5.js";var e=n(a());function d({apiKey:s,model:r="gemini-3.5-flash-lite"}){let t=typeof window<"u"?window.location.origin:"",o=`curl ${t}/v1/chat/completions \\
-  -H "Authorization: Bearer ${s||"sk-\u4F60\u7684\u5BC6\u94A5"}" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"${r}","messages":[{"role":"user","content":"\u4F60\u597D"}]}'`;return(0,e.jsxs)("div",{className:"relative rounded-md border bg-[#0a0a0c]",children:[(0,e.jsxs)("div",{className:"flex items-center justify-between border-b px-3 py-1.5",children:[(0,e.jsxs)("span",{className:"text-[11px] text-muted-foreground",children:["OpenAI \u517C\u5BB9 \xB7 Base URL ",t,"/v1"]}),(0,e.jsx)(i,{value:o,label:"\u793A\u4F8B\u5DF2\u590D\u5236"})]}),(0,e.jsx)("pre",{className:"overflow-x-auto p-3 font-mono text-[11.5px] leading-relaxed text-[#c9cbe0]",children:o})]})}export{d as a};
