@@ -17,6 +17,7 @@ export interface PublicConfig {
   signup_bonus_micros: number
   cny_per_usd: number
   site_name: string
+  site_logo: string
   version: string
 }
 
@@ -178,6 +179,7 @@ export interface PlatformSettings {
   default_user_multiplier: number
   max_keys_per_user: number
   site_name: string
+  site_logo: string
   announcement: string
   video_price_micros_per_second: number
   cny_per_usd: number

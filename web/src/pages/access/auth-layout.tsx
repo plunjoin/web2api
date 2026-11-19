@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { usePublicConfig } from '@/components/app-shell'
+import { SiteLogo, usePublicConfig } from '@/components/site-brand'
 
 export function AuthLayout({ title, subtitle, children, footer }: { title: string; subtitle?: ReactNode; children: ReactNode; footer?: ReactNode }) {
   const { data } = usePublicConfig()
@@ -9,9 +9,10 @@ export function AuthLayout({ title, subtitle, children, footer }: { title: strin
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgb(255_255_255/0.025)_1px,transparent_1px),linear-gradient(90deg,rgb(255_255_255/0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
       <div className="relative w-full max-w-[380px]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="mb-4 flex size-10 items-center justify-center rounded-xl bg-gradient-to-b from-[#7c85f2] to-[#4f58c9] text-base font-bold text-white shadow-[0_8px_30px_rgb(110_120_230/0.35),inset_0_1px_0_rgb(255_255_255/0.25)]">
-            W
-          </div>
+          <SiteLogo
+            logo={data?.site_logo}
+            className="mb-4 size-10 rounded-xl text-base shadow-[0_8px_30px_rgb(110_120_230/0.35),inset_0_1px_0_rgb(255_255_255/0.25)]"
+          />
           <h1 className="text-[20px] font-semibold tracking-[-0.01em]">{title}</h1>
           {subtitle && <p className="mt-1.5 text-[13px] text-muted-foreground">{subtitle}</p>}
         </div>

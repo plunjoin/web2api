@@ -423,6 +423,7 @@ func (a *API) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, p *
 		DefaultUserMultiplier     *float64 `json:"default_user_multiplier"`
 		MaxKeysPerUser            *int     `json:"max_keys_per_user"`
 		SiteName                  *string  `json:"site_name"`
+		SiteLogo                  *string  `json:"site_logo"`
 		Announcement              *string  `json:"announcement"`
 		VideoPriceMicrosPerSecond *int64   `json:"video_price_micros_per_second"`
 		UserUnmeteredRoutes       *bool    `json:"user_unmetered_routes"`
@@ -446,6 +447,9 @@ func (a *API) handleAdminPutSettings(w http.ResponseWriter, r *http.Request, p *
 	}
 	if req.SiteName != nil {
 		current.SiteName = *req.SiteName
+	}
+	if req.SiteLogo != nil {
+		current.SiteLogo = *req.SiteLogo
 	}
 	if req.Announcement != nil {
 		current.Announcement = *req.Announcement

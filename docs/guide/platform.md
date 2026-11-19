@@ -63,7 +63,7 @@ web2api 可以作为对外运营的 API 平台使用：用户自助注册（或�
 用户接口（`Authorization: Bearer <登录 JWT>`）：
 
 ```
-GET    /api/public/config                 站点名、是否开放注册、版本（公开）
+GET    /api/public/config                 站点名、Logo、是否开放注册、版本（公开）
 POST   /api/auth/register                 {email, password, nickname?} → access_token
 POST   /api/auth/login                    {email, password} → access_token（root 管理员同样可用）
 POST   /api/auth/logout
@@ -104,5 +104,5 @@ DELETE /admin/api/redeem-codes/{id}       仅限未兑换的码
 POST   /admin/api/redeem-codes/batches/{batch}/disable
 GET    /admin/api/settings
 PUT    /admin/api/settings                {registration_open?, signup_bonus?, default_user_multiplier?, max_keys_per_user?,
-                                           site_name?, announcement?, video_price_micros_per_second?, signup_bonus_micros?, cny_per_usd?, user_unmetered_routes?}
+                                           site_name?, site_logo?, announcement?, video_price_micros_per_second?, signup_bonus_micros?, cny_per_usd?, user_unmetered_routes?}
 ```

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowUpCircle, RefreshCw, Save } from 'lucide-react'
+import { ArrowUpCircle, RefreshCw, Save, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -11,6 +11,7 @@ import { BlockSkeleton, ErrorState } from '@/components/states'
 import { Pill } from '@/components/status'
 import { Field } from '@/components/fields'
 import { useConfirm } from '@/components/confirm'
+import { SiteLogo } from '@/components/site-brand'
 import { ApiError, api } from '@/lib/api'
 import type { PlatformSettings, UpgradeState, VersionInfo } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -58,9 +59,27 @@ function PlatformForm() {
   const q = useQuery({ queryKey: ['admin', 'settings'], queryFn: () => api<{ settings: PlatformSettings }>('/admin/api/settings') })
   const [draft, setDraft] = useState<PlatformSettings | null>(null)
   const [saving, setSaving] = useState(false)
+  const logoFile = useRef<HTMLInputElement>(null)
   const s = draft || q.data?.settings
   const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(q.data?.settings)
   const set = <K extends keyof PlatformSettings>(k: K, v: PlatformSettings[K]) => s && setDraft({ ...s, [k]: v })
+  const uploadLogo = (file?: File) => {
+    if (!file) return
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/x-icon', 'image/vnd.microsoft.icon'].includes(file.type)) {
+      toast.error('仅支持 PNG / JPG / WebP / GIF / ICO')
+      return
+    }
+    if (file.size > 100 * 1024) {
+      toast.error('Logo 图片请控制在 100 KB 以内')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') set('site_logo', reader.result)
+    }
+    reader.onerror = () => toast.error('读取图片失败')
+    reader.readAsDataURL(file)
+  }
 
   const save = async () => {
     if (!draft) return
@@ -128,6 +147,41 @@ function PlatformForm() {
         <div className="grid gap-3 px-4 py-3.5 sm:grid-cols-2">
           <Field label="站点名称" htmlFor="site-name" hint="显示在登录页与侧边栏">
             <Input id="site-name" value={s.site_name} maxLength={40} onChange={(e) => set('site_name', e.target.value)} />
+          </Field>
+          <Field label="站点 Logo" htmlFor="site-logo" className="sm:col-span-2" hint="支持图片地址或上传，留空使用内置 W 图标。保存后同步到侧边栏、登录页、标题栏图标。">
+            <div className="flex items-start gap-3">
+              <SiteLogo logo={s.site_logo} className="size-10 rounded-lg text-base" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Input
+                  id="site-logo"
+                  value={s.site_logo.startsWith('data:') ? '' : s.site_logo}
+                  maxLength={400_000}
+                  placeholder={s.site_logo.startsWith('data:') ? '已上传图片（输入地址可替换）' : 'https://…/logo.png'}
+                  onChange={(e) => set('site_logo', e.target.value)}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={logoFile}
+                    type="file"
+                    className="hidden"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/x-icon,image/vnd.microsoft.icon"
+                    onChange={(e) => {
+                      uploadLogo(e.target.files?.[0])
+                      e.currentTarget.value = ''
+                    }}
+                  />
+                  <Button type="button" variant="outline" size="sm" onClick={() => logoFile.current?.click()}>
+                    <Upload /> 上传图片
+                  </Button>
+                  {s.site_logo && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => set('site_logo', '')}>
+                      清除
+                    </Button>
+                  )}
+                  <span className="text-[11px] text-muted-foreground">PNG / JPG / WebP / GIF / ICO，≤ 100 KB</span>
+                </div>
+              </div>
+            </div>
           </Field>
           <Field label="控制台公告" htmlFor="announcement" className="sm:col-span-2" hint="显示在用户控制台首页，留空不显示。">
             <Textarea id="announcement" rows={3} value={s.announcement} maxLength={2000} onChange={(e) => set('announcement', e.target.value)} />

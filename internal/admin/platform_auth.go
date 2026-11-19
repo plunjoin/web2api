@@ -264,6 +264,7 @@ func (a *API) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		"signup_bonus_micros": settings.SignupBonusMicros,
 		"cny_per_usd":         settings.CNYPerUSD,
 		"site_name":           settings.SiteName,
+		"site_logo":           settings.SiteLogo,
 		"version":             version.Get().Version,
 	})
 }

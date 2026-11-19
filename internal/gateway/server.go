@@ -354,7 +354,13 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 		s.devUI.ServeHTTP(w, r)
 		return
 	}
-	webui.ServeIndex(w, r)
+	var siteName, siteLogo string
+	if s.st != nil {
+		if settings, err := s.st.GetPlatformSettings(); err == nil {
+			siteName, siteLogo = settings.SiteName, settings.SiteLogo
+		}
+	}
+	webui.ServeIndexWithBrand(w, r, siteName, siteLogo)
 }
 
 func apiNotFound(w http.ResponseWriter, r *http.Request) {

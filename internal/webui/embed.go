@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"html"
 	"io/fs"
 	"net/http"
 	"path"
@@ -27,6 +28,8 @@ var (
 	indexHTML    []byte            // 已为资源地址追加 ?v=<哈希> 的页面
 	indexErr     error
 	assetRefExpr = regexp.MustCompile(`(["'])/admin/assets/([A-Za-z0-9._-]+)(["'])`)
+	titleExpr    = regexp.MustCompile(`<title>[^<]*</title>`)
+	iconExpr     = regexp.MustCompile(`<link rel="icon" href="[^"]*">`)
 	// wf build 的分包文件名自带 8 位内容哈希（如 chunk-4FVB6RQZ.js、accounts-XHTSWLOW.js），
 	// 内容变化文件名就变化。
 	hashedNameExpr = regexp.MustCompile(`^[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8}\.(js|css|woff2?|svg|png|webp)$`)
@@ -116,12 +119,25 @@ func Assets() http.Handler {
 
 // ServeIndex 输出单页应用入口（前端路由在浏览器里决定显示哪个页面）。
 func ServeIndex(w http.ResponseWriter, r *http.Request) {
+	ServeIndexWithBrand(w, r, "", "")
+}
+
+// ServeIndexWithBrand 输出入口页，并把站点名和 Logo 写进初始 HTML。
+// 前端启动后仍会用 /api/public/config 更新一次，保证修改设置后无需清缓存。
+func ServeIndexWithBrand(w http.ResponseWriter, r *http.Request, siteName, siteLogo string) {
 	loadAssets()
 	if indexErr != nil || indexHTML == nil {
 		http.Error(w, "前端资源缺失，请先在仓库根目录执行 go run ./tools/web build", http.StatusInternalServerError)
 		return
 	}
+	page := indexHTML
+	if name := strings.TrimSpace(siteName); name != "" {
+		page = titleExpr.ReplaceAll(page, []byte(`<title>`+html.EscapeString(name)+`</title>`))
+	}
+	if logo := strings.TrimSpace(siteLogo); logo != "" {
+		page = iconExpr.ReplaceAll(page, []byte(`<link rel="icon" href="`+html.EscapeString(logo)+`">`))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(indexHTML)
+	_, _ = w.Write(page)
 }

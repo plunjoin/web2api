@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { ConfirmProvider } from '@/components/confirm'
 import { AuthProvider } from '@/lib/auth'
 import { ApiError } from '@/lib/api'
+import { SiteBranding } from '@/components/site-brand'
 import { router } from './router'
 import './index.gen.css'
 
@@ -26,6 +27,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      <SiteBranding />
       <AuthProvider>
         <TooltipProvider delayDuration={300}>
           <ConfirmProvider>

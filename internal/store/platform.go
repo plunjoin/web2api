@@ -1042,6 +1042,8 @@ type PlatformSettings struct {
 	MaxKeysPerUser int `json:"max_keys_per_user"`
 	// SiteName 显示在登录页和侧边栏的站点名。
 	SiteName string `json:"site_name"`
+	// SiteLogo 站点 Logo：http(s) 地址、站内绝对路径，或上传后的 data:image 数据。
+	SiteLogo string `json:"site_logo"`
 	// Announcement 用户控制台顶部公告（可留空）。
 	Announcement string `json:"announcement"`
 	// VideoPriceMicrosPerSecond 用户 Key 创建视频时按秒扣的金额（微元，再乘倍率）。
@@ -1086,6 +1088,8 @@ func (s *Store) GetPlatformSettings() (PlatformSettings, error) {
 			}
 		case "site_name":
 			out.SiteName = value
+		case "site_logo":
+			out.SiteLogo = value
 		case "announcement":
 			out.Announcement = value
 		case "video_price_micros_per_second":
@@ -1119,6 +1123,13 @@ func (s *Store) SavePlatformSettings(v PlatformSettings) (PlatformSettings, erro
 	if utf8.RuneCountInString(v.SiteName) > 40 {
 		return v, errors.New("站点名最长 40 字")
 	}
+	v.SiteLogo = strings.TrimSpace(v.SiteLogo)
+	if len(v.SiteLogo) > 400_000 {
+		return v, errors.New("Logo 图片过大（请控制在 100 KB 以内）")
+	}
+	if v.SiteLogo != "" && !validSiteLogo(v.SiteLogo) {
+		return v, errors.New("Logo 需为 http(s) 地址、站内路径，或上传的 PNG/JPG/WebP/GIF 图片")
+	}
 	if utf8.RuneCountInString(v.Announcement) > 500 {
 		return v, errors.New("公告最长 500 字")
 	}
@@ -1134,6 +1145,7 @@ func (s *Store) SavePlatformSettings(v PlatformSettings) (PlatformSettings, erro
 		"default_user_multiplier":       strconv.FormatFloat(v.DefaultUserMultiplier, 'f', -1, 64),
 		"max_keys_per_user":             strconv.Itoa(v.MaxKeysPerUser),
 		"site_name":                     v.SiteName,
+		"site_logo":                     v.SiteLogo,
 		"announcement":                  strings.TrimSpace(v.Announcement),
 		"video_price_micros_per_second": strconv.FormatInt(v.VideoPriceMicrosPerSecond, 10),
 		"user_unmetered_routes":         strconv.FormatBool(v.UserUnmeteredRoutes),
@@ -1154,6 +1166,26 @@ func (s *Store) SavePlatformSettings(v PlatformSettings) (PlatformSettings, erro
 		return v, err
 	}
 	return s.GetPlatformSettings()
+}
+
+// validSiteLogo 限制 Logo 来源，避免把 javascript: 等地址注入 img/favicon。
+func validSiteLogo(v string) bool {
+	if strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "/") {
+		return true
+	}
+	for _, prefix := range []string{
+		"data:image/png;base64,",
+		"data:image/jpeg;base64,",
+		"data:image/webp;base64,",
+		"data:image/gif;base64,",
+		"data:image/x-icon;base64,",
+		"data:image/vnd.microsoft.icon;base64,",
+	} {
+		if strings.HasPrefix(v, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- 统计 ----------

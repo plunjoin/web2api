@@ -1,29 +1,21 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
 import { ArrowLeftRight, ChevronsUpDown, LogOut, Menu, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { CommandPalette } from '@/components/command-palette'
 import { useAuth, hasConsole, isAdmin } from '@/lib/auth'
-import { api } from '@/lib/api'
 import { cny } from '@/lib/format'
-import type { PublicConfig } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { SiteLogo, usePublicConfig } from './site-brand'
 import type { NavGroup } from './nav'
-
-export function usePublicConfig() {
-  return useQuery({ queryKey: ['public-config'], queryFn: () => api<PublicConfig>('/api/public/config'), staleTime: 60_000 })
-}
 
 function Brand({ area }: { area: 'admin' | 'console' }) {
   const { data } = usePublicConfig()
   return (
     <div className="flex items-center gap-2.5 px-1">
-      <div className="flex size-6 items-center justify-center rounded-md bg-gradient-to-b from-[#7c85f2] to-[#4f58c9] text-[11px] font-bold text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.25)]">
-        W
-      </div>
+      <SiteLogo logo={data?.site_logo} className="size-6 rounded-md text-[11px]" />
       <div className="min-w-0 leading-tight">
         <div className="truncate text-[13px] font-semibold text-foreground">{data?.site_name || 'web2api'}</div>
         <div className="text-[11px] text-muted-foreground">{area === 'admin' ? '管理后台' : '控制台'}</div>
