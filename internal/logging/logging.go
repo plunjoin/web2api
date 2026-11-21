@@ -74,8 +74,9 @@ type Logger struct {
 	level   atomic.Int32
 	prefix  string
 	console io.Writer
-	file    *fileWriter // nil = 不写文件
-	mu      sync.Mutex  // 串行化一次完整日志行的写入
+	file    io.WriteCloser // nil = 不写文件
+	stderr  io.Writer      // 文件写入失败时的降级诊断
+	mu      sync.Mutex     // 串行化一次完整日志行的写入
 }
 
 const defaultPrefix = "[web2api] "
@@ -86,6 +87,7 @@ func New(opts Options) *Logger {
 	l := &Logger{
 		prefix:  defaultPrefix,
 		console: os.Stdout,
+		stderr:  os.Stderr,
 	}
 	l.level.Store(int32(ParseLevel(opts.Level)))
 	if opts.Dir != "" && opts.Dir != "-" {
@@ -103,7 +105,7 @@ func New(opts Options) *Logger {
 
 // NewTest 创建一个只写 w、级别为 debug 的日志器（测试用）。
 func NewTest(w io.Writer) *Logger {
-	l := &Logger{prefix: defaultPrefix, console: w}
+	l := &Logger{prefix: defaultPrefix, console: w, stderr: os.Stderr}
 	l.level.Store(int32(LevelDebug))
 	return l
 }
@@ -116,10 +118,17 @@ func (l *Logger) Level() Level { return Level(l.level.Load()) }
 
 // Close 关闭日志文件。
 func (l *Logger) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil {
 		return nil
 	}
-	return l.file.Close()
+	l.mu.Lock()
+	file := l.file
+	l.file = nil
+	l.mu.Unlock()
+	if file == nil {
+		return nil
+	}
+	return file.Close()
 }
 
 // Printf 兼容标准库 *log.Logger 的调用方式，按 info 记录。
@@ -148,9 +157,7 @@ func (l *Logger) Errorf(format string, args ...any) { l.logf(LevelError, format,
 // Fatalf 记录 error 日志后退出进程（兼容标准库 log.Fatalf 的使用场景）。
 func (l *Logger) Fatalf(format string, args ...any) {
 	l.logf(LevelError, format, args...)
-	if l.file != nil {
-		_ = l.file.Close()
-	}
+	_ = l.Close()
 	os.Exit(1)
 }
 
@@ -165,14 +172,45 @@ func (l *Logger) logf(level Level, format string, args ...any) {
 	}
 	msg := fmt.Sprintf(format, args...)
 	line := fmt.Sprintf("%s [%-5s] %s%s\n", time.Now().Format("2006-01-02 15:04:05.000"), level, l.prefix, msg)
+
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.console != nil {
 		_, _ = io.WriteString(l.console, line)
 	}
+	var (
+		failedFile io.WriteCloser
+		writeErr   error
+	)
 	if l.file != nil {
-		_, _ = l.file.Write([]byte(line))
+		n, err := l.file.Write([]byte(line))
+		if err == nil && n != len(line) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			failedFile = l.file
+			writeErr = err
+			l.file = nil
+			if l.console == nil {
+				l.console = os.Stdout
+			}
+		}
 	}
+	l.mu.Unlock()
+
+	if failedFile == nil {
+		return
+	}
+	// 关闭和诊断都放在锁外，避免关闭钩子或 stderr 写入反压时阻塞其他日志调用。
+	closeErr := failedFile.Close()
+	reason := writeErr.Error()
+	if closeErr != nil {
+		reason += "; 关闭日志文件失败: " + closeErr.Error()
+	}
+	stderr := l.stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	fmt.Fprintf(stderr, "[web2api] 日志文件写入失败，已禁用文件日志并退回控制台: %s\n", reason)
 }
 
 // ==================== slog 桥接 ====================
@@ -262,7 +300,7 @@ func slogLevel(level slog.Level) Level {
 
 var (
 	stdMu sync.RWMutex
-	std   = &Logger{prefix: defaultPrefix, console: os.Stdout}
+	std   = &Logger{prefix: defaultPrefix, console: os.Stdout, stderr: os.Stderr}
 )
 
 // SetDefault 设置包级默认 logger（main 启动时调用）。
@@ -340,7 +378,6 @@ func newFileWriter(dir string, maxDays, maxSizeMB int) (*fileWriter, error) {
 	if err := w.open(time.Now()); err != nil {
 		return nil, err
 	}
-	w.prune(time.Now())
 	return w, nil
 }
 
@@ -399,6 +436,7 @@ func (w *fileWriter) rotate(now time.Time) error {
 		}
 		w.file = f
 		w.size = info.Size()
+		w.pruneLocked(now)
 		return nil
 	}
 }
@@ -416,13 +454,18 @@ func (w *fileWriter) open(now time.Time) error {
 	return w.rotate(now)
 }
 
-// prune 删除超过保留天数的日志文件（按文件名里的日期判断）。
-func (w *fileWriter) prune(now time.Time) {
+// pruneLocked 删除超过保留天数的日志文件（按文件名里的日期判断）。
+// 调用方必须已经持有 w.mu。
+func (w *fileWriter) pruneLocked(now time.Time) {
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
 		return
 	}
 	cutoff := now.AddDate(0, 0, -(w.maxDays - 1)).Format("20060102")
+	current := ""
+	if w.file != nil {
+		current = filepath.Clean(w.file.Name())
+	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -436,7 +479,11 @@ func (w *fileWriter) prune(now time.Time) {
 		if len(day) != 8 || day >= cutoff {
 			continue
 		}
-		_ = os.Remove(filepath.Join(w.dir, name))
+		path := filepath.Join(w.dir, name)
+		if current != "" && filepath.Clean(path) == current {
+			continue
+		}
+		_ = os.Remove(path)
 	}
 }
 

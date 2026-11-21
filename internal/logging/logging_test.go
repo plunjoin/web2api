@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -73,6 +74,74 @@ func TestFileWriterRotatesAndPrunes(t *testing.T) {
 	files = LogFiles(dir)
 	if len(files) != 2 {
 		t.Fatalf("超过大小上限应切分，got %v", files)
+	}
+}
+
+func TestFileWriterPrunesAfterRuntimeRotation(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newFileWriter(dir, 7, 1) // 1MB 上限
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// 启动后再放入过期文件，确保它只能由运行中的切分触发清理。
+	old := filepath.Join(dir, logFilePrefix+"20200101.log")
+	if err := os.WriteFile(old, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.Write(bytes.Repeat([]byte("x"), 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("运行中切分后应清理过期日志: %v", err)
+	}
+	if files := LogFiles(dir); len(files) != 2 {
+		t.Fatalf("切分后应保留当天两个文件，got %v", files)
+	}
+}
+
+type failingLogFile struct {
+	closed bool
+}
+
+func (f *failingLogFile) Write([]byte) (int, error) {
+	return 0, errors.New("disk full")
+}
+
+func (f *failingLogFile) Close() error {
+	f.closed = true
+	return nil
+}
+
+func TestLogfDisablesFileAfterWriteFailure(t *testing.T) {
+	var console, stderr bytes.Buffer
+	l := NewTest(&console)
+	l.stderr = &stderr
+	file := &failingLogFile{}
+	l.file = file
+
+	l.Infof("first-line")
+	if l.file != nil {
+		t.Fatal("文件写入失败后应禁用文件日志")
+	}
+	if !file.closed {
+		t.Fatal("文件写入失败后应关闭日志文件")
+	}
+	if !strings.Contains(stderr.String(), "disk full") || strings.Count(stderr.String(), "已禁用文件日志") != 1 {
+		t.Fatalf("应在 stderr 打印一次降级原因: %s", stderr.String())
+	}
+
+	l.Infof("second-line")
+	if strings.Count(stderr.String(), "已禁用文件日志") != 1 {
+		t.Fatalf("降级原因不应重复打印: %s", stderr.String())
+	}
+	if !strings.Contains(console.String(), "first-line") || !strings.Contains(console.String(), "second-line") {
+		t.Fatalf("降级后应继续写控制台: %s", console.String())
 	}
 }
 
