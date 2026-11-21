@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,20 +11,19 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"web2api/internal/model"
+	"web2api/internal/redact"
 	"web2api/internal/session"
 	"web2api/internal/store"
 )
 
 // ==================== 用户控制台 /api/user/* ====================
 
-var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
-
-// userSafeRecord 给普通用户看的用量记录：上游错误里可能带号池账号邮箱，统一脱敏。
+// userSafeRecord 给普通用户看的用量记录：上游错误可能带号池账号、凭据等信息，统一脱敏。
 func userSafeRecord(rec store.UsageRecord) store.UsageRecord {
 	if rec.Error != "" {
-		rec.Error = emailPattern.ReplaceAllString(rec.Error, "***")
-		if len(rec.Error) > 300 {
-			rec.Error = rec.Error[:300] + "…"
+		rec.Error = redact.Text(rec.Error)
+		if runes := []rune(rec.Error); len(runes) > 300 {
+			rec.Error = string(runes[:300]) + "…"
 		}
 	}
 	rec.UserEmail = ""
