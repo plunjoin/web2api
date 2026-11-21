@@ -379,13 +379,34 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 	v, c, code, err := a.verifySession(r)
 	if err != nil {
+		a.auditLogout(r, "", err)
 		writeJSON(w, code, map[string]any{"error": err.Error()})
 		return
 	}
-	redis, _ := session.New(v.RedisURL)
-	if _, err = redis.Command(r.Context(), "DEL", redisPrefix(v)+"session:"+c.ID); err != nil {
+	redis, err := session.New(v.RedisURL)
+	if err != nil {
+		a.auditLogout(r, c.Subject, err)
 		writeJSON(w, 503, map[string]any{"error": "退出失败，请稍后重试"})
 		return
 	}
+	if _, err = redis.Command(r.Context(), "DEL", redisPrefix(v)+"session:"+c.ID); err != nil {
+		a.auditLogout(r, c.Subject, err)
+		writeJSON(w, 503, map[string]any{"error": "退出失败，请稍后重试"})
+		return
+	}
+	a.auditLogout(r, c.Subject, nil)
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// auditLogout 记录退出登录。subject 为空表示会话尚未通过校验，操作人记为 anonymous。
+func (a *API) auditLogout(r *http.Request, subject string, err error) {
+	actor, kind := "anonymous", "anonymous"
+	if subject != "" {
+		actor, kind = a.actorForSubject(subject)
+	}
+	result, errText := "ok", ""
+	if err != nil {
+		result, errText = "fail", err.Error()
+	}
+	a.recordAudit(r, actor, kind, "auth.logout", "session", "退出登录", result, errText)
 }

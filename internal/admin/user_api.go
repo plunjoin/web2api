@@ -2,6 +2,7 @@ package admin
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -179,6 +180,7 @@ func (a *API) handleUserCreateKey(w http.ResponseWriter, r *http.Request, p *Pri
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(k.ID, 10), "创建 Key "+k.Name)
 	writeJSON(w, 200, map[string]any{"key": k})
 }
 
@@ -188,6 +190,7 @@ func (a *API) handleUserPatchKey(w http.ResponseWriter, r *http.Request, p *Prin
 	if !ok {
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(k.ID, 10), "修改 Key "+k.Name)
 	var req struct {
 		Name       *string `json:"name"`
 		Enabled    *bool   `json:"enabled"`
@@ -207,6 +210,7 @@ func (a *API) handleUserPatchKey(w http.ResponseWriter, r *http.Request, p *Prin
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(updated.ID, 10), "修改 Key "+updated.Name)
 	writeJSON(w, 200, map[string]any{"key": updated})
 }
 
@@ -216,6 +220,7 @@ func (a *API) handleUserDeleteKey(w http.ResponseWriter, r *http.Request, p *Pri
 	if !ok {
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(k.ID, 10), "删除 Key "+k.Name)
 	if err := a.st.DeleteKey(k.ID); err != nil {
 		storeError(w, err)
 		return
@@ -229,11 +234,13 @@ func (a *API) handleUserRegenerateKey(w http.ResponseWriter, r *http.Request, p 
 	if !ok {
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(k.ID, 10), "重置 Key "+k.Name)
 	updated, err := a.st.RegenerateKey(k.ID)
 	if err != nil {
 		storeError(w, err)
 		return
 	}
+	setAudit(r, "key:"+strconv.FormatInt(updated.ID, 10), "重置 Key "+updated.Name)
 	writeJSON(w, 200, map[string]any{"key": updated})
 }
 
@@ -306,6 +313,7 @@ func (a *API) handleUserRedeem(w http.ResponseWriter, r *http.Request, p *Princi
 	var req struct {
 		Code string `json:"code"`
 	}
+	setAudit(r, "redeem", "兑换充值码")
 	if err := readJSON(r, &req); err != nil || strings.TrimSpace(req.Code) == "" {
 		writeJSON(w, 400, map[string]any{"error": "请输入兑换码"})
 		return
@@ -341,6 +349,7 @@ func (a *API) handleUserRedeem(w http.ResponseWriter, r *http.Request, p *Princi
 		writeJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
+	setAudit(r, "redeem", fmt.Sprintf("兑换充值码（金额 %.2f 元）", float64(res.Amount)/1e6))
 	writeJSON(w, 200, map[string]any{"amount": res.Amount, "balance": res.Entry.BalanceAfter, "entry": res.Entry})
 }
 
@@ -369,6 +378,7 @@ func (a *API) handleUserProfile(w http.ResponseWriter, r *http.Request, p *Princ
 	var req struct {
 		Nickname *string `json:"nickname"`
 	}
+	setAudit(r, "user:"+strconv.FormatInt(p.User.ID, 10), "修改昵称")
 	if err := readJSON(r, &req); err != nil || req.Nickname == nil {
 		writeJSON(w, 400, map[string]any{"error": "请提供昵称"})
 		return
@@ -387,6 +397,7 @@ func (a *API) handleUserPassword(w http.ResponseWriter, r *http.Request, p *Prin
 		Old string `json:"old_password"`
 		New string `json:"new_password"`
 	}
+	setAudit(r, "user:"+strconv.FormatInt(p.User.ID, 10), "修改密码")
 	if err := readJSON(r, &req); err != nil || len(req.Old) > 72 {
 		writeJSON(w, 400, map[string]any{"error": "请求无效"})
 		return
