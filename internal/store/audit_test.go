@@ -2,7 +2,9 @@ package store
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAuditLogRecordAndFilter(t *testing.T) {
@@ -64,5 +66,34 @@ func TestAuditLogRecordAndFilter(t *testing.T) {
 	}
 	if total != 2 {
 		t.Fatalf("按操作人筛选失败: total=%d", total)
+	}
+}
+
+func TestTruncateAuditUTF8(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"未截断", "审计😀", 20, "审计😀"},
+		{"中文边界", "审计审计", 6, "审计…"},
+		{"中文中间", "审计审计", 7, "审计…"},
+		{"emoji中间", "😀😀", 5, "😀…"},
+		{"不足一个字符", "中文", 2, "…"},
+		{"零上限", "中文", 0, "…"},
+		{"负上限", "中文", -1, "…"},
+		{"ASCII", strings.Repeat("x", 400), 300, strings.Repeat("x", 300) + "…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateAudit(tc.in, tc.n)
+			if got != tc.want {
+				t.Fatalf("truncateAudit(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("截断结果必须是合法 UTF-8: %q", got)
+			}
+		})
 	}
 }

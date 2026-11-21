@@ -2,6 +2,7 @@ package store
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // AuditEntry 一条管理操作审计记录。只记录「谁、什么时候、做了什么、结果如何」，
@@ -111,6 +112,12 @@ func truncateAudit(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
+	}
+	if n <= 0 {
+		return "…"
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }

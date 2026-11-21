@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Attempt 一次引擎尝试。Error 为空表示这次尝试成功。
@@ -117,20 +118,16 @@ func ErrorKind(err error) string {
 	}
 }
 
-// engineUnavailable 判断错误是否来自引擎自身不可用（未就绪/无可用账号）。
-func engineUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "不可用") || strings.Contains(msg, "no available account") ||
-		strings.Contains(msg, "未启用") || strings.Contains(msg, "没有可用账号")
-}
-
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
+	}
+	if n <= 0 {
+		return "…"
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }

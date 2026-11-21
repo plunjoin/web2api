@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"web2api/internal/engine"
 )
@@ -62,7 +63,33 @@ func TestErrorKind(t *testing.T) {
 			t.Fatalf("ErrorKind(%v) = %q, want %q", tc.err, got, tc.want)
 		}
 	}
-	if !strings.Contains(truncate(strings.Repeat("x", 400), 300), "…") {
-		t.Fatal("truncate 应追加省略号")
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"未截断", "中文😀", 20, "中文😀"},
+		{"中文边界", "中文中文", 6, "中文…"},
+		{"中文中间", "中文中文", 7, "中文…"},
+		{"emoji中间", "😀😀", 5, "😀…"},
+		{"不足一个字符", "中文", 2, "…"},
+		{"零上限", "中文", 0, "…"},
+		{"负上限", "中文", -1, "…"},
+		{"ASCII", strings.Repeat("x", 400), 300, strings.Repeat("x", 300) + "…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncate(tc.in, tc.n)
+			if got != tc.want {
+				t.Fatalf("truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("截断结果必须是合法 UTF-8: %q", got)
+			}
+		})
 	}
 }
