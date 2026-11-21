@@ -14,6 +14,7 @@ import (
 	"web2api/internal/engine"
 	"web2api/internal/model"
 	"web2api/internal/provider"
+	"web2api/internal/redact"
 )
 
 // isMusicGenerationEndpoint 判断是否为音乐生成专用端点。
@@ -64,7 +65,7 @@ func (s *Server) handleMusicGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	var req musicGenerationRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求体必须是合法 JSON: "+err.Error(), "invalid_request_error", nil)
+		writeError(w, http.StatusBadRequest, "请求体必须是合法 JSON: "+redact.Error(err), "invalid_request_error", nil)
 		return
 	}
 	rawModel := strings.TrimSpace(req.Model)
@@ -106,19 +107,20 @@ func (s *Server) handleMusicGeneration(w http.ResponseWriter, r *http.Request) {
 		status := upstreamErrorStatus(chatErr)
 		s.logRequestFailure(ctx, r, chatReq.Model, path, false, res, status, chatErr)
 		s.recordChat(ctx, r, chatReq, res, false, chatErr, start, path, status, 0)
+		message := redact.Error(chatErr)
 		if provider.IsModelDisabled(chatErr) {
-			writeError(w, http.StatusNotFound, chatErr.Error(), "invalid_request_error", "model_unavailable")
+			writeError(w, http.StatusNotFound, message, "invalid_request_error", "model_unavailable")
 			return
 		}
 		if provider.IsModelNotFound(chatErr) {
-			writeError(w, http.StatusNotFound, chatErr.Error(), "invalid_request_error", "model_not_found")
+			writeError(w, http.StatusNotFound, message, "invalid_request_error", "model_not_found")
 			return
 		}
 		if provider.IsUnsupportedEndpoint(chatErr) {
-			writeError(w, http.StatusBadRequest, chatErr.Error(), "invalid_request_error", "unsupported_endpoint")
+			writeError(w, http.StatusBadRequest, message, "invalid_request_error", "unsupported_endpoint")
 			return
 		}
-		writeError(w, http.StatusBadGateway, chatErr.Error(), "api_error", nil)
+		writeError(w, http.StatusBadGateway, message, "api_error", nil)
 		return
 	}
 

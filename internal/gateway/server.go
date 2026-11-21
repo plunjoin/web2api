@@ -29,6 +29,7 @@ import (
 	"web2api/internal/logging"
 	"web2api/internal/model"
 	"web2api/internal/provider"
+	"web2api/internal/redact"
 	"web2api/internal/store"
 	"web2api/internal/upgrade"
 	"web2api/internal/webui"
@@ -337,7 +338,7 @@ func writeError(w http.ResponseWriter, status int, msg, errType string, code any
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(model.ErrorResponse{
-		Error: model.ErrorDetail{Message: msg, Type: errType, Code: code},
+		Error: model.ErrorDetail{Message: redact.Text(msg), Type: errType, Code: code},
 	})
 }
 

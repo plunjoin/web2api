@@ -13,6 +13,7 @@ import (
 	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
+	"web2api/internal/redact"
 	"web2api/internal/store"
 	"web2api/internal/wire/chat"
 )
@@ -30,7 +31,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := chat.Decode(body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", nil)
+		writeError(w, http.StatusBadRequest, redact.Error(err), "invalid_request_error", nil)
 		return
 	}
 	// 统一 IR 入口：与 /v1/responses 走同一套规范化不变量（非 function
@@ -56,17 +57,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		status := upstreamErrorStatus(err)
 		s.logRequestFailure(ctx, r, req.Model, "/v1/chat/completions", false, res, status, err)
 		s.recordChat(ctx, r, req, res, false, err, start, "/v1/chat/completions", status, 0)
+		message := redact.Error(err)
 		switch {
 		case provider.IsModelDisabled(err):
-			writeError(w, status, err.Error(), "invalid_request_error", "model_unavailable")
+			writeError(w, status, message, "invalid_request_error", "model_unavailable")
 		case provider.IsModelNotFound(err):
-			writeError(w, status, err.Error(), "invalid_request_error", "model_not_found")
+			writeError(w, status, message, "invalid_request_error", "model_not_found")
 		case provider.IsUnsupportedEndpoint(err):
-			writeError(w, status, err.Error(), "invalid_request_error", "unsupported_endpoint")
+			writeError(w, status, message, "invalid_request_error", "unsupported_endpoint")
 		case provider.IsToolsNotSupported(err):
-			writeError(w, status, err.Error(), "invalid_request_error", "tools_not_supported")
+			writeError(w, status, message, "invalid_request_error", "tools_not_supported")
 		default:
-			writeError(w, status, err.Error(), "api_error", nil)
+			writeError(w, status, message, "api_error", nil)
 		}
 		return
 	}
@@ -111,7 +113,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request, req mo
 		s.logRequestFailure(ctx, r, req.Model, "/v1/chat/completions", true, res, http.StatusOK, runErr)
 		s.recordChat(ctx, r, req, res, true, runErr, start, "/v1/chat/completions", http.StatusOK, sink.TTFT())
 		stop := "stop"
-		_ = enc.WriteRaw(model.Delta{Content: "[Error] " + runErr.Error()}, &stop, nil)
+		_ = enc.WriteRaw(model.Delta{Content: "[Error] " + redact.Error(runErr)}, &stop, nil)
 		_ = sse.Write("", []byte("[DONE]"))
 		return
 	}

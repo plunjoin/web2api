@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"web2api/internal/ir"
 	"web2api/internal/model"
 	"web2api/internal/provider"
+	"web2api/internal/redact"
 	"web2api/internal/store"
 	"web2api/internal/wire/responses"
 )
@@ -26,7 +28,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	chatReq, err := responses.Decode(body, s.logger.Printf)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", nil)
+		writeError(w, http.StatusBadRequest, redact.Error(err), "invalid_request_error", nil)
 		return
 	}
 	// 统一 IR 入口：与 /v1/chat/completions 走同一套规范化不变量。
@@ -72,7 +74,7 @@ func (s *Server) handleResponsesStream(w http.ResponseWriter, r *http.Request, r
 	if runErr != nil {
 		s.logRequestFailure(ctx, r, req.Model, "/v1/responses", true, res, http.StatusOK, runErr)
 		s.recordChat(ctx, r, req, res, true, runErr, start, "/v1/responses", http.StatusOK, sink.TTFT())
-		enc.EmitFailed(runErr)
+		enc.EmitFailed(errors.New(redact.Error(runErr)))
 		return
 	}
 	rec := s.recordChat(ctx, r, req, res, true, nil, start, "/v1/responses", http.StatusOK, sink.TTFT())
@@ -82,23 +84,24 @@ func (s *Server) handleResponsesStream(w http.ResponseWriter, r *http.Request, r
 // writeResponsesError 复用 chat 的错误语义：模型无人声明 404、
 // 端点与模型用途不匹配 400，其余 502。
 func (s *Server) writeResponsesError(w http.ResponseWriter, err error) {
+	message := redact.Error(err)
 	if provider.IsModelDisabled(err) {
-		writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_unavailable")
+		writeError(w, http.StatusNotFound, message, "invalid_request_error", "model_unavailable")
 		return
 	}
 	if provider.IsModelNotFound(err) {
-		writeError(w, http.StatusNotFound, err.Error(), "invalid_request_error", "model_not_found")
+		writeError(w, http.StatusNotFound, message, "invalid_request_error", "model_not_found")
 		return
 	}
 	if provider.IsUnsupportedEndpoint(err) {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "unsupported_endpoint")
+		writeError(w, http.StatusBadRequest, message, "invalid_request_error", "unsupported_endpoint")
 		return
 	}
 	if provider.IsToolsNotSupported(err) {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "tools_not_supported")
+		writeError(w, http.StatusBadRequest, message, "invalid_request_error", "tools_not_supported")
 		return
 	}
-	writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
+	writeError(w, http.StatusBadGateway, message, "api_error", nil)
 }
 
 // usageFromRecord 把落库的用量记录转成协议用量。
