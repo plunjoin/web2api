@@ -23,6 +23,7 @@ routing:
     codex: []                      # 例：["gpt-*"]
     antigravity: []                # 例：["claude-sonnet-*", "gemini-3-*"]
     workbuddy: []                  # 例：["auto-chat"]
+    flow: []                       # 例：["veo-3.1-*", "gemini-3.1-flash-image-*"]
     custom: []                     # 例：["gpt-4o", "claude-*"]
 
 # ------------------------------------------------------------
@@ -127,6 +128,16 @@ engines:
     enabled: true
     proxy: ""
     accounts: []
+
+  # Google Flow 原生引擎（flow.google.com，图片 / 视频生成）
+  # 每次生成都依赖本机 Chrome / Edge 取 reCAPTCHA token；浏览器路径留空自动探测。
+  # 账号在管理台添加 Google Cookie 登录态，下面只需给出口代理。
+  flow:
+    enabled: true
+    proxy: ""                      # 访问 flow.google.com 通常需要代理
+    browser_path: ""               # 留空自动探测本机 Chrome / Edge
+    headless: true
+    warmup_seconds: 4              # 打码页面预热时长
 
   # 第三方 OpenAI（Base URL + API Key）
   custom:

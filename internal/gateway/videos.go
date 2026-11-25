@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"web2api/internal/engine"
 	aistudio "web2api/internal/engine/aistudio"
 	"web2api/internal/store"
 )
@@ -24,6 +25,8 @@ type videoCreateRequest struct {
 	AspectRatio     string          `json:"aspect_ratio"`
 	Resolution      string          `json:"resolution"`
 	Size            string          `json:"size"`
+
+	ImageURLs []string `json:"image_urls,omitempty"`
 }
 
 type videoResponse struct {
@@ -75,10 +78,11 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 		videoPriceMicros = settings.VideoPriceMicrosPerSecond
 	}
 	start := time.Now()
-	operation, err := s.mgr.GenerateVideo(r.Context(), aistudio.VideoRequest{
+	operation, err := s.mgr.GenerateVideo(r.Context(), engine.VideoRequest{
 		Model: req.Model, Prompt: req.Prompt, Count: 1,
 		AspectRatio: req.AspectRatio, DurationSeconds: seconds,
 		Resolution: req.Resolution, Size: req.Size,
+		ImageURLs: append([]string(nil), req.ImageURLs...),
 	})
 	if err != nil {
 		s.logger.Printf("[video] 创建失败 model=%q: %v", req.Model, err)
@@ -88,7 +92,7 @@ func (s *Server) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	if videoPriceMicros > 0 {
 		info, _ := keyInfoFrom(r)
 		if _, err := s.st.RecordRequest(store.UsageRecord{
-			KeyID: info.ID, APIKey: s.currentKey(r), Engine: "aistudio", Model: req.Model, Endpoint: "/v1/videos",
+			KeyID: info.ID, APIKey: s.currentKey(r), Engine: s.mgr.EngineForModel(req.Model), Model: req.Model, Endpoint: "/v1/videos",
 			Success: true, FixedCostMicros: int64(seconds) * videoPriceMicros, LatencyMs: time.Since(start).Milliseconds(),
 		}); err != nil {
 			s.logger.Printf("[video] 记录视频扣费失败 model=%q: %v", req.Model, err)
@@ -169,7 +173,7 @@ func writeVideoError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusBadGateway, err.Error(), "api_error", nil)
 }
 
-func videoStatus(operation aistudio.VideoOperation) string {
+func videoStatus(operation engine.VideoOperation) string {
 	if operation.Done && operation.File != nil {
 		return "completed"
 	}

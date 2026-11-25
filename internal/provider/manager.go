@@ -17,6 +17,7 @@ import (
 	"web2api/internal/engine/antigravity"
 	"web2api/internal/engine/codex"
 	"web2api/internal/engine/custom"
+	"web2api/internal/engine/flow"
 	"web2api/internal/engine/geminiweb"
 	"web2api/internal/engine/teleagent"
 	"web2api/internal/engine/upstream"
@@ -232,6 +233,10 @@ func NewManager(cfg *config.Config, st *store.Store) (*Manager, error) {
 		et := teleagent.New(cfg.Engines.TeleAgent, st)
 		m.register(et.Name(), et, et)
 	}
+	if cfg.Engines.Flow.On() {
+		ef := flow.New(cfg.Engines.Flow, st)
+		m.register(ef.Name(), ef, ef)
+	}
 	if cfg.Engines.Custom.Enabled {
 		ec := custom.New(cfg.Engines.Custom, st)
 		m.register(ec.Name(), ec, ec)
@@ -425,6 +430,16 @@ func (m *Manager) bootstrapAccounts(ctx context.Context) error {
 					}
 				}
 			}
+		case "flow":
+			if eng := m.flowEngine(); eng != nil {
+				var creds flow.Credentials
+				if json.Unmarshal([]byte(acc.Credentials), &creds) == nil {
+					_ = eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds)
+					if !acc.Enabled {
+						_ = eng.SetEnabled(fmt.Sprintf("%d", acc.ID), false)
+					}
+				}
+			}
 		case "custom":
 			if eng := m.customEngine(); eng != nil {
 				var creds custom.Credentials
@@ -500,6 +515,15 @@ func (m *Manager) teleagentEngine() *teleagent.Engine {
 	if eng, ok := m.engines["teleagent"]; ok {
 		if t, ok := eng.(*teleagent.Engine); ok {
 			return t
+		}
+	}
+	return nil
+}
+
+func (m *Manager) flowEngine() *flow.Engine {
+	if eng, ok := m.engines["flow"]; ok {
+		if f, ok := eng.(*flow.Engine); ok {
+			return f
 		}
 	}
 	return nil
@@ -627,6 +651,8 @@ func (m *Manager) EngineProxy(name string) string {
 		return m.cfg.Engines.Antigravity.Proxy
 	case "workbuddy", "workbuddy-ai":
 		return m.cfg.Engines.WorkBuddy.Proxy
+	case "flow":
+		return m.cfg.Engines.Flow.Proxy
 	case "custom":
 		return m.cfg.Engines.Custom.Proxy
 	}
@@ -897,6 +923,25 @@ func (m *Manager) addAccountFromStorageState(req AccountInput) (store.Account, e
 			label = "TeleAgent " + time.Now().Format("2006-01-02 15:04")
 		}
 		return m.addTeleAgentAccount(label, creds)
+	case "flow":
+		var creds flow.Credentials
+		if err := decodeEngineCredentials(req, &creds); err != nil {
+			return store.Account{}, err
+		}
+		if creds.Email == "" {
+			creds.Email = strings.TrimSpace(req.Email)
+		}
+		if creds.Proxy == "" {
+			creds.Proxy = strings.TrimSpace(req.Proxy)
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = strings.TrimSpace(creds.Email)
+		}
+		if label == "" {
+			label = "Flow " + time.Now().Format("2006-01-02 15:04")
+		}
+		return m.addFlowAccount(label, creds)
 	default:
 		return store.Account{}, fmt.Errorf("未知引擎: %s（支持 a、b、codex、antigravity、workbuddy、teleagent、custom）", req.Engine)
 	}
@@ -1021,6 +1066,27 @@ func (m *Manager) addTeleAgentAccount(label string, creds teleagent.Credentials)
 	return acc, nil
 }
 
+// addFlowAccount 添加 Flow 账号（存储 + 入池）。
+func (m *Manager) addFlowAccount(label string, creds flow.Credentials) (store.Account, error) {
+	eng := m.flowEngine()
+	if eng == nil {
+		return store.Account{}, errors.New("flow 引擎未启用（engines.flow.enabled）")
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return store.Account{}, errors.New("label 不能为空")
+	}
+	acc, err := m.st.CreateAccount("flow", label, engine.MarshalCompact(creds), true)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if err := eng.AddAccount(fmt.Sprintf("%d", acc.ID), acc.Label, creds); err != nil {
+		_ = m.st.UpdateAccountStatus(acc.ID, "error", err.Error())
+		return acc, nil
+	}
+	return acc, nil
+}
+
 // UpdateSubscriptionCredentials 更新订阅/第三方引擎账号凭据。
 func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMessage) error {
 	acc, err := m.st.GetAccount(id)
@@ -1114,6 +1180,24 @@ func (m *Manager) UpdateSubscriptionCredentials(id int64, credentials json.RawMe
 			return err
 		}
 		return m.teleagentEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
+	case "flow":
+		var creds flow.Credentials
+		if err := json.Unmarshal(credentials, &creds); err != nil {
+			return errors.New("credentials 不是合法 JSON")
+		}
+		if strings.TrimSpace(creds.Cookies) == "" {
+			return errors.New("credentials.cookies 不能为空")
+		}
+		var old flow.Credentials
+		if json.Unmarshal([]byte(acc.Credentials), &old) == nil {
+			if creds.Email == "" { creds.Email = old.Email }
+			if creds.Proxy == "" { creds.Proxy = old.Proxy }
+			if creds.ProjectID == "" { creds.ProjectID = old.ProjectID }
+		}
+		if err := m.st.UpdateAccountCredentials(id, engine.MarshalCompact(creds)); err != nil {
+			return err
+		}
+		return m.flowEngine().ReplaceCredentials(fmt.Sprintf("%d", id), creds)
 	}
 	return fmt.Errorf("引擎 %s 不支持凭据更新", acc.Engine)
 }
@@ -1321,7 +1405,7 @@ func (m *Manager) CheckAccount(ctx context.Context, id int64) error {
 		}
 		_ = m.st.UpdateAccountStatus(id, "ok", "")
 		return nil
-	case "codex", "antigravity", "workbuddy", "workbuddy-ai", "custom":
+	case "codex", "antigravity", "workbuddy", "workbuddy-ai", "flow", "custom":
 		// 订阅/第三方引擎：重建账号（重新初始化 token / 探测模型）
 		if err := m.UpdateSubscriptionCredentials(id, json.RawMessage(acc.Credentials)); err != nil {
 			return err
@@ -1816,7 +1900,7 @@ func (m *Manager) modelDisabled(modelName string) bool {
 // 命中后引擎不可用时不做跨引擎切换，避免误导性错误。
 func isSubscriptionEngine(name string) bool {
 	switch name {
-	case "codex", "antigravity", "workbuddy", "workbuddy-ai", "teleagent", "custom":
+	case "codex", "antigravity", "workbuddy", "workbuddy-ai", "teleagent", "flow", "custom":
 		return true
 	}
 	return false
@@ -2241,40 +2325,123 @@ func (m *Manager) ownershipHint(modelName string) string {
 	return msg
 }
 
-// GenerateVideo 通过引擎B的 AI Studio GenerateVideo 协议创建 Veo 长任务。
-func (m *Manager) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
+// aistudioVideoEngine 返回引擎B的原生视频能力。
+func (m *Manager) aistudioVideoEngine() (engine.VideoEngine, error) {
 	native, ok := m.engineB.(*aistudio.NativeEngine)
 	if !ok || native == nil {
-		return aistudio.VideoOperation{}, errors.New("当前未启用引擎B原生 Veo 协议")
+		return nil, errors.New("当前未启用引擎B原生 Veo 协议")
 	}
 	if !native.Ready() {
-		return aistudio.VideoOperation{}, engine.UnavailableError(native)
+		return nil, engine.UnavailableError(native)
 	}
-	return native.GenerateVideo(ctx, request)
+	return &nativeVideoEngine{native}, nil
 }
 
-// GetGenerateVideoOperation 查询 Veo 长任务状态。
-func (m *Manager) GetGenerateVideoOperation(ctx context.Context, operationID string) (aistudio.VideoOperation, error) {
-	native, ok := m.engineB.(*aistudio.NativeEngine)
-	if !ok || native == nil {
-		return aistudio.VideoOperation{}, errors.New("当前未启用引擎B原生 Veo 协议")
+// nativeVideoEngine 适配 aistudio 已有的长任务方法到中立 engine.VideoEngine。
+type nativeVideoEngine struct{ native *aistudio.NativeEngine }
+
+func (a *nativeVideoEngine) SubmitVideo(ctx context.Context, request engine.VideoRequest) (engine.VideoOperation, error) {
+	operation, err := a.native.GenerateVideo(ctx, aistudio.VideoRequest{
+		Model: request.Model, Prompt: request.Prompt, Count: request.Count,
+		AspectRatio: request.AspectRatio, DurationSeconds: request.DurationSeconds,
+		Resolution: request.Resolution, Size: request.Size, AccountID: request.AccountID,
+		RecoverWAARuntime: request.RecoverWAARuntime,
+	})
+	if err != nil {
+		return engine.VideoOperation{}, err
 	}
-	if !native.Ready() {
-		return aistudio.VideoOperation{}, engine.UnavailableError(native)
-	}
-	return native.GetGenerateVideoOperation(ctx, operationID)
+	return convertVideoOperation(operation), nil
 }
 
-// DownloadVideoFile 下载已完成 Veo 任务的输出文件。
-func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (aistudio.MediaStream, error) {
-	native, ok := m.engineB.(*aistudio.NativeEngine)
-	if !ok || native == nil {
-		return aistudio.MediaStream{}, errors.New("当前未启用引擎B原生 Veo 协议")
+func (a *nativeVideoEngine) PollVideo(ctx context.Context, operationID string) (engine.VideoOperation, error) {
+	operation, err := a.native.GetGenerateVideoOperation(ctx, operationID)
+	if err != nil {
+		return engine.VideoOperation{}, err
 	}
-	if !native.Ready() {
-		return aistudio.MediaStream{}, engine.UnavailableError(native)
+	return convertVideoOperation(operation), nil
+}
+
+func (a *nativeVideoEngine) FetchVideoFile(ctx context.Context, fileID string) (engine.MediaStream, error) {
+	media, err := a.native.DownloadVideoFile(ctx, fileID)
+	if err != nil {
+		return engine.MediaStream{}, err
 	}
-	return native.DownloadVideoFile(ctx, fileID)
+	return engine.MediaStream{Body: media.Body, MIME: media.MIME, Name: media.Name, Size: media.Size}, nil
+}
+
+func convertVideoOperation(operation aistudio.VideoOperation) engine.VideoOperation {
+	result := engine.VideoOperation{
+		ID: operation.ID, Done: operation.Done, Model: operation.Model,
+		Seconds: operation.Seconds, Size: operation.Size, CreatedAt: operation.CreatedAt,
+	}
+	if operation.File != nil {
+		result.File = &engine.VideoFile{ID: operation.File.ID, Name: operation.File.Name, MIME: operation.File.MIME}
+	}
+	return result
+}
+
+// videoEngineForModel 找到能承接该模型的视频引擎。
+func (m *Manager) videoEngineForModel(modelName string) (engine.VideoEngine, error) {
+	eng, _ := m.pickEngine(modelName)
+	if eng == nil {
+		return nil, fmt.Errorf("没有可用的视频引擎支持模型 %q", modelName)
+	}
+	if video, ok := eng.(engine.VideoEngine); ok {
+		if !eng.Ready() {
+			return nil, engine.UnavailableError(eng)
+		}
+		return video, nil
+	}
+	if eng.Name() == "aistudio" {
+		return m.aistudioVideoEngine()
+	}
+	return nil, fmt.Errorf("引擎 %s 不支持视频生成", eng.Name())
+}
+
+// GenerateVideo 创建长任务视频，模型命中哪个引擎就走哪个引擎的原生协议。
+func (m *Manager) GenerateVideo(ctx context.Context, request engine.VideoRequest) (engine.VideoOperation, error) {
+	video, err := m.videoEngineForModel(request.Model)
+	if err != nil {
+		return engine.VideoOperation{}, err
+	}
+	return video.SubmitVideo(ctx, request)
+}
+
+// GetGenerateVideoOperation 根据 operation ID 查询长任务状态。
+func (m *Manager) GetGenerateVideoOperation(ctx context.Context, operationID string) (engine.VideoOperation, error) {
+	native, err := m.aistudioVideoEngine()
+	if err != nil {
+		if video := m.flowEngine(); video != nil {
+			return video.PollVideo(ctx, operationID)
+		}
+		return engine.VideoOperation{}, err
+	}
+	_ = native
+	// AI Studio 的 operation 由自己的账号 lease 定位，优先尝试；Flow 的 ID
+	// 不会出现在它的绑定表里，失败时再交给 Flow。
+	operation, nativeErr := native.PollVideo(ctx, operationID)
+	if nativeErr == nil {
+		return operation, nil
+	}
+	if video := m.flowEngine(); video != nil {
+		if flowOperation, flowErr := video.PollVideo(ctx, operationID); flowErr == nil {
+			return flowOperation, nil
+		}
+	}
+	return engine.VideoOperation{}, nativeErr
+}
+
+// DownloadVideoFile 下载已完成视频任务的输出文件。
+func (m *Manager) DownloadVideoFile(ctx context.Context, fileID string) (engine.MediaStream, error) {
+	if native, err := m.aistudioVideoEngine(); err == nil {
+		if media, nativeErr := native.FetchVideoFile(ctx, fileID); nativeErr == nil {
+			return media, nil
+		}
+	}
+	if video := m.flowEngine(); video != nil {
+		return video.FetchVideoFile(ctx, fileID)
+	}
+	return engine.MediaStream{}, errors.New("当前未启用原生视频引擎")
 }
 
 // alternate 返回另一个引擎（按注册顺序优先就绪的）。
@@ -2450,6 +2617,7 @@ func (m *Manager) EngineMetaList() []EngineMeta {
 		{Name: "workbuddy", Describe: "腾讯 WorkBuddy（国服 copilot.tencent.com，积分智能路由）", Enabled: m.engines["workbuddy"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国服 copilot.tencent.com）"},
 		{Name: "workbuddy-ai", Describe: "WorkBuddy AI（国际服 www.workbuddy.ai，积分智能路由）", Enabled: m.engines["workbuddy-ai"] != nil, AccountPool: true, OAuth: "start+poll", Credential: "token / refresh_token（国际服 www.workbuddy.ai）"},
 		{Name: "teleagent", Describe: "TeleAgent（天翼 AI 星辰超级智能体，GLM 系列）", Enabled: m.engines["teleagent"] != nil, AccountPool: true, OAuth: "authorize", Credential: "token（浏览器登录授权，或本机导入 scripts/import-teleagent-accounts.go）"},
+		{Name: "flow", Describe: "Google Flow（flow.google.com，图片 / 视频生成）", Enabled: m.engines["flow"] != nil, AccountPool: true, Credential: "Google Cookie（Cookie header / storage-state.json 的 cookies；可选 project_id、proxy）"},
 		{Name: "custom", Describe: "第三方 OpenAI 兼容 Key（支持常见供应商余额查询）", Enabled: m.engines["custom"] != nil, AccountPool: true, Credential: "base_url + api_key；余额：MiniMax/OpenRouter/硅基流动/DeepSeek/Sub2API/NewAPI 等"},
 	}
 	return metas

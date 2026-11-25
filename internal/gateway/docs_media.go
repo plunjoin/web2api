@@ -103,7 +103,7 @@ func mediaChatResponse(modelID, content string) map[string]any {
 
 func addVideoAPIDocs(paths, schemas map[string]any) {
 	create := paths["/v1/videos"].(map[string]any)["post"].(map[string]any)
-	create["description"] = `仅 AI Studio native 模式可用。model 和 prompt 必填，创建成功返回 202 JSON 和任务 id，此时还没有视频文件。使用返回的真实 id 轮询 GET /v1/videos/{id}，status=completed 后请求 GET /v1/videos/{id}/content 下载 MP4；status=failed 则终止轮询。
+	create["description"] = `AI Studio native 与 Google Flow 引擎可用。model 和 prompt 必填，创建成功返回 202 JSON 和任务 id，此时还没有视频文件。使用返回的真实 id 轮询 GET /v1/videos/{id}，status=completed 后请求 GET /v1/videos/{id}/content 下载 MP4；status=failed 则终止轮询。
 
 ` + "```bash\n" + `curl http://localhost:8800/v1/videos \
   -H 'Authorization: Bearer sk-xxxxxxxx' \
