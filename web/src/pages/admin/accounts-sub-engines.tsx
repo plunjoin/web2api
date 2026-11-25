@@ -416,6 +416,114 @@ export function AddWorkBuddyDialog({ open, onOpenChange, onDone, edition = 'work
   )
 }
 
+/** Google Flow：粘贴 storage-state.json 的 cookies。 */
+export function AddFlowDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void }) {
+  const [label, setLabel] = useState('')
+  const [cookies, setCookies] = useState('')
+  const [projectID, setProjectID] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { if (open) { setLabel(''); setCookies(''); setProjectID(''); setProxy('') } }, [open])
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!cookies.trim()) return
+    setBusy(true)
+    try {
+      const credentials: Record<string, string> = { cookies: cookies.trim() }
+      if (projectID.trim()) credentials.project_id = projectID.trim()
+      if (proxy.trim()) credentials.proxy = proxy.trim()
+      await api('/admin/api/accounts', { method: 'POST', json: { engine: 'flow', label: label.trim() || 'Google Flow', credentials } })
+      toast.success('Flow 账号已添加')
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[560px]">
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-[15px]">添加 Google Flow 账号</DialogTitle>
+            <DialogDescription className="text-[13px]">粘贴 Playwright storage-state.json 的 cookies 数组或 Cookie 头；每次生成需本机 Chrome / Edge 打码。</DialogDescription>
+          </DialogHeader>
+          <Field label="名称" htmlFor="flow-label">
+            <Input id="flow-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="示例：Flow 主号" />
+          </Field>
+          <Field label="Cookie 登录态" htmlFor="flow-cookies">
+            <Textarea id="flow-cookies" rows={8} required spellCheck={false} value={cookies} onChange={(e) => setCookies(e.target.value)} className="font-mono text-[11px]" placeholder='[{"name":"OSID","value":"...","domain":".google.com"}] 或 OSID=...; SID=...' />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="项目 ID（可选）" htmlFor="flow-project">
+              <Input id="flow-project" value={projectID} onChange={(e) => setProjectID(e.target.value)} placeholder="留空自动创建" />
+            </Field>
+            <Field label="账号代理（可选）" htmlFor="flow-proxy">
+              <Input id="flow-proxy" value={proxy} onChange={(e) => setProxy(e.target.value)} placeholder="http://127.0.0.1:7890" />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button type="submit" disabled={busy || !cookies.trim()}>添加</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Flow：更新 Cookie 登录态。 */
+export function FlowCredsDialog({ account, onOpenChange, onDone }: { account: { id: number; label: string; engine: string } | null; onOpenChange: (o: boolean) => void; onDone: () => void }) {
+  const [cookies, setCookies] = useState('')
+  const [projectID, setProjectID] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { if (account) { setCookies(''); setProjectID(''); setProxy('') } }, [account])
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!account || !cookies.trim()) return
+    setBusy(true)
+    try {
+      const credentials: Record<string, string> = { cookies: cookies.trim() }
+      if (projectID.trim()) credentials.project_id = projectID.trim()
+      if (proxy.trim()) credentials.proxy = proxy.trim()
+      await api(`/admin/api/accounts/${account.id}/credentials`, { method: 'PUT', json: { credentials } })
+      toast.success('Flow 凭据已更新')
+      onOpenChange(false)
+      onDone()
+    } catch (err) {
+      toast.error((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog open={!!account} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[560px]">
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-[15px]">更新 Flow 凭据</DialogTitle>
+            <DialogDescription className="text-[13px]">{account?.label} · 旧 Cookie 会被替换。</DialogDescription>
+          </DialogHeader>
+          <Field label="Cookie 登录态" htmlFor="flow-creds">
+            <Textarea id="flow-creds" rows={8} required spellCheck={false} value={cookies} onChange={(e) => setCookies(e.target.value)} className="font-mono text-[11px]" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="项目 ID（可选）" htmlFor="flow-creds-project"><Input id="flow-creds-project" value={projectID} onChange={(e) => setProjectID(e.target.value)} /></Field>
+            <Field label="账号代理（可选）" htmlFor="flow-creds-proxy"><Input id="flow-creds-proxy" value={proxy} onChange={(e) => setProxy(e.target.value)} /></Field>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button type="submit" disabled={busy || !cookies.trim()}>保存</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /** TeleAgent：浏览器登录授权 + 粘贴 token。 */
 export function AddTeleAgentDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void }) {
   const [mode, setMode] = useState<'oauth' | 'paste'>('oauth')

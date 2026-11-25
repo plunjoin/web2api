@@ -19,7 +19,7 @@ import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { ENGINE_PROVIDERS } from '@/lib/provider-presets'
 import { canonicalEngine, engineLabel, type Account, type EngineName } from '@/lib/types'
-import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddTeleAgentDialog, AddWorkBuddyDialog, CustomCredsDialog, SubCredsDialog } from './accounts-sub-engines'
+import { AddAntigravityDialog, AddCodexDialog, AddCustomKeyDialog, AddFlowDialog, AddTeleAgentDialog, AddWorkBuddyDialog, CustomCredsDialog, FlowCredsDialog, SubCredsDialog } from './accounts-sub-engines'
 import { ProviderModelsDialog } from './provider-models'
 import { ProviderGroups } from './accounts-provider-groups'
 
@@ -30,7 +30,7 @@ export default function AdminAccounts() {
   // ?new=<engine> 来自命令面板或下拉菜单：直接打开对应的添加弹窗
   const [params, setParams] = useSearchParams()
   const newParam = canonicalEngine(params.get('new') || '')
-  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'workbuddy', 'workbuddy-ai', 'teleagent', 'custom']
+  const ENGINE_KEYS: EngineName[] = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'workbuddy', 'workbuddy-ai', 'teleagent', 'flow', 'custom']
   const adding = ENGINE_KEYS.includes(newParam as EngineName) ? (newParam as EngineName) : null
   const setAdding = (v: EngineName | null) => {
     const next = new URLSearchParams(params)
@@ -41,6 +41,7 @@ export default function AdminAccounts() {
   const [creds, setCreds] = useState<Account | null>(null)
   const [subCreds, setSubCreds] = useState<Account | null>(null)
   const [customCreds, setCustomCreds] = useState<Account | null>(null)
+  const [flowCreds, setFlowCreds] = useState<Account | null>(null)
   const [checking, setChecking] = useState<number | null>(null)
   const [checkingIn, setCheckingIn] = useState<number | null>(null)
   const [openProvider, setOpenProvider] = useState<{ engine: string; provider?: string } | null>(null)
@@ -91,7 +92,9 @@ export default function AdminAccounts() {
       ? [{ label: '更新 Cookie', icon: <KeyRound />, onSelect: () => setCreds(a) }]
       : a.engine === 'custom'
         ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setCustomCreds(a) }]
-        : ['codex', 'antigravity', 'workbuddy', 'workbuddy-ai', 'teleagent'].includes(a.engine)
+        : a.engine === 'flow'
+          ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setFlowCreds(a) }]
+          : ['codex', 'antigravity', 'workbuddy', 'workbuddy-ai', 'teleagent'].includes(a.engine)
           ? [{ label: '更新凭据', icon: <KeyRound />, onSelect: () => setSubCreds(a) }]
           : []),
     a.enabled
@@ -157,6 +160,7 @@ export default function AdminAccounts() {
     { key: 'workbuddy', title: 'WorkBuddy（国服）', hint: '扫码授权或粘贴 accessToken' },
     { key: 'workbuddy-ai', title: 'WorkBuddy AI（国际服）', hint: '扫码授权或粘贴 accessToken' },
     { key: 'teleagent', title: 'TeleAgent（天翼 AI）', hint: '浏览器登录授权或粘贴 token' },
+    { key: 'flow', title: 'Google Flow（图片/视频）', hint: '粘贴 Google Cookie 登录态' },
     { key: 'custom', title: '第三方 Key（OpenAI 兼容）', hint: '填 Base URL + API Key' },
   ]
   const addMenu = (
@@ -229,9 +233,11 @@ export default function AdminAccounts() {
       <AddAntigravityDialog open={adding === 'antigravity'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddWorkBuddyDialog open={adding === 'workbuddy' || adding === 'workbuddy-ai'} edition={adding === 'workbuddy-ai' ? 'workbuddy-ai' : 'workbuddy'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddTeleAgentDialog open={adding === 'teleagent'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
+      <AddFlowDialog open={adding === 'flow'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <AddCustomKeyDialog open={adding === 'custom'} onOpenChange={(o: boolean) => !o && setAdding(null)} onDone={invalidate} />
       <CredsDialog account={creds} onOpenChange={(o) => !o && setCreds(null)} onDone={invalidate} />
       <SubCredsDialog account={subCreds} onOpenChange={(o) => !o && setSubCreds(null)} onDone={invalidate} />
+      <FlowCredsDialog account={flowCreds} onOpenChange={(o) => !o && setFlowCreds(null)} onDone={invalidate} />
       <CustomCredsDialog account={customCreds} onOpenChange={(o) => !o && setCustomCreds(null)} onDone={invalidate} />
       <ProviderModelsDialog
         target={openProvider}

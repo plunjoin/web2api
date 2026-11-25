@@ -89,6 +89,7 @@ export const ENGINE_PROVIDERS: Record<string, { icon: string; note?: string; sub
   antigravity: { icon: 'antigravity-color', note: 'Google 订阅', subscription: true },
   workbuddy: { icon: 'workbuddy-color', note: '订阅账号', subscription: true },
   teleagent: { icon: '', note: '天翼订阅', subscription: true },
+  flow: { icon: 'google-color', note: 'Google Flow 图片/视频' },
 }
 
 export interface ResolvedProvider {

@@ -11,7 +11,7 @@ import { resolveProvider } from '@/lib/provider-presets'
 import { aggregateQuota, freshQuota, knownWindow, quotaLabel } from '@/lib/account-quota'
 import { relative } from '@/lib/format'
 
-const ORDER = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'workbuddy', 'workbuddy-ai', 'custom']
+const ORDER = ['geminiweb', 'aistudio', 'codex', 'antigravity', 'workbuddy', 'workbuddy-ai', 'teleagent', 'flow', 'custom']
 const UNKNOWN = 'custom|unknown'
 const format = (v: number) => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(v)
 

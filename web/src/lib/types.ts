@@ -238,7 +238,7 @@ export interface AccountLive {
 }
 
 // 引擎标识：a=Gemini Web、b=AI Studio；codex=GPT、antigravity、订阅引擎 + custom 第三方 Key。
-export type EngineName = 'geminiweb' | 'aistudio' | 'codex' | 'antigravity' | 'workbuddy' | 'workbuddy-ai' | 'teleagent' | 'custom'
+export type EngineName = 'geminiweb' | 'aistudio' | 'codex' | 'antigravity' | 'workbuddy' | 'workbuddy-ai' | 'teleagent' | 'flow' | 'custom'
 
 export function canonicalEngine(engine: string): string {
   return engine === 'a' ? 'geminiweb' : engine === 'b' ? 'aistudio' : engine
@@ -264,6 +264,7 @@ export const ENGINE_LABELS: Record<string, string> = {
   antigravity: 'Antigravity',
   workbuddy: 'WorkBuddy',
   teleagent: 'TeleAgent',
+  flow: 'Google Flow',
   custom: '第三方 Key',
 }
 
