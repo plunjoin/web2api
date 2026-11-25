@@ -95,3 +95,22 @@ func TestTeleAgentEnabledDefault(t *testing.T) {
 		t.Fatal("显式 enabled: false 时应关闭")
 	}
 }
+
+// Flow 与 TeleAgent 相同：旧配置只写了其他引擎、没有 flow 段时仍默认开启。
+func TestFlowEnabledDefault(t *testing.T) {
+	raw := "engines:\n  codex:\n    enabled: true\n"
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Engines.Flow.On() {
+		t.Fatal("没有 flow 段时应默认启用")
+	}
+	var off Config
+	if err := yaml.Unmarshal([]byte("engines:\n  flow:\n    enabled: false\n"), &off); err != nil {
+		t.Fatal(err)
+	}
+	if off.Engines.Flow.On() {
+		t.Fatal("显式 enabled: false 时应关闭")
+	}
+}

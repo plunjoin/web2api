@@ -66,6 +66,7 @@ type EnginesConfig struct {
 	Antigravity AntigravityConfig `yaml:"antigravity"`
 	WorkBuddy   WorkBuddyConfig   `yaml:"workbuddy"`
 	TeleAgent   TeleAgentConfig   `yaml:"teleagent"`
+	Flow        FlowConfig        `yaml:"flow"`   // Google Flow 原生引擎
 	Custom      CustomConfig      `yaml:"custom"` // 第三方 OpenAI
 }
 
@@ -137,6 +138,45 @@ type WorkBuddyAccountConf struct {
 	Proxy        string `yaml:"proxy"`
 }
 
+
+// FlowConfig Google Flow 原生引擎（flow.google.com 图片 / 视频生成）。
+//
+// 每次生成都要先拿一个 reCAPTCHA token，打码靠本机的 Chrome / Edge：
+// BrowserPath 留空则自动探测，Headless 决定是否无头运行。
+//
+// Enabled 用指针区分「没写」和「明确关闭」。配置加载会整段替换 engines，
+// 旧配置没有 flow 段时不能因为缺键就把引擎判成未启用。默认开启，只有显式
+// enabled: false 才关闭。
+type FlowConfig struct {
+	Enabled *bool  `yaml:"enabled"`
+	Proxy   string `yaml:"proxy"`
+	// BrowserPath 浏览器可执行文件路径（留空自动探测）。
+	BrowserPath string `yaml:"browser_path"`
+	// Headless 是否无头运行浏览器；默认无头。
+	Headless *bool `yaml:"headless"`
+	// WarmupSeconds 打码页面的预热等待秒数（留空用默认值 4）。
+	WarmupSeconds *float64 `yaml:"warmup_seconds"`
+}
+
+// On 引擎是否启用：未配置时默认开启，显式 false 才关闭。
+func (c FlowConfig) On() bool { return c.Enabled == nil || *c.Enabled }
+
+// HeadlessEnabled 是否无头运行浏览器：默认无头。
+func (c FlowConfig) HeadlessEnabled() bool {
+	if c.Headless == nil {
+		return true
+	}
+	return *c.Headless
+}
+
+// Warmup 返回打码预热时长（秒）。
+func (c FlowConfig) Warmup() float64 {
+	if c.WarmupSeconds == nil {
+		return 4
+	}
+	return *c.WarmupSeconds
+}
+
 // TeleAgentConfig 中国电信天翼 AI「星辰超级智能体」引擎。
 //
 // Enabled 用指针区分「没写」和「明确关闭」：旧版配置里没有 teleagent 段，
@@ -192,7 +232,7 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | workbuddy | workbuddy-ai | custom
+	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | workbuddy | workbuddy-ai | teleagent | flow | custom
 	GeminiWebModels []string `yaml:"engine_geminiweb_models"` // 强制走 Gemini Web 的模型名（前缀匹配）
 	AIStudioModels  []string `yaml:"engine_aistudio_models"`  // 强制走 AI Studio 的模型名（前缀匹配）
 	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），
@@ -301,7 +341,9 @@ func Default() *Config {
 			// base_url 留空：按账号的 site 推导（默认国服 copilot.tencent.com），
 			// 旧版写死 www.codebuddy.ai 会把新号打到已废弃的端点上。
 			WorkBuddy: WorkBuddyConfig{Enabled: true},
-			Custom:    CustomConfig{Enabled: true},
+			// Enabled 留空：缺省开启。旧配置没有 flow 段时也能在管理台加号。
+			Flow:   FlowConfig{},
+			Custom: CustomConfig{Enabled: true},
 		},
 		GeminiWeb: EngineAConfig{
 			Enabled:        true,
