@@ -1,13 +1,13 @@
-v0.3.21 安全与可观测性修复：客户端错误统一脱敏，补齐退出登录与用户自助操作审计，并增强日志轮转与写入失败降级。
+v0.3.22 接入 Google Flow 图片 / 视频生成，移除 Kiro 引擎，并保留上一版的安全与可观测性修复。
 
-- **客户端错误脱敏**：网关错误在统一出口屏蔽邮箱、`sk-`/`sk_` 风格 API Key 与 Bearer 令牌；普通响应、流式 SSE、Responses、音乐、视频、透传转发前的路由/上游错误，以及用户控制台用量记录均已覆盖。服务端日志与内部用量仍保留原始错误，便于排查。
-- **自助操作审计**：退出登录，以及用户修改昵称/密码、创建/修改/删除/重置自己的 Key、兑换充值码，均写入 `audit_logs`；审计不包含 Key、密码或兑换码明文，管理台补齐对应中文动作标签。
-- **日志运行时韧性**：运行中按天/大小切分后立即清理过期日志；文件写入失败时关闭句柄、禁用文件日志并退回 stdout，同时向 stderr 输出一次降级原因，不影响业务响应。
-- **文本截断修复**：尝试轨迹与审计文本按 UTF-8 字符边界截断，不再出现半个中文或 emoji；清理未使用的错误判断代码。
-- **文档校正**：修正尝试轨迹与实际接单账号说明，补充日志运行时降级及用户自助操作审计范围。
+- **Google Flow 原生引擎**：新增 `flow.google.com` 号池，支持 `Cookie` / storage-state 登录态、账号级代理与可选 `project_id`；图片覆盖 Nano Banana 2.1 / 2 Lite，视频覆盖 Veo 3.1 Lite、Fast、Quality 与 Omni 1.1 / 1.2 Flash，支持文生、图生、参考图与延长任务。
+- **浏览器打码**：Flow 每次生成前通过本机 Chrome / Edge 获取 reCAPTCHA token，自动探测浏览器路径；支持 `browser_path`、`headless`、`warmup_seconds` 与出口代理配置。
+- **统一视频调度**：视频网关按模型在 AI Studio 与 Flow 之间分派，统一长任务提交、轮询与文件下载；原有 AI Studio Veo 行为保持不变。
+- **管理台**：账号页新增 Flow 账号添加、Cookie 更新、供应商分组与引擎标签，配置样例同步补充 Flow 段。
+- **移除 Kiro**：删除 Kiro 引擎实现、账号入口、配置项、前端资源与文档引用。
 
-升级说明：拉取 `v0.3.21` 镜像或二进制后重启即可，无需数据库迁移；原有配置与审计记录保持不变。升级前建议照常备份数据库。
+升级说明：本版目录结构与配置项有新增；Kiro 引擎、前端入口及配置已移除，原 Kiro 配置项与已保存账号升级后不再生效。拉取 `v0.3.22` 最新镜像或重新下载发布包后重启即可，无需数据库迁移。Flow 每次生成都依赖 Chrome / Edge 获取 reCAPTCHA token；官方 Docker 镜像基于 Alpine，不含浏览器，容器内使用 Flow 需自行安装或挂载浏览器，并通过 `WEB2API_FLOW_BROWSER` 或 `engines.flow.browser_path` 指定可执行文件路径；无法提供浏览器的环境请设置 `engines.flow.enabled: false`，其他引擎不受影响。如已使用较早的 `v0.3.22` 构建，请重新拉取同名镜像或发布包。升级前建议照常备份数据库。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.3.21、ghcr.io/plunjoin/web2api:0.3.21、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.3.22、ghcr.io/plunjoin/web2api:0.3.22、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
