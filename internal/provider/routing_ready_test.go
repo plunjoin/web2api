@@ -330,7 +330,7 @@ func TestPublicModelsHideNotReadySubscriptionEngines(t *testing.T) {
 
 // 带 tools 的请求落到不支持 function calling 的引擎（fakeEngine 未实现
 // ToolEngine）时，必须显式报错，而不是静默退化成「忽略 tools、仅回文本」。
-// 这正是 CC Switch / Codex 经网关请求 geminiweb / workbuddy / kiro 时
+// 这正是 CC Switch / Codex 经网关请求 geminiweb / workbuddy 时
 // 「静默没工具行为」的根因：工具被吞但请求照常「成功」。
 func TestChatWithToolsOnNonToolEngineRejected(t *testing.T) {
 	m := newTestManager(&fakeEngine{name: "geminiweb", ready: true, models: []string{"gemini-flash"}})

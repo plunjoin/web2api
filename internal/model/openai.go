@@ -233,8 +233,8 @@ func NewImagePart(url string) ContentPart {
 }
 
 // PlainRole 返回给「不支持工具调用」的上游使用的角色：tool 降级成 user
-// （结果文本仍然进上下文），developer 归并为 system。这类上游（Kiro、
-// WorkBuddy、Antigravity）不认识 tool 角色，原样透传会被直接拒绝。
+// （结果文本仍然进上下文），developer 归并为 system。这类上游
+// （WorkBuddy、Antigravity）不认识 tool 角色，原样透传会被直接拒绝。
 func (m ChatMessage) PlainRole() string {
 	switch strings.ToLower(strings.TrimSpace(m.Role)) {
 	case "tool":

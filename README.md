@@ -22,14 +22,12 @@ OpenAI 兼容 API。路由只有一条原则——**谁声明谁接**：模型�
   ——私有协议 + **WAA（BotGuard）纯 Go VM**（内嵌 goja JS 引擎执行官方解释器
   生成 proof，零浏览器依赖）。native 模式会把上游返回的 inline data 转成 data URI
   随 chat 响应带回，图片/音频类输出不需要额外端点；upstream 模式与第三方 Key 只能出文本
-- **订阅引擎（GPT / Antigravity / Kiro / WorkBuddy）**：把订阅制 AI 编程工具的
+- **订阅引擎（GPT / Antigravity / WorkBuddy）**：把订阅制 AI 编程工具的
   账号接入同一号池，每个引擎独立账号池与凭据管理：
   - **GPT（codex）**：OpenAI ChatGPT 订阅号（OAuth 授权或 `~/.codex/auth.json` 导入，
     Responses 协议，gpt-5.x / gpt-6 系列）
   - **Antigravity**：Google Cloud AI Companion 订阅号（Google OAuth 授权，
     v1internal 协议，Claude + Gemini 双模型通道，project_id 自动 onboard）
-  - **Kiro**：AWS CodeWhisperer 订阅号（`~/.aws/sso/cache/kiro-auth-token.json`
-    的 refresh_token，Claude 模型，refresh_token 旋转自动回写；上游风控较严建议少量自用）
   - **WorkBuddy**：腾讯 WorkBuddy SaaS 号，国服（copilot.tencent.com）与国际服
     （www.workbuddy.ai）两个发行版同池混跑（管理台选发行版后扫码授权，或粘贴
     accessToken，OpenAI 协议透传）。额度按套餐/赠送/总计三窗口从上游实时读取，
@@ -57,7 +55,7 @@ function calling 在 chat 与 responses 两个端点都可用：`tools` 与 `too
 下发给支持工具调用的上游（custom / AI Studio / GPT），模型发起的调用以
 `delta.tool_calls`（chat）或 `function_call` 输出项（responses）返回，历史
 `function_call` / `function_call_output` 也会还原成 `assistant.tool_calls` 与
-`role=tool` 消息。Gemini Web 逆向、Antigravity、Kiro、WorkBuddy 这类没有函数调用
+`role=tool` 消息。Gemini Web 逆向、Antigravity、WorkBuddy 这类没有函数调用
 通道的上游会忽略 `tools`，仍以纯文本回答；非 function 类型的内置工具
 （`local_shell`、`web_search`）由客户端自行执行，网关不下发。
 
@@ -76,7 +74,7 @@ function calling 在 chat 与 responses 两个端点都可用：`tools` 与 `too
 (Base URL + sk-xxx)   web2api.exe 单二进制
                           ├── Gemini Web：gemini.google.com（Cookie 号池）
                           ├── AI Studio：aistudio.google.com（WAA 号池）
-                          ├── 订阅引擎：GPT / Antigravity / Kiro / WorkBuddy
+                          ├── 订阅引擎：GPT / Antigravity / WorkBuddy
                           └── 第三方 Key：custom（base_url + api_key）
 ```
 

@@ -95,7 +95,7 @@ func NewUnsupportedEndpoint(model, kind string) error {
 }
 
 // ToolsNotSupportedError 请求带了 function calling 工具，但选中的引擎没有
-// function calling 通道（如 Gemini 网页号、WorkBuddy、Kiro 这类纯文本上游）。
+// function calling 通道（如 Gemini 网页号、WorkBuddy 这类纯文本上游）。
 // 以前这里会静默退化成「忽略 tools、仅回文本」，请求照常「成功」——调用方
 // 完全无从知道工具被吞了，排查极其困难（见 engines_tools.go 的编译期注释）。
 // 现在明确报错，让调用方立刻知道该换支持工具的引擎（custom / AI Studio /

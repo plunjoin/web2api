@@ -64,7 +64,6 @@ func isZero(v any) bool {
 type EnginesConfig struct {
 	Codex       CodexConfig       `yaml:"codex"`
 	Antigravity AntigravityConfig `yaml:"antigravity"`
-	Kiro        KiroConfig        `yaml:"kiro"`
 	WorkBuddy   WorkBuddyConfig   `yaml:"workbuddy"`
 	TeleAgent   TeleAgentConfig   `yaml:"teleagent"`
 	Custom      CustomConfig      `yaml:"custom"` // 第三方 OpenAI
@@ -112,20 +111,6 @@ type AntigravityAccountConf struct {
 	RefreshToken string `yaml:"refresh_token"`
 	Email        string `yaml:"email"`
 	ProjectID    string `yaml:"project_id"` // cloudaicompanion 项目，留空则自动 onboard
-}
-
-// KiroConfig AWS Kiro 引擎：CodeWhisperer 订阅号。
-type KiroConfig struct {
-	Enabled  bool              `yaml:"enabled"`
-	Proxy    string            `yaml:"proxy"`
-	Accounts []KiroAccountConf `yaml:"accounts"`
-}
-
-// KiroAccountConf Kiro 种子账号（refresh_token 从 Kiro IDE 登录态提取）。
-type KiroAccountConf struct {
-	Name         string `yaml:"name"`
-	RefreshToken string `yaml:"refresh_token"`
-	Email        string `yaml:"email"`
 }
 
 // WorkBuddyConfig 腾讯 CodeBuddy/WorkBuddy 引擎。
@@ -207,7 +192,7 @@ type ServerConfig struct {
 
 // RoutingConfig 模型路由配置。
 type RoutingConfig struct {
-	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | kiro | workbuddy | workbuddy-ai | custom
+	DefaultEngine   string   `yaml:"default_engine"`          // auto | geminiweb | aistudio | codex | antigravity | workbuddy | workbuddy-ai | custom
 	GeminiWebModels []string `yaml:"engine_geminiweb_models"` // 强制走 Gemini Web 的模型名（前缀匹配）
 	AIStudioModels  []string `yaml:"engine_aistudio_models"`  // 强制走 AI Studio 的模型名（前缀匹配）
 	// EngineModels 按引擎名指定强制路由的模型（如 codex: [gpt-*]），
@@ -313,7 +298,6 @@ func Default() *Config {
 			// 没有账号时引擎空转不接单；真正发请求仍需号池里有可用账号。
 			Codex:       CodexConfig{Enabled: true},
 			Antigravity: AntigravityConfig{Enabled: true},
-			Kiro:        KiroConfig{Enabled: true},
 			// base_url 留空：按账号的 site 推导（默认国服 copilot.tencent.com），
 			// 旧版写死 www.codebuddy.ai 会把新号打到已废弃的端点上。
 			WorkBuddy: WorkBuddyConfig{Enabled: true},

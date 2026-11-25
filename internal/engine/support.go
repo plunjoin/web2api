@@ -1,4 +1,4 @@
-// support.go 订阅引擎（codex/antigravity/kiro/workbuddy）与各引擎适配器
+// support.go 订阅引擎（codex/antigravity/workbuddy）与各引擎适配器
 // 共享的请求转换与账号池辅助逻辑。引擎实现包必须能免循环依赖地使用它们，
 // 因此放在 engine 基础包而不是 provider。
 package engine

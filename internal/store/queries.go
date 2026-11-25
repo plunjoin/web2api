@@ -20,7 +20,7 @@ var ErrAccountLabelExists = errors.New("该引擎下已有同名账号，请更�
 
 // CreateAccount 新增账号。
 // 引擎合法性由 provider.Manager 统一校验（历史仅允许 a/b，
-// 现还包括 codex/antigravity/kiro/workbuddy 等订阅引擎）。
+// 现还包括 codex/antigravity/workbuddy 等订阅引擎）。
 func (s *Store) CreateAccount(engine, label, credentials string, enabled bool) (Account, error) {
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	if engine == "" {

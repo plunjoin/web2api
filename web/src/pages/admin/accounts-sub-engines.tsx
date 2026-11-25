@@ -237,69 +237,6 @@ export function AddAntigravityDialog(props: Omit<Parameters<typeof AddOAuthEngin
   )
 }
 
-/** Kiro：粘贴 refresh_token（Kiro IDE 登录态提取）。 */export function AddKiroDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void }) {
-  const [token, setToken] = useState('')
-  const [email, setEmail] = useState('')
-  const [label, setLabel] = useState('')
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    if (open) {
-      setToken('')
-      setEmail('')
-      setLabel('')
-    }
-  }, [open])
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!token.trim()) return
-    setBusy(true)
-    try {
-      await api('/admin/api/accounts', {
-        method: 'POST',
-        json: { engine: 'kiro', label: label.trim(), email: email.trim(), credentials: { refresh_token: token.trim(), email: email.trim() } },
-      })
-      toast.success('账号已添加，正在初始化')
-      onOpenChange(false)
-      onDone()
-    } catch (err) {
-      toast.error((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]">
-        <form onSubmit={submit} className="space-y-4">
-          <DialogHeader>
-            <DialogTitle className="text-[15px]">添加 Kiro 账号</DialogTitle>
-            <DialogDescription className="text-[13px]">在 Kiro IDE 完成登录后，从 ~/.aws/sso/cache/kiro-auth-token.json 中复制 refreshToken 字段。注意：Kiro 风控较严，建议少量账号自用。</DialogDescription>
-          </DialogHeader>
-          <Field label="refresh_token" htmlFor="kiro-rt">
-            <Textarea id="kiro-rt" rows={3} required autoFocus spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} className="font-mono text-[11px]" />
-          </Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="名称（可选）" htmlFor="kiro-label">
-              <Input id="kiro-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="留空使用邮箱" />
-            </Field>
-            <Field label="邮箱（可选）" htmlFor="kiro-email">
-              <Input id="kiro-email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              取消
-            </Button>
-            <Button type="submit" disabled={busy}>
-              添加
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 /** WorkBuddy：设备授权轮询（扫码/浏览器登录后自动入池）。 */
 export function AddWorkBuddyDialog({ open, onOpenChange, onDone, edition = 'workbuddy' }: { open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void; edition?: 'workbuddy' | 'workbuddy-ai' }) {
   const [session, setSession] = useState<OAuthStartResp | null>(null)

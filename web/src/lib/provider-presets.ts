@@ -87,7 +87,6 @@ export const ENGINE_PROVIDERS: Record<string, { icon: string; note?: string; sub
   aistudio: { icon: 'google-color', note: 'Google 账号' },
   codex: { icon: 'codex-color', note: 'ChatGPT 订阅', subscription: true },
   antigravity: { icon: 'antigravity-color', note: 'Google 订阅', subscription: true },
-  kiro: { icon: 'kiro-color', note: 'AWS 订阅', subscription: true },
   workbuddy: { icon: 'workbuddy-color', note: '订阅账号', subscription: true },
   teleagent: { icon: '', note: '天翼订阅', subscription: true },
 }

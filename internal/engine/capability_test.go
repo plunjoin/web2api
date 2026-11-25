@@ -32,7 +32,7 @@ func TestCapsForOpenAICompatFamily(t *testing.T) {
 }
 
 func TestCapsForUnknownEngineIsConservative(t *testing.T) {
-	for _, eng := range []string{"a", "kiro", "workbuddy", "no-such-engine"} {
+	for _, eng := range []string{"a", "workbuddy", "no-such-engine"} {
 		caps := CapsFor(eng, "gemini-flash")
 		if caps.Tools || caps.RetryNoToolsOn400 || !caps.FlattenToolHistory {
 			t.Fatalf("%s caps=%#v", eng, caps)

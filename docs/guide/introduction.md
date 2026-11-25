@@ -18,7 +18,7 @@ web2api 是一个自托管的 AI 号池网关。它把账号池、请求调度�
       ├─ 用量记录
       ├─ 引擎 A：Gemini 网页号
       ├─ 引擎 B：AI Studio 号
-      ├─ 订阅引擎：codex / antigravity / kiro / workbuddy
+      ├─ 订阅引擎：codex / antigravity / workbuddy
       └─ 第三方 Key：custom（base_url + api_key）
           │
       管理台 / SQLite / Redis
@@ -30,7 +30,7 @@ web2api 是一个自托管的 AI 号池网关。它把账号池、请求调度�
 | --- | --- | --- |
 | A：Gemini 网页 | Gemini 网页 Cookie 会话 | 文本对话和兼容的轻量请求 |
 | B：AI Studio | AI Studio `storage-state.json` | 多模态、Veo、更多模型能力 |
-| 订阅引擎 | codex / antigravity / kiro / workbuddy 的授权凭据 | 复用订阅制额度 |
+| 订阅引擎 | codex / antigravity / workbuddy 的授权凭据 | 复用订阅制额度 |
 | custom | 任意 OpenAI 兼容上游的 Base URL + API Key | 接入第三方供应商 |
 
 路由按「**谁声明谁接**」：显式配置（`routing.engine_a/b_models`、`routing.engine_models`）

@@ -21,10 +21,10 @@ type Store struct {
 }
 
 // Account 账号记录（engine=a：Gemini 网页号；engine=b：AI Studio 号；
-// 其余为订阅引擎：codex / antigravity / kiro / workbuddy）。
+// 其余为订阅引擎：codex / antigravity / workbuddy）。
 type Account struct {
 	ID          int64  `json:"id"`
-	Engine      string `json:"engine"` // a | b | codex | antigravity | kiro | workbuddy
+	Engine      string `json:"engine"` // a | b | codex | antigravity | workbuddy
 	Label       string `json:"label"`
 	Credentials string `json:"-"` // JSON 字符串（凭据，不对外输出）
 	Enabled     bool   `json:"enabled"`

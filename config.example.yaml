@@ -16,13 +16,12 @@ server:
   log_console: true                   # 同时输出到 stdout（systemd/Docker 采集）
 
 routing:
-  default_engine: "auto"           # auto | a | b | codex | antigravity | kiro | workbuddy | custom
+  default_engine: "auto"           # auto | a | b | codex | antigravity | workbuddy | custom
   engine_a_models: []              # 显式强制走引擎A 的模型（支持前缀与 * 通配）
   engine_b_models: []              # 显式强制走引擎B 的模型
   engine_models:                    # 订阅/第三方引擎的强制路由模型
     codex: []                      # 例：["gpt-*"]
     antigravity: []                # 例：["claude-sonnet-*", "gemini-3-*"]
-    kiro: []                       # 例：["claude-sonnet-4"]
     workbuddy: []                  # 例：["auto-chat"]
     custom: []                     # 例：["gpt-4o", "claude-*"]
 
@@ -77,7 +76,7 @@ gemini_api:
   timeout_seconds: 0               # 0 不限制总时长，允许长后台 SSE
 
 # ------------------------------------------------------------
-# 订阅引擎 + 第三方 Key：codex / antigravity / kiro / workbuddy / custom
+# 订阅引擎 + 第三方 Key：codex / antigravity / workbuddy / custom
 # 每个引擎独立账号池，账号建议在管理台添加；
 # 启用后即可在 /v1/chat/completions 使用对应模型（模型名见管理台）
 #
@@ -102,14 +101,6 @@ engines:
     enabled: true
     proxy: ""                      # 访问 googleapis.com 需代理
     accounts: []                   # 种子：- name: ""  refresh_token: ""  project_id: ""
-
-  # AWS Kiro（CodeWhisperer，Claude 模型；refresh_token 从
-  # Kiro IDE 的 ~/.aws/sso/cache/kiro-auth-token.json 提取）
-  # 注意：Kiro 上游风控较严，建议少量账号自用
-  kiro:
-    enabled: true
-    proxy: ""
-    accounts: []
 
   # 腾讯 CodeBuddy / WorkBuddy（SaaS 订阅；管理台扫码授权或粘贴 accessToken）
   workbuddy:

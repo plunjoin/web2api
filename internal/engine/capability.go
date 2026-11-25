@@ -40,7 +40,7 @@ var (
 	plainTextCaps         = EngineCaps{FlattenToolHistory: true}
 )
 
-// CapsFor 查询能力表。engine 是引擎注册名（geminiweb/aistudio/codex/antigravity/kiro/
+// CapsFor 查询能力表。engine 是引擎注册名（geminiweb/aistudio/codex/antigravity/
 // workbuddy/custom），未知引擎一律取保守值：不透传工具、折纯文本。
 func CapsFor(engine, modelName string) EngineCaps {
 	switch engine {
@@ -59,7 +59,7 @@ func CapsFor(engine, modelName string) EngineCaps {
 		// AI Studio / Codex 官方端点：协议标准，直接透传。
 		return openaiCompatCaps
 	default:
-		// a / kiro / workbuddy 及未知引擎：没有函数调用通道。
+		// a / workbuddy 及未知引擎：没有函数调用通道。
 		return plainTextCaps
 	}
 }
