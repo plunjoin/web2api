@@ -42,11 +42,8 @@ type Engine struct {
 	// videoMu 保护 operation → 账号绑定表，轮询与下载要回到原账号。
 	videoMu         sync.RWMutex
 	videoOperations map[string]videoOperation
-	// captchaOnce 保证浏览器只启动一次。
-	captchaOnce sync.Once
-
-	errMu   sync.Mutex
-	lastErr error
+	errMu           sync.Mutex
+	lastErr         error
 }
 
 // taskInflight 是单个账号在跑的任务计数。

@@ -231,8 +231,8 @@ type CaptchaResult struct {
 
 // CaptchaProvider 采集 reCAPTCHA token。
 type CaptchaProvider interface {
-	// Token 采集一个 token。action 是 reCAPTCHA 的 page_action。
-	Token(ctx context.Context, projectID, action string, cookies []Cookie) (CaptchaResult, error)
+	// Token 采集一个 token。action 是 reCAPTCHA 的 page_action，proxy 是该账号的出口代理。
+	Token(ctx context.Context, projectID, action string, cookies []Cookie, proxy string) (CaptchaResult, error)
 }
 
 // BrowserCaptchaProvider 驱动本机浏览器采集 token。
@@ -248,8 +248,8 @@ type BrowserCaptchaProvider struct {
 	// Timeout 单次采集的总超时。
 	Timeout time.Duration
 
-	mu      sync.Mutex
-	browser *cdp.Browser
+	mu       sync.Mutex
+	browsers map[string]*cdp.Browser
 }
 
 // NewBrowserCaptchaProvider 构造浏览器打码器。
@@ -261,41 +261,55 @@ func NewBrowserCaptchaProvider() *BrowserCaptchaProvider {
 	}
 }
 
-// ensureBrowser 惰性启动浏览器（进程级复用）。
-func (p *BrowserCaptchaProvider) ensureBrowser(ctx context.Context) (*cdp.Browser, error) {
+// ensureBrowser 按代理惰性启动浏览器（同一代理进程级复用）。
+func (p *BrowserCaptchaProvider) ensureBrowser(ctx context.Context, proxy string) (*cdp.Browser, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.browser != nil {
-		return p.browser, nil
+	if p.browsers == nil {
+		p.browsers = make(map[string]*cdp.Browser)
+	}
+	if browser := p.browsers[proxy]; browser != nil {
+		return browser, nil
 	}
 	browser, err := cdp.Launch(ctx, cdp.LaunchOptions{
 		Binary:   p.Binary,
-		Proxy:    p.Proxy,
+		Proxy:    proxy,
 		Headless: p.Headless,
 		Timeout:  40 * time.Second,
 	})
 	if err != nil {
 		return nil, err
 	}
-	p.browser = browser
+	p.browsers[proxy] = browser
 	return browser, nil
 }
 
-// Close 关闭浏览器。
+// Close 关闭所有按代理复用的浏览器。
 func (p *BrowserCaptchaProvider) Close() error {
 	p.mu.Lock()
-	browser := p.browser
-	p.browser = nil
+	browsers := p.browsers
+	p.browsers = nil
 	p.mu.Unlock()
-	if browser == nil {
-		return nil
+
+	var errs []error
+	for _, browser := range browsers {
+		if browser == nil {
+			continue
+		}
+		if err := browser.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return browser.Close()
+	return errors.Join(errs...)
 }
 
 // Token 采集一个 reCAPTCHA token。
-func (p *BrowserCaptchaProvider) Token(ctx context.Context, projectID, action string, cookies []Cookie) (CaptchaResult, error) {
-	browser, err := p.ensureBrowser(ctx)
+func (p *BrowserCaptchaProvider) Token(ctx context.Context, projectID, action string, cookies []Cookie, proxy string) (CaptchaResult, error) {
+	proxy = strings.TrimSpace(proxy)
+	if proxy == "" {
+		proxy = strings.TrimSpace(p.Proxy)
+	}
+	browser, err := p.ensureBrowser(ctx, proxy)
 	if err != nil {
 		return CaptchaResult{}, err
 	}

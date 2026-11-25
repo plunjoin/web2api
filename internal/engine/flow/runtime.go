@@ -67,12 +67,7 @@ func (e *Engine) withSession(ctx context.Context, account *flowAccount, action s
 // applyCaptcha 取一个与该账号同浏览器的 reCAPTCHA token，并让 RPC 的 UA
 // 与浏览器指纹保持一致。
 func (e *Engine) applyCaptcha(ctx context.Context, account *flowAccount, action string) error {
-	e.captchaOnce.Do(func() {
-		if provider, ok := e.captcha.(*BrowserCaptchaProvider); ok {
-			provider.Proxy = e.proxyForAccount(account)
-		}
-	})
-	result, err := e.captcha.Token(ctx, account.projectID, action, account.cookies)
+	result, err := e.captcha.Token(ctx, account.projectID, action, account.cookies, e.proxyForAccount(account))
 	if err != nil {
 		return fmt.Errorf("获取 Flow reCAPTCHA token 失败: %w", err)
 	}
