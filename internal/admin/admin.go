@@ -1126,7 +1126,7 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"days":      days,
 		"usage":     usage,
-		"breakdown": breakdown,
+		"breakdown": usageBreakdownWithDisplay(breakdown, a.modelDisplayNames()),
 		"totals": map[string]any{
 			"requests": totals.Requests, "success_requests": totals.SuccessRequests,
 			"prompt_tokens": totals.PromptTokens, "completion_tokens": totals.CompletionTokens,

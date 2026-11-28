@@ -33,11 +33,12 @@ const (
 // ModelPrice 模型单价（元 / 百万 Token）。CacheRead 为 -1 时表示未单独定价，
 // 缓存命中的输入按 Input 价计费；0 表示缓存命中免费。
 type ModelPrice struct {
-	Model     string  `json:"model"`
-	Input     float64 `json:"input"`
-	Output    float64 `json:"output"`
-	CacheRead float64 `json:"cache_read"`
-	UpdatedAt int64   `json:"updated_at"`
+	Model       string  `json:"model"`
+	DisplayName string  `json:"display_name,omitempty"`
+	Input       float64 `json:"input"`
+	Output      float64 `json:"output"`
+	CacheRead   float64 `json:"cache_read"`
+	UpdatedAt   int64   `json:"updated_at"`
 }
 
 // EffectiveCacheRead 缓存命中的实际单价。

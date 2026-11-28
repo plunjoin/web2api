@@ -2561,7 +2561,9 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 				out[idx].Available = out[idx].Available || mi.Available
 				out[idx].Kind = model.PreferKind(out[idx].Kind, mi.Kind)
 				out[idx].Free = out[idx].Free || mi.Free
-				if out[idx].DisplayName == "" {
+				// display_name 等于模型 ID 只是引擎没提供可读名称；后续引擎
+				// 若有真实展示名，应覆盖它，否则真实名称会被占位值永久挡住。
+				if modelDisplayNameIsPlaceholder(out[idx].DisplayName, id) {
 					out[idx].DisplayName = mi.DisplayName
 				}
 				if out[idx].Engine == "" {
@@ -2574,6 +2576,15 @@ func (m *Manager) listModels(publicOnly bool) []model.ModelInfo {
 		}
 	}
 	return out
+}
+
+func modelDisplayNameIsPlaceholder(displayName, id string) bool {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return true
+	}
+	id = strings.TrimSpace(id)
+	return name == id || strings.EqualFold(name, "models/"+id) || strings.EqualFold("models/"+name, id)
 }
 
 // publicModelID 返回下游模型目录使用的裸模型 ID（去掉 Google 的 models/ 前缀，

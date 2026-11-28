@@ -106,7 +106,8 @@ func (a *API) handleUsageRecords(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"days": days, "total": total, "limit": limit, "offset": filter.Offset, "records": records,
+		"days": days, "total": total, "limit": limit, "offset": filter.Offset,
+		"records": usageRecordsWithDisplay(records, a.modelDisplayNames()),
 	})
 }
 
@@ -525,6 +526,13 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 				ID: model.PublicModelID(m.Model), DisplayName: m.DisplayName, Engine: m.Engine,
 				Available: true, Enabled: true, Kind: m.Kind, Free: m.Free, Multiplier: multiplier,
 			}
+			if !hasDistinctModelDisplayName(m.Model, view.DisplayName) {
+				if name := modelDisplayName(a.modelDisplayNames(), m.Model); name != "" {
+					view.DisplayName = name
+				} else {
+					view.DisplayName = ""
+				}
+			}
 			if s, ok := settings[model.CanonicalModelID(m.Model)]; ok {
 				view.Enabled = s.Enabled
 				view.LastCheckAt = s.LastCheckAt
@@ -555,6 +563,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 		// 只有真存在「设置行不在快照里」时才扫实时目录（常见情况下没有孤儿）。
 		liveEngine := map[string]string{}
 		liveAvailable := map[string]bool{}
+		liveDisplay := a.modelDisplayNames()
 		if a.mgr != nil {
 			for _, mi := range a.mgr.ListAllModels() {
 				key := model.CanonicalModelID(mi.ID)
@@ -581,7 +590,8 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request) {
 			s := settings[key]
 			multiplier, _ := a.st.ModelMultiplierFor(s.Model)
 			out = append(out, modelView{
-				ID: s.Model, Engine: eng, Available: liveAvailable[key], Enabled: s.Enabled, Multiplier: multiplier,
+				ID: s.Model, DisplayName: modelDisplayName(liveDisplay, s.Model), Engine: eng,
+				Available: liveAvailable[key], Enabled: s.Enabled, Multiplier: multiplier,
 				LastCheckAt: s.LastCheckAt, LastCheckOK: s.LastCheckOK, LastCheckDetail: s.LastCheckDetail,
 			})
 		}

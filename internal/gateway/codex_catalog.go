@@ -51,6 +51,15 @@ func (s *Server) handleCodexCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": s.codexCatalogModels(allowed)})
 }
 
+func displayNameIsPlaceholder(displayName, id string) bool {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return true
+	}
+	id = strings.TrimSpace(id)
+	return name == id || strings.EqualFold(name, "models/"+id) || strings.EqualFold("models/"+name, id)
+}
+
 // codexCatalogModels 生成 Codex 目录条目。
 //
 // Google OpenAI 兼容端点（custom 引擎接 Gemini Key）的模型 ID 带 models/
@@ -77,7 +86,7 @@ func (s *Server) codexCatalogModels(allowed func(string) bool) []map[string]any 
 		}
 		seen[strings.ToLower(slug)] = true
 		m.ID = slug
-		if m.DisplayName == "" || strings.HasPrefix(m.DisplayName, "models/") {
+		if displayNameIsPlaceholder(m.DisplayName, m.ID) || strings.HasPrefix(m.DisplayName, "models/") {
 			m.DisplayName = slug
 		}
 		out = append(out, codexCatalogEntry(m))

@@ -465,6 +465,7 @@ type UsageRecord struct {
 	KeyMasked        string  `json:"key_masked"`
 	Engine           string  `json:"engine"`
 	Model            string  `json:"model"`
+	ModelDisplayName string  `json:"model_display_name,omitempty"`
 	Endpoint         string  `json:"endpoint"`
 	Stream           bool    `json:"stream"`
 	Success          bool    `json:"success"`
@@ -489,7 +490,8 @@ type UsageRecord struct {
 	// ClientIP 是调用方来源 IP（反向代理头优先，其次 TCP 对端）。
 	ClientIP string `json:"client_ip,omitempty"`
 	// ActualModel 是上游实际承接的模型；与 Model（请求模型）不同时展示。
-	ActualModel string `json:"actual_model,omitempty"`
+	ActualModel            string `json:"actual_model,omitempty"`
+	ActualModelDisplayName string `json:"actual_model_display_name,omitempty"`
 	// AccountID / AccountLabel / Provider 是实际接单账号的快照，账号删除后仍可追溯。
 	AccountID    int64  `json:"account_id"`
 	AccountLabel string `json:"account_label,omitempty"`
@@ -682,6 +684,7 @@ type UsageBreakdownRow struct {
 	KeyName           string `json:"key_name"`
 	KeyMasked         string `json:"key_masked"`
 	Model             string `json:"model"`
+	ModelDisplayName  string `json:"model_display_name,omitempty"`
 	Requests          int64  `json:"requests"`
 	SuccessRequests   int64  `json:"success_requests"`
 	PromptTokens      int64  `json:"prompt_tokens"`

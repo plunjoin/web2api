@@ -22,6 +22,10 @@ func (a *API) handleListPrices(w http.ResponseWriter, r *http.Request, _ *Princi
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	names := a.modelDisplayNames()
+	for i := range prices {
+		prices[i].DisplayName = modelDisplayName(names, prices[i].Model)
+	}
 	defaultPrice := store.DefaultModelPrice()
 	for _, p := range prices {
 		if p.Model == store.DefaultModelKey {

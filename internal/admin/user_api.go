@@ -93,12 +93,14 @@ func (a *API) handleUserOverview(w http.ResponseWriter, r *http.Request, p *Prin
 		byModel[row.Model] += row.CostMicros
 	}
 	type modelShare struct {
-		Model      string `json:"model"`
-		CostMicros int64  `json:"cost_micros"`
+		Model            string `json:"model"`
+		ModelDisplayName string `json:"model_display_name,omitempty"`
+		CostMicros       int64  `json:"cost_micros"`
 	}
+	names := a.modelDisplayNames()
 	models := []modelShare{}
 	for m, v := range byModel {
-		models = append(models, modelShare{m, v})
+		models = append(models, modelShare{m, modelDisplayName(names, m), v})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].CostMicros > models[j].CostMicros })
 	if len(models) > 5 {
@@ -111,7 +113,7 @@ func (a *API) handleUserOverview(w http.ResponseWriter, r *http.Request, p *Prin
 		"today":        sumBreakdown(today),
 		"week":         sumBreakdown(week),
 		"series":       series,
-		"recent":       recent,
+		"recent":       usageRecordsWithDisplay(recent, a.modelDisplayNames()),
 		"keys_total":   len(keys),
 		"keys_enabled": enabledKeys,
 		"top_models":   models,
@@ -255,7 +257,7 @@ func (a *API) handleUserUsageRecords(w http.ResponseWriter, r *http.Request, p *
 		records[i] = userSafeRecord(records[i])
 	}
 	breakdown, _ := a.st.UsageBreakdown(filter)
-	writeJSON(w, 200, map[string]any{"days": days, "total": total, "records": records, "totals": sumBreakdown(breakdown)})
+	writeJSON(w, 200, map[string]any{"days": days, "total": total, "records": usageRecordsWithDisplay(records, a.modelDisplayNames()), "totals": sumBreakdown(breakdown)})
 }
 
 // handleUserUsageTimeseries GET /api/user/usage/timeseries?days

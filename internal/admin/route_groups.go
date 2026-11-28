@@ -142,13 +142,13 @@ func (a *API) routeGroups() []routeGroupView {
 		ready := st.ready > 0 || engineReady
 		g.Members = append(g.Members, routeGroupMemberView{
 			Key: key, Engine: eng, Provider: providerName,
-			Model: model.PublicModelID(m.Model), Display: m.DisplayName,
+			Model: model.PublicModelID(m.Model), Display: "",
 			Kind: m.Kind, Free: m.Free,
 			Accounts: st.accounts, EnabledAccounts: st.enabled, ReadyAccounts: st.ready,
 			Ready: ready, Direct: st.accounts == 0 && engineReady,
 			Multiplier: a.st.EffectiveModelMultiplier(m.Model, key),
 		})
-		if g.Name == "" && strings.TrimSpace(m.DisplayName) != "" {
+		if g.Name == "" && hasDistinctModelDisplayName(m.Model, m.DisplayName) {
 			g.Name = m.DisplayName
 		}
 	}

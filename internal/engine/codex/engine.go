@@ -302,6 +302,22 @@ func (e *Engine) hasEnabledAccount() bool {
 	return false
 }
 
+func defaultModelDisplayName(id string) string {
+	name := strings.TrimPrefix(id, "models/")
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		switch p {
+		case "gpt", "codex":
+			parts[i] = strings.ToUpper(p)
+		default:
+			if p != "" {
+				parts[i] = strings.ToUpper(p[:1]) + p[1:]
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 // ListModels codex 模型目录。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
@@ -319,7 +335,7 @@ func (e *Engine) ListModels() []model.ModelInfo {
 		out = append(out, model.ModelInfo{
 			ID:          id,
 			Object:      "model",
-			DisplayName: id,
+			DisplayName: defaultModelDisplayName(id),
 			Available:   enabled > 0,
 			Engine:      e.name,
 		})

@@ -609,12 +609,34 @@ func (e *Engine) RefreshCatalog(ctx context.Context) ([]model.ModelInfo, error) 
 	return e.ListModels(), nil
 }
 
+func defaultModelDisplayName(id string) string {
+	name := strings.TrimPrefix(id, "models/")
+	if idx := strings.LastIndex(name, "-"); idx > 0 {
+		switch suffix := name[idx+1:]; suffix {
+		case "thinking", "preview", "high", "medium", "low", "tiered":
+			name = name[:idx]
+		}
+	}
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		switch p {
+		case "gemini", "gpt", "claude", "opus", "sonnet":
+			parts[i] = strings.ToUpper(p)
+		default:
+			if p != "" {
+				parts[i] = strings.ToUpper(p[:1]) + p[1:]
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 // ListModels antigravity 模型目录：优先上游真实目录（fetchAvailableModels），
 // 拉取失败时回落内置默认目录。
 func (e *Engine) ListModels() []model.ModelInfo {
 	e.mu.RLock()
 	enabled := 0
-	real := map[string]bool{}
+	real := map[string]string{}
 	for _, acc := range e.accounts {
 		acc.mu.Lock()
 		if !acc.enabled {
@@ -623,18 +645,23 @@ func (e *Engine) ListModels() []model.ModelInfo {
 		}
 		enabled++
 		for _, m := range acc.models {
-			real[m.ID] = true
+			if real[m.ID] == "" {
+				real[m.ID] = m.DisplayName
+			}
 		}
 		acc.mu.Unlock()
 	}
 	e.mu.RUnlock()
 
 	var out []model.ModelInfo
-	add := func(id string) {
+	add := func(id, displayName string) {
+		if strings.TrimSpace(displayName) == "" {
+			displayName = id
+		}
 		out = append(out, model.ModelInfo{
 			ID:          id,
 			Object:      "model",
-			DisplayName: id,
+			DisplayName: displayName,
 			Available:   enabled > 0,
 			Engine:      e.name,
 		})
@@ -644,14 +671,23 @@ func (e *Engine) ListModels() []model.ModelInfo {
 		for id := range real {
 			ids = append(ids, id)
 		}
-		sort.Strings(ids)
+		sort.Slice(ids, func(i, j int) bool {
+			di, dj := real[ids[i]], real[ids[j]]
+			if di == "" {
+				di = ids[i]
+			}
+			if dj == "" {
+				dj = ids[j]
+			}
+			return di < dj
+		})
 		for _, id := range ids {
-			add(id)
+			add(id, real[id])
 		}
 		return out
 	}
 	for _, id := range DefaultModels {
-		add(id)
+		add(id, defaultModelDisplayName(id))
 	}
 	return out
 }

@@ -131,6 +131,17 @@ func (e *Engine) buildUpstream(creds Credentials) (*upstream.OpenAI, error) {
 	return upstream.NewWithClient("custom", baseURL, strings.TrimSpace(creds.APIKey), false, client), nil
 }
 
+func staticModelDisplayName(id string) string {
+	name := strings.TrimPrefix(id, "models/")
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		if p != "" {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 func staticModels(ids []string, engineName string, available bool) []model.ModelInfo {
 	out := make([]model.ModelInfo, 0, len(ids))
 	seen := map[string]bool{}
@@ -143,7 +154,7 @@ func staticModels(ids []string, engineName string, available bool) []model.Model
 		out = append(out, model.ModelInfo{
 			ID:          id,
 			Object:      "model",
-			DisplayName: id,
+			DisplayName: staticModelDisplayName(id),
 			Available:   available,
 			Engine:      engineName,
 			Kind:        model.ClassifyKind(id, id, nil),
