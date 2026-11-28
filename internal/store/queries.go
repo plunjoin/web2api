@@ -134,6 +134,36 @@ func (s *Store) UpdateAccountRawCredentials(id int64, credentials string) error 
 	return err
 }
 
+// UpdateAccountCredentialsIfCookiesMatch 仅在库里的 cookies 字段仍等于 expected 时写回凭据。
+//
+// 用于会话续期：手动同步或其他请求已经换过 Cookie 时，这次写回会落空，
+// 不会拿旧快照覆盖新登录态。返回值表示是否真的写上了。不改账号状态。
+func (s *Store) UpdateAccountCredentialsIfCookiesMatch(id int64, expectedCookies, credentials string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE accounts SET credentials = ?, updated_at = ?
+		WHERE id = ? AND coalesce(json_extract(credentials, '$.cookies'), '') = ?`,
+		credentials, now(), id, expectedCookies)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SetAccountProjectID 只改凭据里的 project_id，不动 cookies 和账号状态。
+func (s *Store) SetAccountProjectID(id int64, projectID string) error {
+	res, err := s.db.Exec(`UPDATE accounts
+		SET credentials = json_set(credentials, '$.project_id', ?), updated_at = ?
+		WHERE id = ?`, projectID, now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetAccountEnabled 启停账号。
 func (s *Store) SetAccountEnabled(id int64, enabled bool) error {
 	status := "ok"

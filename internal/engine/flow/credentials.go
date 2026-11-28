@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Credentials 是 Flow 账号凭据（accounts.credentials JSON）。
@@ -42,25 +44,11 @@ func (c Credentials) Validate() error {
 	if strings.TrimSpace(c.Cookies) == "" {
 		return errors.New("cookies 不能为空")
 	}
-	pairs, err := ParseCookies(c.Cookies)
+	cookies, err := ParseCookies(c.Cookies)
 	if err != nil {
 		return err
 	}
-	names := map[string]bool{}
-	for _, pair := range pairs {
-		names[pair.Name] = true
-	}
-	var missing []string
-	if !hasAny(names, flowSessionCookies) {
-		missing = append(missing, "flow.google.com 会话 Cookie（OSID 或 __Secure-OSID）")
-	}
-	if !hasAny(names, googleAccountCookies) {
-		missing = append(missing, ".google.com 账号 Cookie（SID/HSID/SSID/APISID/SAPISID）")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("Google Cookies 不完整，缺少%s", strings.Join(missing, "、"))
-	}
-	return nil
+	return c.validateCookies(cookies)
 }
 
 func hasAny(names map[string]bool, candidates []string) bool {
@@ -237,4 +225,164 @@ func CookieNames(cookies []Cookie) map[string]bool {
 		names[cookie.Name] = true
 	}
 	return names
+}
+
+// cookieKey 是同一条 Cookie 的合并键：域、路径、名字。
+//
+// 同名 Cookie 可以同时存在于 flow.google.com 和 .google.com，也可以
+// 挂在不同路径上。刷新时只能覆盖同一作用域的那一条。
+func cookieKey(cookie Cookie) string {
+	domain := strings.ToLower(strings.TrimSpace(cookie.Domain))
+	domain = strings.TrimPrefix(domain, ".")
+	path := cookie.Path
+	if path == "" {
+		path = "/"
+	}
+	return domain + "\x00" + path + "\x00" + cookie.Name
+}
+
+// ApplySetCookies 把响应里的 Set-Cookie 合并进现有集合。
+//
+// headers 是这一跳的全部 Set-Cookie 头，每条头只含一个 Cookie。
+// MaxAge 为负数或过期时间已过表示服务端要清掉这条 Cookie，不是更新它。
+// requestHost 是发出这些头的响应主机；头里没有 Domain 时按主机专属处理。
+func ApplySetCookies(cookies []Cookie, headers []string, requestHost string) []Cookie {
+	parsed := make([]*http.Cookie, 0, len(headers))
+	for _, header := range headers {
+		header = strings.TrimSpace(header)
+		if header == "" {
+			continue
+		}
+		parsed = append(parsed, (&http.Response{Header: http.Header{"Set-Cookie": {header}}}).Cookies()...)
+	}
+	if len(parsed) == 0 {
+		return cookies
+	}
+	requestHost = strings.ToLower(strings.TrimSpace(requestHost))
+	out := append([]Cookie(nil), cookies...)
+	for _, item := range parsed {
+		if strings.TrimSpace(item.Name) == "" {
+			continue
+		}
+		domain := strings.ToLower(strings.TrimSpace(item.Domain))
+		hostOnly := domain == ""
+		if hostOnly {
+			domain = requestHost
+		}
+		domain = strings.TrimPrefix(domain, ".")
+		if !cookieDomainMatchesHost(domain, requestHost) {
+			continue
+		}
+		path := item.Path
+		if path == "" {
+			path = "/"
+		}
+		next := Cookie{
+			Name:     item.Name,
+			Value:    item.Value,
+			Domain:   domain,
+			Path:     path,
+			Secure:   item.Secure,
+			HTTPOnly: item.HttpOnly,
+			SameSite: sameSiteName(item.SameSite),
+			HostOnly: hostOnly,
+		}
+		if !item.Expires.IsZero() {
+			next.Expires = float64(item.Expires.Unix())
+		}
+		expired := item.MaxAge < 0 || (!item.Expires.IsZero() && !item.Expires.After(time.Now()))
+		key := cookieKey(next)
+		replaced := false
+		kept := make([]Cookie, 0, len(out)+1)
+		for _, existing := range out {
+			if !sameCookieScope(existing, next, key) {
+				kept = append(kept, existing)
+				continue
+			}
+			replaced = true
+			if expired {
+				continue
+			}
+			if existing.SameSite != "" && next.SameSite == "" {
+				next.SameSite = existing.SameSite
+			}
+			if existing.HTTPOnly && !next.HTTPOnly {
+				next.HTTPOnly = true
+			}
+			kept = append(kept, next)
+		}
+		out = kept
+		if !replaced && !expired {
+			out = append(out, next)
+		}
+	}
+	return out
+}
+
+// cookieDomainMatchesHost 按浏览器规则判断响应能否为这个主机写 Cookie。
+// 既覆盖 flow.google.com 自己，也覆盖它显式指定的父域 .google.com。
+func cookieDomainMatchesHost(domain, host string) bool {
+	domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(domain), "."))
+	host = strings.ToLower(strings.TrimSpace(host))
+	if domain == "" || host == "" {
+		return false
+	}
+	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
+// sameCookieScope 判断两条 Cookie 是不是同一作用域的同一条。
+//
+// 从 Cookie 头粘贴进来的条目一律记成 .google.com，并没有真实作用域。
+// 服务端后来按具体域下发同名 Cookie 时，用它替换这条占位，避免 jar 里留下两条同名 Cookie。
+func sameCookieScope(existing, next Cookie, nextKey string) bool {
+	if cookieKey(existing) == nextKey {
+		return true
+	}
+	if existing.Name != next.Name {
+		return false
+	}
+	existingDomain := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(existing.Domain)), ".")
+	return existingDomain == "google.com" && (existing.Path == "" || existing.Path == "/")
+}
+
+// sameSiteName 把标准库的 SameSite 枚举还原成存储用的名字。
+func sameSiteName(mode http.SameSite) string {
+	switch mode {
+	case http.SameSiteStrictMode:
+		return "Strict"
+	case http.SameSiteLaxMode:
+		return "Lax"
+	case http.SameSiteNoneMode:
+		return "None"
+	default:
+		return ""
+	}
+}
+
+// MarshalCookies 把 Cookie 集合编成凭据里存的 JSON 数组。
+func MarshalCookies(cookies []Cookie) (string, error) {
+	if err := (Credentials{Cookies: "probe"}).validateCookies(cookies); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(cookies)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+// validateCookies 校验已解析的 Cookie 是否够组成一份 Flow 登录态。
+func (c Credentials) validateCookies(cookies []Cookie) error {
+	names := CookieNames(cookies)
+	var missing []string
+	if !hasAny(names, flowSessionCookies) {
+		missing = append(missing, "flow.google.com 会话 Cookie（OSID 或 __Secure-OSID）")
+	}
+	if !hasAny(names, googleAccountCookies) {
+		missing = append(missing, ".google.com 账号 Cookie（SID/HSID/SSID/APISID/SAPISID）")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("Google Cookies 不完整，缺少%s", strings.Join(missing, "、"))
+	}
+	return nil
 }
