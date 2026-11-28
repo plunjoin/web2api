@@ -1,14 +1,14 @@
-v0.3.23 接入 Google Flow 图片 / 视频生成，移除 Kiro 引擎，并修复 Flow 多账号代理隔离。
+v0.3.24 统一模型展示名，并修复 Google Flow 项目页续期时 Cookie 的写回。
 
-- **Google Flow 原生引擎**：新增 `flow.google.com` 号池，支持 `Cookie` / storage-state 登录态、账号级代理与可选 `project_id`；图片覆盖 Nano Banana 2.1 / 2 Lite，视频覆盖 Veo 3.1 Lite、Fast、Quality 与 Omni 1.1 / 1.2 Flash，支持文生、图生、参考图与延长任务。
-- **浏览器打码**：Flow 每次生成前通过本机 Chrome / Edge 获取 reCAPTCHA token，自动探测浏览器路径；支持 `browser_path`、`headless`、`warmup_seconds` 与出口代理配置。
-- **多账号代理隔离**：不同出口代理的 Flow 账号使用各自独立的浏览器进程，确保 reCAPTCHA token 与 RPC 请求始终走同一代理，避免多账号串用出口 IP。
-- **统一视频调度**：视频网关按模型在 AI Studio 与 Flow 之间分派，统一长任务提交、轮询与文件下载；原有 AI Studio Veo 行为保持不变。
-- **管理台**：账号页新增 Flow 账号添加、Cookie 更新、供应商分组与引擎标签，配置样例同步补充 Flow 段。
-- **移除 Kiro**：删除 Kiro 引擎实现、账号入口、配置项、前端资源与文档引用。
+- **模型展示名**：模型目录、路由组、用量、计费、供应商模型与请求详情优先展示 `display_name`，真实模型 ID 保留为副标题；仅大小写或 `models/` 前缀不同的名称不再被误判为可读展示名。
+- **可读默认名**：Antigravity、Codex 与自定义引擎的默认模型目录生成可读名称，避免全站只看到原始 ID。
+- **Flow 凭据续期**：项目页引导响应逐跳合并 `Set-Cookie`，登录态仍有效时条件写回轮换后的 Cookie，避免续期结果只留在内存。
+- **并发保护**：写回前校验库存 Cookie 与页面登录邮箱，手动同步或另一请求已更新时自动放弃，不覆盖较新的登录态。
+- **项目绑定**：`project_id` 改为单独更新，不再整份覆盖凭据，也不会重置账号状态。
+- **管理台资源**：内嵌前端资源已随模型展示名改动同步重建。
 
-升级说明：本版目录结构与配置项有新增；Kiro 引擎、前端入口及配置已移除，原 Kiro 配置项与已保存账号升级后不再生效。拉取 `v0.3.23` 最新镜像或重新下载发布包后重启即可，无需数据库迁移。Flow 每次生成都依赖 Chrome / Edge 获取 reCAPTCHA token；官方 Docker 镜像基于 Alpine，不含浏览器，容器内使用 Flow 需自行安装或挂载浏览器，并通过 `WEB2API_FLOW_BROWSER` 或 `engines.flow.browser_path` 指定可执行文件路径；无法提供浏览器的环境请设置 `engines.flow.enabled: false`，其他引擎不受影响。升级前建议照常备份数据库。
+升级说明：本版无需数据库迁移，拉取 `v0.3.24` 镜像或重新下载发布包后重启即可。Flow 仍需 Chrome / Edge 获取 reCAPTCHA token，并继续使用原有的账号 Cookie 与代理配置；升级前建议照常备份数据库。
 
-容器镜像：ghcr.io/plunjoin/web2api:v0.3.23、ghcr.io/plunjoin/web2api:0.3.23、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
+容器镜像：ghcr.io/plunjoin/web2api:v0.3.24、ghcr.io/plunjoin/web2api:0.3.24、ghcr.io/plunjoin/web2api:latest；支持 linux/amd64、linux/arm64、linux/arm/v7。
 
 提供 Windows、Linux、macOS 共 7 个平台发布包和 SHA256SUMS。
