@@ -24,6 +24,7 @@ export interface PublicConfig {
 /** 模型单价（人民币元 / 百万 Token）；cache_read = -1 表示按输入价。 */
 export interface ModelPrice {
   model: string
+  display_name?: string
   input: number
   output: number
   cache_read: number
@@ -61,6 +62,7 @@ export interface UsageRecord {
   key_masked: string
   engine: string
   model: string
+  model_display_name?: string
   endpoint: string
   stream: boolean
   success: boolean
@@ -85,6 +87,7 @@ export interface UsageRecord {
   client_ip?: string
   /** 上游实际承接的模型；与 model（请求模型）不同时单独展示 */
   actual_model?: string
+  actual_model_display_name?: string
   account_id: number
   account_label?: string
   provider?: string

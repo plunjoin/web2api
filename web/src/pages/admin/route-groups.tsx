@@ -19,7 +19,7 @@ import { api } from '@/lib/api'
 import { dateTime, multiplier, relative } from '@/lib/format'
 import { resolveProvider } from '@/lib/provider-presets'
 import { canonicalEngine, engineLabel, type ModelInfo, type RoutingView } from '@/lib/types'
-import { cn } from '@/lib/utils'
+import { cn, hasModelLabel, modelLabel } from '@/lib/utils'
 import { RoutingOrderPanel } from './routing'
 
 interface MultItem {
@@ -250,6 +250,7 @@ export default function AdminRouteGroups() {
       }
       if (m.kind && m.kind !== 'chat') row.kind = m.kind
       else if (!row.kind) row.kind = m.kind
+      if (!hasModelLabel(row.id, row.display) && hasModelLabel(m.id, m.display_name)) row.display = m.display_name
       bucket.set(key, row)
     }
     for (const bucket of perEngine.values()) {
@@ -534,12 +535,12 @@ export default function AdminRouteGroups() {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-mono text-sm">{r.id}</span>
+            <span className="text-sm" title={modelLabel(r.id, r.display)}>{modelLabel(r.id, r.display)}</span>
             {r.free && <Pill tone="success">免费</Pill>}
             <ModelKindPill kind={r.kind} />
             <CopyButton value={r.id} label="模型 ID 已复制" className="opacity-40 hover:opacity-100" />
           </div>
-          {r.display && r.display !== r.id && <div className="mt-0.5 text-[11px] text-muted-foreground">{r.display}</div>}
+          {hasModelLabel(r.id, r.display) && <div className="mt-0.5 font-mono text-[11px] text-muted-foreground" title={r.id}>{r.id}</div>}
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             {statusLine(r)}
             {/* 同名模型路由组：头像 = 提供这个模型的全部供应商（含当前组），同名模型共用一条目一起接单 */}
@@ -716,8 +717,8 @@ export default function AdminRouteGroups() {
                           {m.free && <Pill tone="success">免费</Pill>}
                         </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-muted-foreground">
-                          <span className="font-mono">{m.model}</span>
-                          {m.display && m.display !== m.model && <span>{m.display}</span>}
+                          <span>{modelLabel(m.model, m.display)}</span>
+                          {hasModelLabel(m.model, m.display) && <span className="font-mono">{m.model}</span>}
                         </div>
                       </div>
                       <div className="shrink-0 text-right">

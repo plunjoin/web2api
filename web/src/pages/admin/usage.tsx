@@ -20,6 +20,7 @@ import { api, download, qs } from '@/lib/api'
 import { cny, compact, latency, num, usd } from '@/lib/format'
 import { useCNYPerUSD } from '@/lib/currency'
 import type { ApiKey, UsagePoint, UsageRecord } from '@/lib/types'
+import { hasModelLabel, modelLabel } from '@/lib/utils'
 
 const LIMIT = 50
 
@@ -28,6 +29,7 @@ interface Breakdown {
   key_name: string
   key_masked: string
   model: string
+  model_display_name?: string
   requests: number
   success_requests: number
   total_tokens: number
@@ -154,7 +156,10 @@ export default function AdminUsage() {
                   {breakdown.map((r) => (
                     <TableRow key={`${r.key_id}-${r.model}`} className="cursor-pointer" onClick={() => { setKeyId(String(r.key_id)); setModelInput(r.model); setOffset(0) }}>
                       <TableCell className="max-w-[200px] truncate">{r.key_name || r.key_masked}</TableCell>
-                      <TableCell className="font-mono text-xs">{r.model || '—'}</TableCell>
+                      <TableCell className="text-xs">
+                        <div title={modelLabel(r.model, r.model_display_name)}>{r.model ? modelLabel(r.model, r.model_display_name) : '—'}</div>
+                        {hasModelLabel(r.model, r.model_display_name) && <div className="font-mono text-[11px] text-muted-foreground" title={r.model}>{r.model}</div>}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">{num(r.requests)}</TableCell>
                       <TableCell className="text-right text-muted-foreground tabular-nums">{num(r.success_requests)}</TableCell>
                       <TableCell className="text-right tabular-nums">{compact(r.total_tokens)}</TableCell>

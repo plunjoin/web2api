@@ -11,6 +11,7 @@ import { api } from '@/lib/api'
 import { cny, duration, num, usd } from '@/lib/format'
 import { useCNYPerUSD } from '@/lib/currency'
 import { engineLabel, type Account, type UsagePoint, type VersionInfo } from '@/lib/types'
+import { modelLabel } from '@/lib/utils'
 
 interface Overview {
   platform: {
@@ -42,6 +43,7 @@ interface Overview {
 
 interface BreakdownRow {
   model: string
+  model_display_name?: string
   key_name: string
   key_masked: string
   requests: number
@@ -63,7 +65,8 @@ export default function AdminOverview() {
   const byModel = new Map<string, number>()
   const byKey = new Map<string, number>()
   for (const r of usage.data?.breakdown || []) {
-    byModel.set(r.model || '未知', (byModel.get(r.model || '未知') || 0) + r.cost_micros)
+    const label = r.model ? modelLabel(r.model, r.model_display_name) : '未知'
+    byModel.set(label, (byModel.get(label) || 0) + r.cost_micros)
     const k = r.key_name || r.key_masked || '未知'
     byKey.set(k, (byKey.get(k) || 0) + r.cost_micros)
   }

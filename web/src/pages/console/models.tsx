@@ -10,6 +10,7 @@ import { ModelKindFilter, ModelKindPill, modelKindLabel } from '@/components/mod
 import { CopyButton } from '@/components/copy'
 import { api } from '@/lib/api'
 import { multiplier, yuan } from '@/lib/format'
+import { hasModelLabel, modelLabel } from '@/lib/utils'
 
 interface M {
   id: string
@@ -53,7 +54,7 @@ export default function ConsoleModels() {
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead>模型 ID</TableHead>
+                  <TableHead>模型</TableHead>
                   <TableHead>用途</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead className="text-right">你的倍率</TableHead>
@@ -67,10 +68,10 @@ export default function ConsoleModels() {
                   <TableRow key={m.id}>
                     <TableCell>
                       <div className="flex items-center gap-1">
-                        <span className="font-mono text-xs">{m.id}</span>
+                        <span className="text-xs" title={modelLabel(m.id, m.display_name)}>{modelLabel(m.id, m.display_name)}</span>
                         <CopyButton value={m.id} label="模型 ID 已复制" className="opacity-60 hover:opacity-100" />
                       </div>
-                      {m.display_name && m.display_name !== m.id && <div className="text-[11px] text-muted-foreground">{m.display_name}</div>}
+                      {hasModelLabel(m.id, m.display_name) && <div className="font-mono text-[11px] text-muted-foreground" title={m.id}>{m.id}</div>}
                     </TableCell>
                     <TableCell>
                       <ModelKindPill kind={m.kind} />

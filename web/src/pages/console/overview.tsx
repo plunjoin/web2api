@@ -14,6 +14,7 @@ import { api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { cny, multiplier, num } from '@/lib/format'
 import type { UsagePoint, UsageRecord, UsageTotals } from '@/lib/types'
+import { modelLabel } from '@/lib/utils'
 
 interface Overview {
   balance: number
@@ -24,7 +25,7 @@ interface Overview {
   recent: UsageRecord[]
   keys_total: number
   keys_enabled: number
-  top_models: { model: string; cost_micros: number }[]
+  top_models: { model: string; model_display_name?: string; cost_micros: number }[]
   announcement: string
 }
 
@@ -101,7 +102,7 @@ export default function ConsoleOverview() {
                   <BlockSkeleton className="h-32" />
                 </div>
               ) : (
-                <RankBars items={(d?.top_models || []).map((m) => ({ label: m.model || '未知', value: m.cost_micros }))} empty="近 7 天还没有消耗" format={cny} />
+                <RankBars items={(d?.top_models || []).map((m) => ({ label: m.model ? modelLabel(m.model, m.model_display_name) : '未知', value: m.cost_micros }))} empty="近 7 天还没有消耗" format={cny} />
               )}
             </Section>
           </div>

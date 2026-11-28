@@ -4,6 +4,7 @@ import { Pill, StatusDot } from '@/components/status'
 import { clock, cny, compact, dateTime, usd } from '@/lib/format'
 import { useCNYPerUSD } from '@/lib/currency'
 import { engineLabel } from '@/lib/types'
+import { hasModelLabel, modelLabel } from '@/lib/utils'
 import type { UsageRecord } from '@/lib/types'
 
 /** 供应商类型标签：订阅号池 / 网页账号 / 第三方 Key。 */
@@ -77,8 +78,9 @@ export function UsageTable({ records, onSelect, showUser }: { records: UsageReco
                   <div className="truncate text-[13px]" title={r.client}>{r.client || '—'}</div>
                   {r.client_ip && <div className="truncate font-mono text-[11px] text-muted-foreground" title={r.client_ip}>{r.client_ip}</div>}
                 </TableCell>
-                <TableCell className="max-w-[160px] truncate font-mono text-xs" title={r.model}>
-                  {r.model || '—'}
+                <TableCell className="max-w-[160px] truncate text-xs">
+                  <div title={modelLabel(r.model, r.model_display_name)}>{r.model ? modelLabel(r.model, r.model_display_name) : '—'}</div>
+                  {r.model && hasModelLabel(r.model, r.model_display_name) && <div className="font-mono text-[11px] text-muted-foreground" title={r.model}>{r.model}</div>}
                 </TableCell>
                 <TableCell>
                   <div className="flex max-w-[260px] items-center gap-1.5 text-[13px]">
@@ -98,8 +100,9 @@ export function UsageTable({ records, onSelect, showUser }: { records: UsageReco
                     {r.stream && <Pill tone="muted">流式</Pill>}
                   </div>
                 </TableCell>
-                <TableCell className="hidden max-w-[160px] truncate font-mono text-xs text-muted-foreground xl:table-cell" title={r.actual_model}>
-                  {r.actual_model || r.model || '—'}
+                <TableCell className="hidden max-w-[160px] truncate text-xs text-muted-foreground xl:table-cell">
+                  <div title={modelLabel(r.actual_model || r.model, r.actual_model_display_name || r.model_display_name)}>{r.actual_model || r.model ? modelLabel(r.actual_model || r.model, r.actual_model_display_name || r.model_display_name) : '—'}</div>
+                  {r.actual_model && hasModelLabel(r.actual_model, r.actual_model_display_name) && <div className="font-mono text-[11px]" title={r.actual_model}>{r.actual_model}</div>}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {compact(r.prompt_tokens)}

@@ -5,6 +5,7 @@ import { cny, dateTime, multiplier, num, usd } from '@/lib/format'
 import { useCNYPerUSD } from '@/lib/currency'
 import { engineLabel } from '@/lib/types'
 import type { UsageRecord } from '@/lib/types'
+import { hasModelLabel, modelLabel } from '@/lib/utils'
 import type { ReactNode } from 'react'
 
 function elapsed(ms: number) {
@@ -74,9 +75,19 @@ export function UsageRecordSheet({ record, onOpenChange, admin, footer }: { reco
             <div className="space-y-5 overflow-y-auto p-4">
               <KV
                 items={[
-                  ['请求模型', <span className="font-mono text-xs">{record.model || '—'}</span>],
+                  ['请求模型', record.model ? (
+                    <>
+                      <div>{modelLabel(record.model, record.model_display_name)}</div>
+                      {hasModelLabel(record.model, record.model_display_name) && <div className="font-mono text-[11px] text-muted-foreground">{record.model}</div>}
+                    </>
+                  ) : '—'],
                   ...(record.actual_model && record.actual_model !== record.model
-                    ? ([['实际模型', <span className="font-mono text-xs">{record.actual_model}</span>]] as [ReactNode, ReactNode][])
+                    ? ([['实际模型', (
+                      <>
+                        <div>{modelLabel(record.actual_model, record.actual_model_display_name || record.model_display_name)}</div>
+                        {hasModelLabel(record.actual_model, record.actual_model_display_name || record.model_display_name) && <div className="font-mono text-[11px] text-muted-foreground">{record.actual_model}</div>}
+                      </>
+                    )]] as [ReactNode, ReactNode][])
                     : []),
                   ['客户端', record.client || '—'],
                   ['来源 IP', <span className="font-mono text-xs">{record.client_ip || '—'}</span>],

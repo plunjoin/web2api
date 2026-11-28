@@ -14,6 +14,7 @@ import { ProviderIcon } from '@/components/provider-icon'
 import { api } from '@/lib/api'
 import { resolveProvider } from '@/lib/provider-presets'
 import { engineLabel, type ModelInfo } from '@/lib/types'
+import { hasModelLabel, modelLabel } from '@/lib/utils'
 
 type CheckResult = { model: string; ok: boolean; detail?: string; enabled: boolean }
 
@@ -256,10 +257,15 @@ export function ProviderModelsDialog({
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
-                        <span className="truncate font-mono text-xs">{m.id}</span>
+                        <span className="truncate text-xs" title={modelLabel(m.id, m.display_name)}>{modelLabel(m.id, m.display_name)}</span>
                         {m.free && <Pill tone="success">免费</Pill>}
                         <ModelKindPill kind={m.kind} />
                       </div>
+                      {hasModelLabel(m.id, m.display_name) && (
+                        <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={m.id}>
+                          {m.id}
+                        </div>
+                      )}
                       {result ? (
                         <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={result.detail}>
                           {result.ok ? <StatusDot tone="success">可用</StatusDot> : <StatusDot tone="danger">不可用</StatusDot>}

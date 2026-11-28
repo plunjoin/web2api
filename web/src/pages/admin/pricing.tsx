@@ -12,6 +12,7 @@ import { useConfirm } from '@/components/confirm'
 import { api } from '@/lib/api'
 import { dateTime } from '@/lib/format'
 import type { ModelPrice } from '@/lib/types'
+import { hasModelLabel, modelLabel } from '@/lib/utils'
 
 interface PriceView {
   prices: ModelPrice[]
@@ -188,7 +189,10 @@ export default function AdminPricing() {
                 <TableBody>
                   {rows.map((p) => (
                     <TableRow key={p.model}>
-                      <TableCell className="max-w-[280px] truncate font-mono text-xs">{p.model}</TableCell>
+                      <TableCell className="max-w-[280px] truncate text-xs">
+                        <div title={modelLabel(p.model, p.display_name)}>{modelLabel(p.model, p.display_name)}</div>
+                        {hasModelLabel(p.model, p.display_name) && <div className="font-mono text-[11px] text-muted-foreground" title={p.model}>{p.model}</div>}
+                      </TableCell>
                       <PriceCell cny={p.input} rate={rate} />
                       <PriceCell cny={p.output} rate={rate} />
                       <PriceCell cny={p.cache_read} rate={rate} empty={p.cache_read < 0 ? '同输入价' : undefined} />
